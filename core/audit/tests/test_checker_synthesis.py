@@ -1,0 +1,287 @@
+"""Tests for core.audit.checker_synthesis — mid-loop checker amplification.
+
+Tests the delegation to ``packages.checker_synthesis`` via the
+``synthesize_and_sweep`` adapter, the ``_seed_from_outcome`` builder,
+and the ``SynthesisResult`` dataclass.
+"""
+
+import pytest
+from unittest.mock import patch
+
+from core.audit.checker_synthesis import (
+    SynthesisResult,
+    _build_llm_callable,
+    _seed_from_outcome,
+    synthesize_and_sweep,
+)
+
+
+class TestSynthesisResult:
+    def test_basic(self):
+        r = SynthesisResult(
+            rule_id="synth-cwe-120-parse_header",
+            tool="semgrep",
+            content="rules:\n  - id: test",
+            cwe="CWE-120",
+            origin_file="parser.c",
+            origin_function="parse_header",
+            hits=[{"file": "other.c", "function": "process", "line": 42}],
+        )
+        assert r.rule_id == "synth-cwe-120-parse_header"
+        assert len(r.hits) == 1
+
+    def test_empty_hits(self):
+        r = SynthesisResult(
+            rule_id="r", tool="semgrep", content="c",
+            cwe="CWE-120", origin_file="a.c", origin_function="f",
+        )
+        assert r.hits == []
+
+
+# ---------------------------------------------------------------------------
+# _seed_from_outcome
+# ---------------------------------------------------------------------------
+
+
+class _StubOutcome:
+    """Minimal ReviewOutcome-shaped object for tests."""
+    def __init__(self, **kwargs):
+        self.file = kwargs.get("file", "src/auth.c")
+        self.function = kwargs.get("function", "check_pw")
+        self.line = kwargs.get("line", 42)
+        self.hypothesis = kwargs.get("hypothesis", "")
+        self.status = kwargs.get("status", "finding")
+        self.evidence_tool = kwargs.get("evidence_tool", "semgrep")
+        self.review_result = kwargs.get("review_result", {
+            "hypothesis": "missing bounds check on len",
+            "cwe_class": "CWE-120",
+            "source_snippet": "memcpy(dst, buf, len);",
+        })
+
+
+class _StubConfig:
+    def __init__(self, **kwargs):
+        self.target_path = kwargs.get("target_path", "/tmp/target")
+        self.out_dir = kwargs.get("out_dir", "/tmp/out")
+        self.codeql_db_path = kwargs.get("codeql_db_path", None)
+
+
+class TestSeedFromOutcome:
+    def test_builds_seed_from_outcome(self):
+        o = _StubOutcome()
+        seed = _seed_from_outcome(o)
+        assert seed is not None
+        assert seed.file == "src/auth.c"
+        assert seed.function == "check_pw"
+        assert seed.cwe == "CWE-120"
+        assert "bounds check" in seed.reasoning
+
+    def test_returns_none_without_hypothesis(self):
+        o = _StubOutcome(review_result={"cwe_class": "CWE-120"})
+        assert _seed_from_outcome(o) is None
+
+    def test_returns_none_without_cwe(self):
+        o = _StubOutcome(review_result={"hypothesis": "test"})
+        assert _seed_from_outcome(o) is None
+
+    def test_returns_none_without_file(self):
+        o = _StubOutcome(file="")
+        assert _seed_from_outcome(o) is None
+
+    def test_returns_none_without_function(self):
+        o = _StubOutcome(function="")
+        assert _seed_from_outcome(o) is None
+
+    def test_falls_back_to_outcome_hypothesis(self):
+        o = _StubOutcome(
+            hypothesis="fallback hypothesis",
+            review_result={"cwe_class": "CWE-89"},
+        )
+        seed = _seed_from_outcome(o)
+        assert seed is not None
+        assert seed.reasoning == "fallback hypothesis"
+
+    def test_uses_source_snippet(self):
+        o = _StubOutcome()
+        seed = _seed_from_outcome(o)
+        assert seed is not None
+        assert seed.snippet == "memcpy(dst, buf, len);"
+
+    def test_line_mapped_to_start_and_end(self):
+        o = _StubOutcome(line=99)
+        seed = _seed_from_outcome(o)
+        assert seed is not None
+        assert seed.line_start == 99
+        assert seed.line_end == 99
+
+
+# ---------------------------------------------------------------------------
+# _build_llm_callable
+# ---------------------------------------------------------------------------
+
+
+class _BareClient:
+    """LLM client without generate_structured."""
+    pass
+
+
+class TestBuildLLMCallable:
+    @pytest.mark.slow
+    def test_returns_none_without_generate_structured(self):
+        with patch("core.llm.client.LLMClient", return_value=_BareClient()):
+            assert _build_llm_callable(_StubConfig()) is None
+
+    def test_returns_callable_with_generate_structured(self):
+        class _FullClient:
+            def generate_structured(self, **kw):
+                return {"result": True}, {}
+
+        with patch("core.llm.client.LLMClient", return_value=_FullClient()):
+            result = _build_llm_callable(_StubConfig())
+            assert callable(result)
+
+
+# ---------------------------------------------------------------------------
+# synthesize_and_sweep — delegation to packages.checker_synthesis
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizeAndSweepDelegation:
+    def test_cap_reached_returns_none(self):
+        o = _StubOutcome()
+        assert synthesize_and_sweep(
+            o, _StubConfig(), set(), synthesis_count=5, max_per_run=5,
+        ) is None
+
+    def test_no_hypothesis_returns_none(self):
+        o = _StubOutcome(review_result={})
+        assert synthesize_and_sweep(o, _StubConfig(), set()) is None
+
+    def test_no_target_path_returns_none(self):
+        o = _StubOutcome()
+        c = _StubConfig(target_path=None)
+        with patch(
+            "core.audit.checker_synthesis._build_llm_callable",
+            return_value=lambda p, s, sp: None,
+        ):
+            assert synthesize_and_sweep(o, c, set()) is None
+
+    def test_delegates_to_synthesise_with_refinement(self, tmp_path):
+        from packages.checker_synthesis import (
+            CheckerSynthesisResult,
+            Match,
+            SynthesisedRule,
+        )
+
+        captured = {}
+
+        def _fake_refinement(seed, *, repo_root, out_dir, llm, **kw):
+            captured["seed"] = seed
+            captured["repo_root"] = repo_root
+            return CheckerSynthesisResult(
+                seed=seed,
+                rule=SynthesisedRule(
+                    engine="semgrep", rule_id="synth.0", body="rules: ...",
+                ),
+                matches=[
+                    Match(file="src/other.c", line=10, snippet="bad()"),
+                    Match(file="src/auth.c", line=42, snippet="same"),
+                ],
+                positive_control=True,
+            )
+
+        def _fake_llm_callable(_config):
+            return lambda p, s, sp: {"rule": "r"}
+
+        o = _StubOutcome()
+        c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
+
+        with patch(
+            "core.audit.checker_synthesis._build_llm_callable",
+            side_effect=_fake_llm_callable,
+        ), patch(
+            "packages.checker_synthesis.synthesise_with_refinement",
+            side_effect=_fake_refinement,
+        ):
+            result = synthesize_and_sweep(o, c, set())
+
+        assert result is not None
+        assert result.rule_id == "synth.0"
+        assert result.tool == "semgrep"
+        assert result.cwe == "CWE-120"
+        assert result.origin_file == "src/auth.c"
+        assert len(result.hits) == 1
+        assert result.hits[0]["file"] == "src/other.c"
+
+    def test_dedup_against_seen_keys(self, tmp_path):
+        from packages.checker_synthesis import (
+            CheckerSynthesisResult,
+            Match,
+            SynthesisedRule,
+        )
+
+        def _fake_refinement(seed, **kw):
+            return CheckerSynthesisResult(
+                seed=seed,
+                rule=SynthesisedRule(
+                    engine="semgrep", rule_id="synth.1", body="r",
+                ),
+                matches=[Match(file="src/already_seen.c", line=5)],
+                positive_control=True,
+            )
+
+        def _fake_llm_callable(_config):
+            return lambda p, s, sp: {"rule": "r"}
+
+        o = _StubOutcome()
+        c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
+        seen = {"src/already_seen.c:check_pw"}
+
+        with patch(
+            "core.audit.checker_synthesis._build_llm_callable",
+            side_effect=_fake_llm_callable,
+        ), patch(
+            "packages.checker_synthesis.synthesise_with_refinement",
+            side_effect=_fake_refinement,
+        ):
+            result = synthesize_and_sweep(o, c, seen)
+
+        assert result is not None
+        assert len(result.hits) == 0
+
+    def test_synthesis_failure_returns_none(self, tmp_path):
+        from packages.checker_synthesis import CheckerSynthesisResult
+
+        def _fake_refinement(seed, **kw):
+            return CheckerSynthesisResult(seed=seed, rule=None)
+
+        def _fake_llm_callable(_config):
+            return lambda p, s, sp: {"rule": "r"}
+
+        o = _StubOutcome()
+        c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
+
+        with patch(
+            "core.audit.checker_synthesis._build_llm_callable",
+            side_effect=_fake_llm_callable,
+        ), patch(
+            "packages.checker_synthesis.synthesise_with_refinement",
+            side_effect=_fake_refinement,
+        ):
+            assert synthesize_and_sweep(o, c, set()) is None
+
+    def test_exception_in_substrate_returns_none(self, tmp_path):
+        def _fake_llm_callable(_config):
+            return lambda p, s, sp: {"rule": "r"}
+
+        o = _StubOutcome()
+        c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
+
+        with patch(
+            "core.audit.checker_synthesis._build_llm_callable",
+            side_effect=_fake_llm_callable,
+        ), patch(
+            "packages.checker_synthesis.synthesise_with_refinement",
+            side_effect=RuntimeError("substrate boom"),
+        ):
+            assert synthesize_and_sweep(o, c, set()) is None

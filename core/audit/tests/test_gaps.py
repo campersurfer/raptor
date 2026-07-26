@@ -1,0 +1,446 @@
+"""Tests for core.audit.gaps — gap computation."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from core.audit.gaps import (
+    PRIORITY_DEAD_CODE,
+    PRIORITY_ENTRY_POINT,
+    PRIORITY_FULLY_COVERED,
+    PRIORITY_NO_TOOL_COVERAGE,
+    PRIORITY_PARTIAL_TOOL_COVERAGE,
+    compute_gaps,
+    load_checklist,
+    load_context_map,
+    mark_checked,
+    write_gaps,
+)
+
+
+def _sample_checklist():
+    return {
+        "target_path": "/tmp/target",
+        "files": [
+            {
+                "path": "src/handler.c",
+                "items": [
+                    {"name": "parse_request", "line_start": 10, "line_end": 50},
+                    {"name": "handle_error", "line_start": 55, "line_end": 70},
+                    {"name": "tiny_helper", "line_start": 72, "line_end": 75},
+                ],
+            },
+            {
+                "path": "src/auth.c",
+                "items": [
+                    {"name": "check_password", "line_start": 5, "line_end": 30},
+                ],
+            },
+        ],
+    }
+
+
+def _sample_coverage_records():
+    return [
+        {
+            "tool": "semgrep",
+            "files": {
+                "src/handler.c": {
+                    "functions": {
+                        "parse_request": {"status": "clean"},
+                    },
+                },
+            },
+            "files_examined": ["src/handler.c"],
+        },
+    ]
+
+
+class TestComputeGaps:
+    def test_basic_gaps(self):
+        gaps = compute_gaps(_sample_checklist(), [])
+        assert len(gaps) == 4
+
+    def test_covered_functions_excluded(self):
+        gaps = compute_gaps(_sample_checklist(), _sample_coverage_records())
+        names = {g["name"] for g in gaps}
+        assert "parse_request" not in names
+        assert "handle_error" in names
+        assert "check_password" in names
+
+    def test_sorted_by_priority(self):
+        gaps = compute_gaps(_sample_checklist(), _sample_coverage_records())
+        priorities = [g["priority"] for g in gaps]
+        assert priorities == sorted(priorities)
+
+    def test_no_tool_coverage_highest_priority(self):
+        gaps = compute_gaps(_sample_checklist(), _sample_coverage_records())
+        auth_gap = next(g for g in gaps if g["name"] == "check_password")
+        assert auth_gap["priority"] == PRIORITY_NO_TOOL_COVERAGE
+
+    def test_partial_coverage_medium_priority(self):
+        gaps = compute_gaps(_sample_checklist(), _sample_coverage_records())
+        handler_gap = next(g for g in gaps if g["name"] == "handle_error")
+        assert handler_gap["priority"] == PRIORITY_PARTIAL_TOOL_COVERAGE
+
+    def test_trivial_function_deprioritized(self):
+        gaps = compute_gaps(_sample_checklist(), [])
+        tiny_gap = next(g for g in gaps if g["name"] == "tiny_helper")
+        assert tiny_gap["priority"] == PRIORITY_FULLY_COVERED
+
+    def test_trivial_entry_point_demoted(self):
+        checklist = {
+            "files": [
+                {
+                    "path": "a.c",
+                    "items": [
+                        {"name": "big_handler", "line_start": 1, "line_end": 100},
+                        {"name": "tiny_wrapper", "line_start": 101, "line_end": 104},
+                    ],
+                },
+            ],
+        }
+        context_map = {
+            "entry_points": [
+                {"file": "a.c", "name": "big_handler"},
+                {"file": "a.c", "name": "tiny_wrapper"},
+            ],
+        }
+        gaps = compute_gaps(checklist, [], context_map=context_map)
+        big = next(g for g in gaps if g["name"] == "big_handler")
+        tiny = next(g for g in gaps if g["name"] == "tiny_wrapper")
+        assert big["priority"] == PRIORITY_ENTRY_POINT
+        assert tiny["priority"] == PRIORITY_NO_TOOL_COVERAGE
+
+    def test_strategy_filter(self):
+        gaps = compute_gaps(
+            _sample_checklist(), [],
+            strategy_filter="auth",
+        )
+        names = {g["name"] for g in gaps}
+        assert "check_password" in names
+        for g in gaps:
+            assert "auth" in g["strategies"]
+
+    def test_budget_limits_results(self):
+        gaps = compute_gaps(_sample_checklist(), [], budget=2)
+        assert len(gaps) == 2
+
+    def test_strategies_assigned(self):
+        gaps = compute_gaps(_sample_checklist(), [])
+        for g in gaps:
+            assert "general" in g["strategies"]
+
+    def test_context_map_sinks_boost_priority(self):
+        context_map = {
+            "entry_points": [
+                {
+                    "file": "src/auth.c",
+                    "name": "check_password",
+                    "reachable_sinks": ["os.system"],
+                },
+            ],
+        }
+        gaps = compute_gaps(
+            _sample_checklist(), _sample_coverage_records(),
+            context_map=context_map,
+        )
+        auth_gap = next(g for g in gaps if g["name"] == "check_password")
+        assert auth_gap["priority"] <= PRIORITY_NO_TOOL_COVERAGE
+        assert "reachable_sinks" in auth_gap
+
+    def test_empty_checklist(self):
+        gaps = compute_gaps({}, [])
+        assert gaps == []
+
+    def test_all_covered(self):
+        records = [
+            {
+                "tool": "audit",
+                "files": {
+                    "src/handler.c": {
+                        "functions": {
+                            "parse_request": {},
+                            "handle_error": {},
+                            "tiny_helper": {},
+                        },
+                    },
+                    "src/auth.c": {
+                        "functions": {
+                            "check_password": {},
+                        },
+                    },
+                },
+            },
+        ]
+        gaps = compute_gaps(_sample_checklist(), records)
+        assert len(gaps) == 0
+
+    def test_checked_by_excluded(self):
+        checklist = {
+            "files": [
+                {
+                    "path": "src/handler.c",
+                    "items": [
+                        {"name": "f1", "line_start": 1, "line_end": 20},
+                        {"name": "f2", "line_start": 25, "line_end": 40,
+                         "checked_by": ["audit"]},
+                    ],
+                },
+            ],
+        }
+        gaps = compute_gaps(checklist, [])
+        names = {g["name"] for g in gaps}
+        assert "f1" in names
+        assert "f2" not in names
+
+    def test_scope_filters_to_prefix(self):
+        gaps = compute_gaps(_sample_checklist(), [], scope="src/auth")
+        names = {g["name"] for g in gaps}
+        assert "check_password" in names
+        assert "parse_request" not in names
+        assert "handle_error" not in names
+
+    def test_scope_none_includes_all(self):
+        gaps = compute_gaps(_sample_checklist(), [])
+        assert len(gaps) == 4
+
+    def test_scope_no_match_returns_empty(self):
+        gaps = compute_gaps(_sample_checklist(), [], scope="nonexistent/")
+        assert gaps == []
+
+    def test_binary_absent_deprioritized(self):
+        checklist = {
+            "files": [
+                {
+                    "path": "src/handler.c",
+                    "items": [
+                        {
+                            "name": "live_fn",
+                            "line_start": 10,
+                            "line_end": 50,
+                            "metadata": {
+                                "binary_oracle": {
+                                    "classification": "symbol_present",
+                                },
+                            },
+                        },
+                        {
+                            "name": "dead_fn",
+                            "line_start": 55,
+                            "line_end": 100,
+                            "metadata": {
+                                "binary_oracle": {
+                                    "classification": "absent",
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+        gaps = compute_gaps(checklist, [])
+        live = next(g for g in gaps if g["name"] == "live_fn")
+        dead = next(g for g in gaps if g["name"] == "dead_fn")
+        assert dead["priority"] == PRIORITY_DEAD_CODE
+        assert live["priority"] < dead["priority"]
+
+    def test_binary_absent_sorted_last(self):
+        checklist = {
+            "files": [
+                {
+                    "path": "src/handler.c",
+                    "items": [
+                        {
+                            "name": "dead_fn",
+                            "line_start": 10,
+                            "line_end": 100,
+                            "metadata": {
+                                "binary_oracle": {
+                                    "classification": "absent",
+                                },
+                            },
+                        },
+                        {
+                            "name": "normal_fn",
+                            "line_start": 110,
+                            "line_end": 200,
+                        },
+                    ],
+                },
+            ],
+        }
+        gaps = compute_gaps(checklist, [])
+        assert gaps[-1]["name"] == "dead_fn"
+
+
+class TestLoadChecklist:
+    def test_load_existing(self, tmp_path: Path):
+        checklist_path = tmp_path / "checklist.json"
+        data = {"target_path": "/tmp/t", "files": []}
+        checklist_path.write_text(json.dumps(data))
+
+        result = load_checklist(tmp_path)
+        assert result["target_path"] == "/tmp/t"
+
+    def test_load_missing(self, tmp_path: Path):
+        result = load_checklist(tmp_path)
+        assert result == {}
+
+
+class TestLoadContextMap:
+    def test_load_existing(self, tmp_path: Path):
+        cm_path = tmp_path / "context-map.json"
+        data = {"entry_points": [], "sink_details": []}
+        cm_path.write_text(json.dumps(data))
+
+        result = load_context_map(tmp_path)
+        assert result is not None
+        assert "entry_points" in result
+
+    def test_load_missing(self, tmp_path: Path):
+        result = load_context_map(tmp_path)
+        assert result is None
+
+
+class TestFuzzPriority:
+    def test_heavy_fuzz_no_crashes_deprioritized(self):
+        fuzz = {
+            "files": {
+                "src/handler.c": {
+                    "functions": {
+                        "parse_request": {
+                            "iterations": 50_000,
+                            "crashes": 0,
+                        },
+                    },
+                },
+            },
+        }
+        gaps = compute_gaps(_sample_checklist(), [], fuzz_coverage=fuzz)
+        fuzzed = next(g for g in gaps if g["name"] == "parse_request")
+        unfuzzed = next(g for g in gaps if g["name"] == "handle_error")
+        assert fuzzed["priority"] >= unfuzzed["priority"]
+
+    def test_fuzz_with_crashes_not_deprioritized(self):
+        fuzz = {
+            "files": {
+                "src/handler.c": {
+                    "functions": {
+                        "parse_request": {
+                            "iterations": 50_000,
+                            "crashes": 3,
+                        },
+                    },
+                },
+            },
+        }
+        gaps = compute_gaps(_sample_checklist(), [], fuzz_coverage=fuzz)
+        fuzzed = next(g for g in gaps if g["name"] == "parse_request")
+        unfuzzed = next(g for g in gaps if g["name"] == "handle_error")
+        assert fuzzed["priority"] == unfuzzed["priority"]
+
+    def test_no_fuzz_data_no_change(self):
+        gaps_no_fuzz = compute_gaps(_sample_checklist(), [])
+        gaps_with_fuzz = compute_gaps(_sample_checklist(), [], fuzz_coverage={})
+        assert len(gaps_no_fuzz) == len(gaps_with_fuzz)
+        for a, b in zip(gaps_no_fuzz, gaps_with_fuzz):
+            assert a["priority"] == b["priority"]
+
+
+class TestWriteGaps:
+    def test_writes_json(self, tmp_path: Path):
+        gaps = [{"file": "a.c", "name": "foo", "priority": 0}]
+        path = write_gaps(gaps, tmp_path)
+        assert path.exists()
+
+        with open(path) as f:
+            data = json.load(f)
+        assert data["count"] == 1
+        assert len(data["gaps"]) == 1
+
+
+class TestMarkChecked:
+    def _write_checklist(self, tmp_path, checklist):
+        path = tmp_path / "checklist.json"
+        path.write_text(json.dumps(checklist))
+
+    def _read_checklist(self, tmp_path):
+        path = tmp_path / "checklist.json"
+        return json.loads(path.read_text())
+
+    def test_marks_function_checked(self, tmp_path: Path):
+        checklist = {
+            "files": [
+                {
+                    "path": "src/handler.c",
+                    "items": [
+                        {"name": "parse_request", "line_start": 10},
+                    ],
+                },
+            ],
+        }
+        self._write_checklist(tmp_path, checklist)
+        mark_checked(tmp_path, "src/handler.c", "parse_request", ["audit"])
+        result = self._read_checklist(tmp_path)
+        item = result["files"][0]["items"][0]
+        assert "audit" in item["checked_by"]
+
+    def test_merges_checked_by(self, tmp_path: Path):
+        checklist = {
+            "files": [
+                {
+                    "path": "a.c",
+                    "items": [
+                        {
+                            "name": "f1",
+                            "line_start": 1,
+                            "checked_by": ["semgrep"],
+                        },
+                    ],
+                },
+            ],
+        }
+        self._write_checklist(tmp_path, checklist)
+        mark_checked(tmp_path, "a.c", "f1", ["audit", "codeql"])
+        result = self._read_checklist(tmp_path)
+        checked = result["files"][0]["items"][0]["checked_by"]
+        assert set(checked) == {"semgrep", "audit", "codeql"}
+
+    def test_noop_when_missing_checklist(self, tmp_path: Path):
+        mark_checked(tmp_path, "a.c", "f1", ["audit"])
+
+    def test_noop_when_function_not_found(self, tmp_path: Path):
+        checklist = {
+            "files": [
+                {
+                    "path": "a.c",
+                    "items": [
+                        {"name": "f1", "line_start": 1},
+                    ],
+                },
+            ],
+        }
+        self._write_checklist(tmp_path, checklist)
+        mark_checked(tmp_path, "a.c", "nonexistent", ["audit"])
+        result = self._read_checklist(tmp_path)
+        assert "checked_by" not in result["files"][0]["items"][0]
+
+    def test_atomic_write_survives(self, tmp_path: Path):
+        checklist = {
+            "files": [
+                {
+                    "path": "a.c",
+                    "items": [
+                        {"name": "f1", "line_start": 1},
+                    ],
+                },
+            ],
+        }
+        self._write_checklist(tmp_path, checklist)
+        mark_checked(tmp_path, "a.c", "f1", ["tool1"])
+        mark_checked(tmp_path, "a.c", "f1", ["tool2"])
+        result = self._read_checklist(tmp_path)
+        checked = result["files"][0]["items"][0]["checked_by"]
+        assert set(checked) == {"tool1", "tool2"}
