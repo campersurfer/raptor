@@ -68,6 +68,7 @@ def built_demo(tmp_path_factory):
     yield demo
 
 
+@pytest.mark.slow
 def test_build_id_is_readable(built_demo: Path) -> None:
     bid = read_build_id(built_demo)
     assert bid is not None and len(bid) >= 8 and all(c in "0123456789abcdef" for c in bid), \
@@ -599,6 +600,7 @@ def _nm_qualified_cpp_binary(tmp_path_factory):
     return binary
 
 
+@pytest.mark.slow
 def test_nm_index_stores_qualified_no_args_form_for_cpp(
     _nm_qualified_cpp_binary,
 ) -> None:
