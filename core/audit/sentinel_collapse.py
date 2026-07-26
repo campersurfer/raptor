@@ -328,8 +328,9 @@ _JS_OPTIONAL_CHAIN_DEFAULT = re.compile(
 _JS_FUNC_RE = re.compile(
     r"\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
     r"(?:"
-    r"function\s*\*?\s+(\w+)"              # function name(
-    r"|(?:const|let|var)\s+(\w+)\s*="      # const name =
+    r"function\s*\*?\s+(\w+)"                          # function name(
+    r"|(?:const|let|var)\s+(\w+)\s*=\s*"
+    r"(?:(?:async\s+)?(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>|\(?function)"  # arrow / function expr
     r"|(\w+)\s*\([^)]*\)\s*\{"             # name(...) {  (class method)
     r"|(\w+)\s*:\s*(?:async\s+)?function"  # name: function (object method)
     r")",

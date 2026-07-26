@@ -1,5 +1,8 @@
 """Tests for core.audit.block_sibling_analysis — block-level sibling asymmetries."""
 
+import pytest
+pytest.importorskip("tree_sitter")
+
 import textwrap
 
 from core.audit.block_sibling_analysis import (

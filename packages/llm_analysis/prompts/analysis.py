@@ -41,6 +41,7 @@ _ANALYSIS_BLOCK_PRIORITIES: dict[str, int] = {
     "surrounding-context": 1,
     "source-intel-evidence": 1,
     "verified-exemplars": 2,
+    "sage-historical-context": 3,
 }
 
 _ANALYSIS_BLOCK_PRIORITY_PREFIXES: list[tuple[str, int]] = [
@@ -525,7 +526,7 @@ def build_analysis_prompt_bundle(
     """Build the analysis prompt as a PromptBundle (system + user, role-separated).
 
     Untrusted target content (code, scanner messages, dataflow snippets,
-    function-context metadata) is wrapped in
+    function-context metadata, SAGE historical context) is wrapped in
     envelope tags inside the user message. Identifiers (rule_id, file_path,
     line range, dataflow labels) are passed through named slots. Static
     instructions stay in the system message.
@@ -665,6 +666,20 @@ def build_analysis_prompt_bundle(
     # Caller-supplied extra blocks (e.g. RetryTask prior-reasoning + contradictions).
     # All extras are untrusted by definition (callers cannot pass trusted content here).
     blocks.extend(extra_blocks)
+
+    # SAGE historical context is prior LLM output —
+    # propagated trust label is "untrusted".
+    try:
+        from core.sage.hooks import enrich_analysis_prompt
+        sage_context = enrich_analysis_prompt(rule_id, file_path, repo_path=repo_path)
+        if sage_context:
+            blocks.append(UntrustedBlock(
+                content=sage_context,
+                kind="sage-historical-context",
+                origin="sage:cross-run-learning",
+            ))
+    except Exception:
+        pass
 
     if budget_tokens > 0:
         from core.llm.prompt_budget import shed_blocks

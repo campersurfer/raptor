@@ -1,5 +1,8 @@
 """Tests for condition_cpg — CPG guard relevance and interprocedural checks."""
 
+import pytest
+pytest.importorskip("tree_sitter")
+
 
 from core.audit.condition_cpg import (
     CallerGuard,

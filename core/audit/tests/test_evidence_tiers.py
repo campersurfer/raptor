@@ -1,7 +1,6 @@
 """Tests for evidence tier vocabulary (formerly core.evidence)."""
 
 from core.evidence import (
-    BinaryEvidenceRecord,
     EvidenceTier,
     TIER_RANK,
     make_evidence,

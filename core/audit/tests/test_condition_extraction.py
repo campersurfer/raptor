@@ -1,5 +1,8 @@
 """Tests for core.audit.condition_extraction — multi-language guard extraction."""
 
+import pytest
+pytest.importorskip("tree_sitter")
+
 from __future__ import annotations
 
 from core.audit.condition_extraction import (
