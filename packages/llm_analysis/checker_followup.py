@@ -19,10 +19,8 @@ counter is bumped only when a match is actually recorded.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -132,136 +130,223 @@ def _resolve_match_function(
 
 
 def _try_replay_from_library(
-    seed, *, engine: str, cwe: str, repo_root: Path, out_dir: Path,
-    checklist: Optional[Dict[str, Any]],
+    seed,
+    repo_root: Path,
+    out_dir: Path,
+    llm_callable,
+    *,
     max_matches: int,
-) -> Optional[int]:
-    """Try replaying a proven rule from the SAGE library.
+    max_triage_calls: int,
+):
+    """Check the rule library for replayable rules matching this
+    seed's CWE. Returns a ``CheckerSynthesisResult`` on hit, or
+    None if no library rule qualifies."""
+    try:
+        from packages.checker_synthesis import RuleLibrary
+        from packages.checker_synthesis.library import _DEFAULT_LIBRARY_DIR
+        from packages.checker_synthesis.languages import detect_engine
+        from packages.checker_synthesis.synthesise import _run_engine, _triage
 
-    Returns match count if a rule was replayed, None if no qualifying
-    rule was found (caller falls through to normal synthesis).
+        engine = detect_engine(seed.file)
+        if engine is None:
+            return None
+
+        lib = RuleLibrary(_DEFAULT_LIBRARY_DIR)
+        candidates = lib.find_replayable(seed.cwe, engine)
+        if not candidates:
+            return None
+
+        entry = candidates[0]
+        rule_path = lib.rule_path(entry)
+        if not rule_path.exists():
+            logger.debug(
+                "checker_followup: library rule %s on disk missing",
+                entry.rule_id,
+            )
+            return None
+
+        from packages.checker_synthesis.models import (
+            CheckerSynthesisResult,
+            SynthesisedRule,
+        )
+
+        rule_body = rule_path.read_text(encoding="utf-8")
+        rule = SynthesisedRule(
+            engine=entry.engine,
+            rule_id=entry.rule_id,
+            body=rule_body,
+            rationale=entry.rationale,
+        )
+
+        matches, errors = _run_engine(rule, rule_path, repo_root)
+        from packages.checker_synthesis.synthesise import _is_seed_match
+        variants = [m for m in matches if not _is_seed_match(seed, m)]
+        if len(variants) > max_matches:
+            variants = variants[:max_matches]
+
+        triage_list = []
+        if variants:
+            triage_list, t_errors = _triage(
+                seed, rule, variants, llm_callable, max_triage_calls,
+            )
+            errors.extend(t_errors)
+
+        import hashlib
+        target_hash = hashlib.sha256(
+            str(repo_root).encode(),
+        ).hexdigest()[:12]
+        lib.update(
+            entry.rule_id, target_hash, variants, triage_list,
+        )
+
+        result = CheckerSynthesisResult(seed=seed)
+        result.rule = rule
+        result.rule_path = rule_path
+        result.positive_control = True
+        result.dual_control = entry.dual_control
+        result.matches = variants
+        result.triage = triage_list
+        result.errors = errors
+
+        logger.info(
+            "checker_followup: replayed library rule %s — %d match(es)",
+            entry.rule_id, len(variants),
+        )
+
+        _sage_accumulate_rule(entry, seed, len(variants), len(triage_list))
+
+        return result
+    except Exception:
+        logger.debug("checker_followup: library replay failed", exc_info=True)
+        return None
+
+
+def _try_promote_to_library(result, repo_root: Path):
+    """Promote a synthesis result to the rule library if eligible."""
+    try:
+        from packages.checker_synthesis import RuleLibrary
+        from packages.checker_synthesis.library import _DEFAULT_LIBRARY_DIR
+        import hashlib
+
+        lib = RuleLibrary(_DEFAULT_LIBRARY_DIR)
+        target_hash = hashlib.sha256(
+            str(repo_root).encode(),
+        ).hexdigest()[:12]
+        lib.promote(result, target_hash=target_hash)
+
+        if result.rule is not None:
+            _sage_store_new_rule(result)
+    except Exception:
+        logger.debug("checker_followup: library promotion failed", exc_info=True)
+
+
+def _sage_accumulate_rule(entry, seed, n_variants: int, n_triage: int):
+    """Increment targets_tested in SAGE for a replayed library rule.
+
+    When the accumulated target count crosses the graduation threshold,
+    triggers ``RuleLibrary.graduate()`` to promote the rule to the
+    engine rules directory for first-class /scan coverage.
     """
     try:
         from core.sage.hooks import (
             recall_proven_rules,
             parse_rule_metadata,
+            store_proven_rule_metadata,
             should_replay_rule,
         )
-    except ImportError:
-        return None
+        import hashlib
 
-    rows = recall_proven_rules(engine, cwe)
-    if not rows:
-        return None
+        rows = recall_proven_rules(entry.engine, seed.cwe or "")
+        existing_targets = 1
+        for row in rows:
+            meta = parse_rule_metadata(row)
+            if meta.get("rule_id") == entry.rule_id:
+                existing_targets = meta.get("targets_tested", 1)
+                break
 
-    for row in rows:
-        meta = parse_rule_metadata(row)
-        if not should_replay_rule(meta):
-            continue
-        rule_path_str = meta.get("rule_path", "")
-        if not rule_path_str:
-            continue
-        rule_path = Path(rule_path_str)
-        if not rule_path.is_file():
-            continue
+        new_targets = existing_targets + 1
 
-        try:
-            logger.debug(
-                "checker_followup: replaying library rule %s for %s:%s",
-                meta.get("rule_id", "?"), seed.file, seed.line_start,
+        rule_hash = hashlib.sha256(
+            entry.rule_id.encode(),
+        ).hexdigest()[:16]
+
+        store_proven_rule_metadata(
+            engine=entry.engine,
+            cwe=seed.cwe or "",
+            rule_id=entry.rule_id,
+            rule_body_hash=rule_hash,
+            rule_path=str(entry.rule_id),
+            tp_count=n_variants,
+            fp_count=0,
+            total_matches=n_variants + n_triage,
+            dual_control_passed=entry.dual_control,
+            targets_tested=new_targets,
+        )
+
+        updated_meta = {
+            "tp_count": n_variants,
+            "fp_count": 0,
+            "dual_control": entry.dual_control,
+            "targets_tested": new_targets,
+        }
+        if should_replay_rule(updated_meta):
+            _try_graduate_rule(entry)
+    except Exception:
+        logger.debug("checker_followup: SAGE accumulate failed", exc_info=True)
+
+
+def _try_graduate_rule(entry):
+    """Graduate a library rule to the engine rules directory."""
+    try:
+        from packages.checker_synthesis import RuleLibrary
+        from packages.checker_synthesis.library import _DEFAULT_LIBRARY_DIR
+        from core.config import RaptorConfig
+
+        lib = RuleLibrary(_DEFAULT_LIBRARY_DIR)
+        graduated = lib.graduate(RaptorConfig.ENGINE_DIR)
+        if graduated:
+            logger.info(
+                "checker_followup: graduated %d rule(s) via SAGE trigger: %s",
+                len(graduated), ", ".join(graduated),
             )
-            from packages.checker_synthesis.models import SynthesisedRule
-            from packages.checker_synthesis.synthesise import _run_engine
-
-            rule_body = rule_path.read_text(encoding="utf-8")
-            rule = SynthesisedRule(
-                engine=engine,
-                rule_id=meta.get("rule_id", "library-replay"),
-                body=rule_body,
-            )
-            matches, errors = _run_engine(rule, rule_path, repo_root)
-            if errors:
-                logger.debug(
-                    "checker_followup: replay errors: %s", errors[:3])
-            if not matches:
-                continue
-
-            from packages.checker_synthesis.models import CheckerSynthesisResult
-            result = CheckerSynthesisResult(
-                seed=seed,
-                rule=rule,
-                rule_path=rule_path,
-                positive_control=True,
-                dual_control=True,
-                matches=matches[:max_matches],
-            )
-            return _record_matches(
-                seed=seed, result=result,
-                out_dir=out_dir, checklist=checklist, repo_root=repo_root,
-            )
-        except Exception:
-            logger.debug(
-                "checker_followup: replay failed for %s",
-                meta.get("rule_id", "?"), exc_info=True,
-            )
-            continue
-
-    return None
+    except Exception:
+        logger.debug("checker_followup: graduation failed", exc_info=True)
 
 
-def _promote_to_library(result, *, out_dir: Path) -> None:
-    """Copy a dual-control-passing rule to the rule library and
-    store metadata in SAGE."""
-    if result.rule is None or not result.dual_control:
-        return
-    if result.rule_path is None:
-        return
-
+def _sage_store_new_rule(result):
+    """Store initial SAGE metadata for a newly promoted rule."""
     try:
         from core.sage.hooks import store_proven_rule_metadata
-    except ImportError:
-        return
+        import hashlib
 
-    engine = result.rule.engine
-    lib_dir = out_dir / "rule-library" / engine
-    lib_dir.mkdir(parents=True, exist_ok=True)
+        rule = result.rule
+        rule_hash = hashlib.sha256(
+            rule.body.encode() if rule.body else rule.rule_id.encode(),
+        ).hexdigest()[:16]
 
-    ext = ".yml" if engine == "semgrep" else ".cocci"
-    lib_path = lib_dir / (result.rule.rule_id + ext)
-    try:
-        shutil.copy2(str(result.rule_path), str(lib_path))
-    except OSError:
-        logger.debug("checker_followup: failed to copy rule to library")
-        return
+        tp_count = len([
+            t for t in (result.triage or [])
+            if getattr(t, "status", "") == "variant"
+        ])
+        fp_count = len([
+            t for t in (result.triage or [])
+            if getattr(t, "status", "") == "false_positive"
+        ])
 
-    rule_body = result.rule.body.encode("utf-8")
-    body_hash = hashlib.sha256(rule_body).hexdigest()[:12]
-
-    tp_count = 0
-    fp_count = 0
-    for t in result.triage or []:
-        if t.status == "variant":
-            tp_count += 1
-        elif t.status == "false_positive":
-            fp_count += 1
-    if tp_count == 0 and fp_count == 0:
-        tp_count = len(result.matches)
-
-    store_proven_rule_metadata(
-        engine=engine,
-        cwe=result.seed.cwe or "",
-        rule_id=result.rule.rule_id,
-        rule_body_hash=body_hash,
-        rule_path=str(lib_path),
-        tp_count=tp_count,
-        fp_count=fp_count,
-        total_matches=len(result.matches),
-        dual_control_passed=True,
-    )
-    logger.debug(
-        "checker_followup: promoted rule %s to library at %s",
-        result.rule.rule_id, lib_path,
-    )
+        store_proven_rule_metadata(
+            engine=rule.engine,
+            cwe=result.seed.cwe or "",
+            rule_id=rule.rule_id,
+            rule_body_hash=rule_hash,
+            rule_path=str(result.rule_path or ""),
+            tp_count=tp_count,
+            fp_count=fp_count,
+            total_matches=len(result.matches or []),
+            dual_control_passed=result.dual_control or False,
+            targets_tested=1,
+        )
+    except Exception:
+        logger.debug("checker_followup: SAGE store new rule failed", exc_info=True)
 
 
 def emit_variant_matches_for_finding(
@@ -281,6 +366,10 @@ def emit_variant_matches_for_finding(
     """For a confirmed exploitable finding, synthesise a checker
     rule, run it across ``repo_root``, and record variant matches
     in ``checker-matches.jsonl``.
+
+    Checks the rule library first: if a proven rule exists for this
+    CWE + engine, replays it directly (zero LLM synthesis cost).
+    Otherwise falls through to synthesis.
 
     When ``refine=True`` (default), runs the iterative FP-elimination
     loop: each iteration feeds false positives back as negative
@@ -313,50 +402,44 @@ def emit_variant_matches_for_finding(
             )
             return 0
 
-        logger.debug(
-            "checker_followup: synthesising rule for %s:%s (%s)",
-            seed.file, seed.line_start, seed.function,
+        # Check library before spending LLM tokens on synthesis.
+        result = _try_replay_from_library(
+            seed, repo_root, out_dir, llm_callable,
+            max_matches=max_matches,
+            max_triage_calls=max_triage_calls,
         )
 
-        cwe = seed.cwe or ""
-        from packages.checker_synthesis import detect_engine
-        engine = detect_engine(seed.file)
-        if engine and cwe:
-            replay_count = _try_replay_from_library(
-                seed,
-                engine=engine,
-                cwe=cwe,
-                repo_root=repo_root,
-                out_dir=out_dir,
-                checklist=checklist,
-                max_matches=max_matches,
+        if result is None:
+            logger.debug(
+                "checker_followup: synthesising rule for %s:%s (%s)",
+                seed.file, seed.line_start, seed.function,
             )
-            if replay_count is not None:
-                return replay_count
 
-        if refine:
-            from packages.checker_synthesis import synthesise_with_refinement
-            result = synthesise_with_refinement(
-                seed,
-                repo_root=repo_root,
-                out_dir=out_dir,
-                llm=llm_callable,
-                max_iterations=max_refine_iterations,
-                max_acceptable_fp_rate=max_acceptable_fp_rate,
-                max_matches=max_matches,
-                max_triage_calls=max_triage_calls,
-            )
-        else:
-            from packages.checker_synthesis import synthesise_and_run
-            result = synthesise_and_run(
-                seed,
-                repo_root=repo_root,
-                out_dir=out_dir,
-                llm=llm_callable,
-                max_matches=max_matches,
-                triage_each=triage_each,
-                max_triage_calls=max_triage_calls,
-            )
+            if refine:
+                from packages.checker_synthesis import synthesise_with_refinement
+                result = synthesise_with_refinement(
+                    seed,
+                    repo_root=repo_root,
+                    out_dir=out_dir,
+                    llm=llm_callable,
+                    max_iterations=max_refine_iterations,
+                    max_acceptable_fp_rate=max_acceptable_fp_rate,
+                    max_matches=max_matches,
+                    max_triage_calls=max_triage_calls,
+                )
+            else:
+                from packages.checker_synthesis import synthesise_and_run
+                result = synthesise_and_run(
+                    seed,
+                    repo_root=repo_root,
+                    out_dir=out_dir,
+                    llm=llm_callable,
+                    max_matches=max_matches,
+                    triage_each=triage_each,
+                    max_triage_calls=max_triage_calls,
+                )
+
+            _try_promote_to_library(result, repo_root)
     except Exception:
         logger.warning("checker_followup: synthesis failed", exc_info=True)
         return 0
@@ -379,8 +462,6 @@ def emit_variant_matches_for_finding(
     )
     if not result.matches:
         return 0
-
-    _promote_to_library(result, out_dir=out_dir)
 
     return _record_matches(
         seed=seed,
