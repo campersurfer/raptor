@@ -1,9 +1,9 @@
 """Tests for core.audit.fail_open_detector."""
 
+from __future__ import annotations
+
 import pytest
 pytest.importorskip("tree_sitter")
-
-from __future__ import annotations
 
 from core.audit.fail_open_detector import (
     FailOpenPattern,

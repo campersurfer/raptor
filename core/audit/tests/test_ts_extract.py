@@ -1,9 +1,9 @@
 """Tests for core.audit.ts_extract — tree-sitter extraction layer."""
 
+from __future__ import annotations
+
 import pytest
 pytest.importorskip("tree_sitter")
-
-from __future__ import annotations
 
 from core.audit.ts_extract import (
     CallChain,

@@ -1,9 +1,9 @@
 """Tests for core.audit.sentinel_collapse."""
 
+from __future__ import annotations
+
 import pytest
 pytest.importorskip("tree_sitter")
-
-from __future__ import annotations
 
 from core.audit.sentinel_collapse import detect_sentinel_collapses
 
