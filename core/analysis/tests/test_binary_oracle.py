@@ -191,6 +191,7 @@ def _synthetic_inventory_for_fixture() -> dict:
     }
 
 
+@pytest.mark.slow
 def test_enrich_annotates_each_native_item(built_demo: Path) -> None:
     """Every native function in the inventory gets a binary_oracle metadata
     entry whose classification matches the standalone classifier."""
@@ -205,6 +206,7 @@ def test_enrich_annotates_each_native_item(built_demo: Path) -> None:
             f"{name}: expected {expected}, got {meta['classification']}")
 
 
+@pytest.mark.slow
 def test_enrich_skips_non_native_items(built_demo: Path) -> None:
     """Python/JS/Java/etc. items are not touched."""
     inv = _synthetic_inventory_for_fixture()
@@ -615,6 +617,7 @@ def test_nm_index_stores_qualified_no_args_form_for_cpp(
     assert "baz" in syms, "bare-name index missing"
 
 
+@pytest.mark.slow
 def test_classifier_recognises_always_inline_empty_body(
     tmp_path: Path,
 ) -> None:
