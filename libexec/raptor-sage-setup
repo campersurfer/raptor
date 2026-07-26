@@ -314,9 +314,34 @@ migrate_sage_home_if_needed() {
                 -c 'cp -a /src/. /dest/'
             echo "Volume migration complete (full copy)."
         else
-            # Destination already has data. Merge files that don't exist
-            # in the destination (agent keys, ledger fragments from the
-            # writable layer). tar -k skips existing files.
+            # Destination already has data. Detect collisions (files in
+            # both src and dest with different content) before merging.
+            # Uses find -exec to avoid word-splitting on filenames.
+            local collisions
+            collisions=$(docker run --rm \
+                -v "$backup:/src:ro" \
+                -v "$volume_name:/dest:ro" \
+                --entrypoint /bin/sh \
+                "$sage_image" \
+                -c '
+                find /src -type f ! -name ".migration-complete" -exec sh -c '\''
+                    for src_path; do
+                        rel="${src_path#/src/}"
+                        dst_path="/dest/$rel"
+                        if [ -f "$dst_path" ]; then
+                            s=$(cksum < "$src_path" | cut -d" " -f1)
+                            d=$(cksum < "$dst_path" | cut -d" " -f1)
+                            [ "$s" != "$d" ] && printf "  %s\n" "$rel"
+                        fi
+                    done
+                '\'' _ {} +
+                ' 2>/dev/null || true)
+            if [ -n "$collisions" ]; then
+                echo "Collision: these files differ between backup and destination volume:"
+                echo "$collisions"
+                echo "  Destination version kept. Backup preserved for manual comparison."
+            fi
+            # Merge files missing from destination. tar -k skips existing.
             docker run --rm \
                 -v "$backup:/src:ro" \
                 -v "$volume_name:/dest" \
@@ -330,6 +355,41 @@ migrate_sage_home_if_needed() {
             --entrypoint /bin/sh \
             "$sage_image" \
             -c 'date -u > /dest/.migration-complete'
+
+        # Post-migration regression: verify critical state survived.
+        local check_result
+        check_result=$(docker run --rm \
+            -v "$volume_name:/dest:ro" \
+            --entrypoint /bin/sh \
+            "$sage_image" \
+            -c '
+            # Chain database — check common locations
+            if find /dest -maxdepth 2 -name "chain.db" 2>/dev/null | grep -q .; then
+                echo "chain: ok"
+            else
+                echo "chain: missing"
+            fi
+            # Agent keys
+            nkeys=$(find /dest/agents -name "*.key" 2>/dev/null | wc -l)
+            if [ "$nkeys" -gt 0 ]; then
+                echo "keys: ok ($nkeys found)"
+            else
+                echo "keys: missing"
+            fi
+            # Data directory
+            if [ -d /dest/data ] || [ -d /dest/memories ]; then
+                echo "data: ok"
+            else
+                echo "data: missing"
+            fi
+            ' 2>/dev/null || true)
+        if [ -n "$check_result" ]; then
+            echo "Post-migration check:"
+            echo "$check_result" | while IFS= read -r line; do echo "  $line"; done
+            if echo "$check_result" | grep -q "chain: missing"; then
+                echo "  Warning: no chain database found — SAGE will initialise a new chain." >&2
+            fi
+        fi
     fi
 
     # Preserve backup so the operator can verify before removing.
