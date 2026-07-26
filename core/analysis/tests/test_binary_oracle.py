@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,8 @@ from core.analysis.binary_oracle import (
     enrich_inventory_with_binary_oracle,
     read_build_id,
 )
+
+_GC_SECTIONS = "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections"
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "binary_oracle"
 EXPECTED_VERDICTS = {
@@ -338,7 +341,7 @@ def test_classifier_handles_cpp_mangled_symbols(tmp_path: Path) -> None:
     )
     bin_ = tmp_path / "d"
     rc = subprocess.run(["g++", "-O2", "-g", "-ffunction-sections",
-                         "-Wl,--gc-sections", "-o", str(bin_), str(src)],
+                         _GC_SECTIONS, "-o", str(bin_), str(src)],
                         capture_output=True, text=True, timeout=60)
     if rc.returncode != 0:
         pytest.skip(f"g++ build failed: {rc.stderr[:200]}")
@@ -542,7 +545,7 @@ def test_classifier_treats_internal_linkage_with_low_pc_as_present(
         "int main(void){ return helper(0); }\n")
     binary = tmp_path / "x"
     _sp.run(["g++", "-O2", "-g", "-ffunction-sections",
-             "-Wl,--gc-sections", "-o", str(binary), str(src)], check=True)
+             _GC_SECTIONS, "-o", str(binary), str(src)], check=True)
     verdicts = classify_binary_evidence(["(anonymous namespace)::helper",
                                           "helper"], binary)
     classifications = {n: v.classification for n, v in verdicts.items()}

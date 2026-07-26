@@ -1755,7 +1755,13 @@ Examples:
             print(format_analysis_summary(mitigation_result, verbose=True))
 
             verdict = mitigation_result.get('verdict', 'unknown')
-            if verdict == 'unlikely':
+            if verdict == 'unsupported_platform':
+                print("\n" + "=" * 70)
+                print("NOTE: EXPLOIT FEASIBILITY REQUIRES LINUX — SKIPPED")
+                print("=" * 70)
+                print("\nContinuing scan without mitigation analysis...")
+
+            elif verdict == 'unlikely':
                 print("\n" + "=" * 70)
                 print("NOTE: EXPLOITATION UNLIKELY WITH CURRENT MITIGATIONS")
                 print("=" * 70)
