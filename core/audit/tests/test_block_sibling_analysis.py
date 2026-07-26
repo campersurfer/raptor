@@ -1,7 +1,12 @@
 """Tests for core.audit.block_sibling_analysis — block-level sibling asymmetries."""
 
 import pytest
-pytest.importorskip("tree_sitter")
+try:
+    import tree_sitter  # noqa: F401
+    _HAS_TS = True
+except ImportError:
+    _HAS_TS = False
+pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
 import textwrap
 

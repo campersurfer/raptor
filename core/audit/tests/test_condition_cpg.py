@@ -1,7 +1,12 @@
 """Tests for condition_cpg — CPG guard relevance and interprocedural checks."""
 
 import pytest
-pytest.importorskip("tree_sitter")
+try:
+    import tree_sitter  # noqa: F401
+    _HAS_TS = True
+except ImportError:
+    _HAS_TS = False
+pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
 
 from core.audit.condition_cpg import (
