@@ -39,6 +39,7 @@ __all__ = [
     "version",
     "FlowStep",
     "JoernCPG",
+    "JoernMethodSummary",
     "JoernResult",
     "TaintFlow",
     "JoernServer",
