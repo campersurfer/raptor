@@ -411,7 +411,7 @@ generate_mcp_entry() {
     # Generate the stdio MCP entry inline. Replaces .mcpServers.sage entirely
     # so stale type/url fields from an old SSE config do not survive.
     local tmp
-    tmp=$(mktemp -p "$(dirname "$MCP")" .tmp.mcp.XXXXXX); _RAPTOR_TMP_FILES+=("$tmp")
+    tmp=$(mktemp "$(dirname "$MCP")/.tmp.mcp.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
     trap 'rm -f "$tmp"' RETURN
 
     (if [ -f "$MCP" ]; then cat "$MCP"; else echo '{}'; fi) \
@@ -463,7 +463,7 @@ remove_mcp_entry() {
     [ -f "$MCP" ] || return 0
     # Same same-fs mktemp pattern as generate_mcp_entry.
     local tmp
-    tmp=$(mktemp -p "$(dirname "$MCP")" .tmp.mcp.XXXXXX); _RAPTOR_TMP_FILES+=("$tmp")
+    tmp=$(mktemp "$(dirname "$MCP")/.tmp.mcp.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
     trap 'rm -f "$tmp"' RETURN
     jq 'del(.mcpServers.sage)' "$MCP" > "$tmp"
     mv "$tmp" "$MCP"
@@ -567,7 +567,7 @@ enable_sage_env() {
     mkdir -p "$(dirname "$SETTINGS_LOCAL")"
     local fragment='{"env":{"SAGE_ENABLED":"true"}}'
     local tmp
-    # `mktemp -p "$(dirname "$SETTINGS_LOCAL")"` so the tmp file lives
+    # `mktemp "$(dirname ...)/.tmp.XXXXXX"` so the tmp file lives
     # on the SAME filesystem as the destination. Pre-fix bare `mktemp`
     # defaulted to `/tmp` (or whatever `$TMPDIR` resolved to), which
     # on hardened systems is a tmpfs separate from the home filesystem
@@ -576,7 +576,7 @@ enable_sage_env() {
     # but containers and CI runners sometimes set 755 with operator
     # adjacency). Same-fs mktemp keeps mv atomic and inherits the
     # parent dir's permissions.
-    tmp=$(mktemp -p "$(dirname "$SETTINGS_LOCAL")" .tmp.settings.XXXXXX); _RAPTOR_TMP_FILES+=("$tmp")
+    tmp=$(mktemp "$(dirname "$SETTINGS_LOCAL")/.tmp.settings.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
     trap 'rm -f "$tmp"; umask "$_saved_umask"' RETURN
     if [ ! -f "$SETTINGS_LOCAL" ]; then
         echo "$fragment" | jq . > "$SETTINGS_LOCAL"
@@ -598,7 +598,7 @@ disable_sage_env() {
     [ -f "$SETTINGS_LOCAL" ] || return 0
     local tmp
     # Same-fs mktemp — see enable_sage_env above for the rationale.
-    tmp=$(mktemp -p "$(dirname "$SETTINGS_LOCAL")" .tmp.settings.XXXXXX); _RAPTOR_TMP_FILES+=("$tmp")
+    tmp=$(mktemp "$(dirname "$SETTINGS_LOCAL")/.tmp.settings.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
     trap 'rm -f "$tmp"' RETURN
     # Remove env.SAGE_ENABLED; if env becomes empty, drop env entirely.
     # Pre-fix the top-level "is the whole settings object now empty?"
@@ -759,7 +759,7 @@ status_sage() {
     # Memory count
     local mem_count
     mem_count=$(docker compose -f "$COMPOSE_FILE" exec -T sage \
-        sage-gui status 2>/dev/null | grep -oP 'Memories:\s*\K\d+' || true)
+        sage-gui status 2>/dev/null | sed -n 's/.*Memories:[[:space:]]*\([0-9][0-9]*\).*/\1/p' || true)
     [ -n "$mem_count" ] && echo "  Memories: $mem_count"
     # MCP entry
     if [ -f "$MCP" ] && jq -e '.mcpServers.sage' "$MCP" >/dev/null 2>&1; then
