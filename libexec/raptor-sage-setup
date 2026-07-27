@@ -817,19 +817,48 @@ verify_embeddings() {
     provider=$(docker compose -f "$COMPOSE_FILE" exec -T sage \
         printenv SAGE_EMBEDDING_PROVIDER 2>/dev/null || true)
     provider=$(printf '%s' "$provider" | tr -d '[:space:]')
-    if [ "$provider" != "ollama" ]; then
-        echo "Warning: SAGE_EMBEDDING_PROVIDER is '${provider:-unset}', expected 'ollama'." >&2
+    if [ "$provider" != "ollama" ] && [ "$provider" != "openai-compatible" ]; then
+        echo "Warning: SAGE_EMBEDDING_PROVIDER is '${provider:-unset}', expected 'ollama' or 'openai-compatible'." >&2
         echo "  Semantic recall will use hash-based fallback (keyword matching only)." >&2
         return 0
     fi
+    local model
+    model=$(docker compose -f "$COMPOSE_FILE" exec -T sage \
+        printenv SAGE_EMBEDDING_MODEL 2>/dev/null || true)
+    model=$(printf '%s' "$model" | tr -d '[:space:]')
+    model="${model:-nomic-embed-text}"
     local models
     models=$(docker compose -f "$COMPOSE_FILE" exec -T sage \
         wget -qO- http://ollama:11434/api/tags 2>/dev/null || true)
-    if printf '%s' "$models" | grep -q 'nomic-embed-text'; then
-        echo "SAGE using Ollama embeddings (nomic-embed-text)."
+    if printf '%s' "$models" | grep -q "${model%%:*}"; then
+        echo "SAGE using $provider embeddings ($model)."
     else
-        echo "Warning: nomic-embed-text not found in Ollama." >&2
-        echo "  Run: docker compose -f $COMPOSE_FILE exec ollama ollama pull nomic-embed-text" >&2
+        echo "Warning: $model not found in Ollama." >&2
+        echo "  Run: docker compose -f $COMPOSE_FILE exec ollama ollama pull $model" >&2
+    fi
+}
+
+detect_embedding_model() {
+    # Set SAGE_EMBED_MODEL and SAGE_EMBED_DIM based on GPU availability.
+    # GPU: nomic-embed-text (768d, ~0.1s/embed on GPU).
+    # CPU: snowflake-arctic-embed:m (768d, ~3s/embed on Xeon E5-2650 v2).
+    # Both are 768-dim so the SAGE vector store works with either —
+    # switching between GPU/CPU machines doesn't require a re-seed.
+    # Operator override: export SAGE_EMBED_MODEL / SAGE_EMBED_DIM before
+    # running setup to skip auto-detection entirely.
+    if [ -n "${SAGE_EMBED_MODEL:-}" ]; then
+        echo "Embedding model: $SAGE_EMBED_MODEL (operator override)"
+        export SAGE_EMBED_MODEL SAGE_EMBED_DIM="${SAGE_EMBED_DIM:-768}"
+        return 0
+    fi
+    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+        export SAGE_EMBED_MODEL="nomic-embed-text"
+        export SAGE_EMBED_DIM="768"
+        echo "GPU detected — using nomic-embed-text (768d)."
+    else
+        export SAGE_EMBED_MODEL="snowflake-arctic-embed:m"
+        export SAGE_EMBED_DIM="768"
+        echo "No GPU detected — using snowflake-arctic-embed:m (768d, CPU-optimised)."
     fi
 }
 
@@ -844,6 +873,7 @@ install_sage() {
     check_port 8090 "SAGE REST API"
     check_port 11435 "Ollama embedding server"
     migrate_sage_home_if_needed
+    detect_embedding_model
     # `--remove-orphans` so containers from a PREVIOUS
     # compose config (e.g. the operator updated
     # core/sage/docker-compose.yml between runs and the old config's
@@ -924,10 +954,25 @@ status_sage() {
     local ollama_running
     ollama_running=$(docker compose -f "$COMPOSE_FILE" ps --status running -q ollama 2>/dev/null || true)
     if [ -n "$ollama_running" ]; then
+        local embed_model
+        embed_model=$(docker compose -f "$COMPOSE_FILE" exec -T sage \
+            printenv SAGE_EMBEDDING_MODEL 2>/dev/null || true)
+        embed_model=$(printf '%s' "$embed_model" | tr -d '[:space:]')
+        embed_model="${embed_model:-nomic-embed-text}"
         local model_count
         model_count=$(docker compose -f "$COMPOSE_FILE" exec -T ollama \
-            ollama list 2>/dev/null | grep -c 'nomic-embed-text' || true)
-        echo "  Ollama: running (nomic-embed-text: ${model_count:-0} loaded)"
+            ollama list 2>/dev/null | grep -c "${embed_model%%:*}" || true)
+        echo "  Ollama: running ($embed_model: ${model_count:-0} loaded)"
+        # Report performance-relevant Ollama env vars so the operator can
+        # confirm tuning took effect after a container recreate.
+        local oenv
+        for oenv in OLLAMA_NUM_PARALLEL OLLAMA_FLASH_ATTENTION OLLAMA_KEEP_ALIVE; do
+            local oval
+            oval=$(docker compose -f "$COMPOSE_FILE" exec -T ollama \
+                printenv "$oenv" 2>/dev/null || true)
+            oval=$(printf '%s' "$oval" | tr -d '[:space:]')
+            [ -n "$oval" ] && echo "  $oenv: $oval"
+        done
     else
         echo "  Ollama: not running"
     fi

@@ -40,6 +40,42 @@ _sage_metrics: Dict[str, int] = {
     "recall_hits": 0,
 }
 
+_ollama_has_gpu: Optional[bool] = None
+
+
+def _ollama_gpu_available() -> bool:
+    """Detect GPU by checking size_vram on Ollama's loaded models.
+
+    Cached for the process lifetime. Falls back to False on any error.
+    """
+    global _ollama_has_gpu
+    if _ollama_has_gpu is not None:
+        return _ollama_has_gpu
+    try:
+        import httpx
+
+        resp = httpx.get("http://localhost:11435/api/ps", timeout=5)
+        if resp.status_code == 200:
+            for model in resp.json().get("models", []):
+                if model.get("size_vram", 0) > 0:
+                    _ollama_has_gpu = True
+                    return True
+        _ollama_has_gpu = False
+    except Exception:
+        _ollama_has_gpu = False
+    return _ollama_has_gpu
+
+
+def _recall_workers() -> int:
+    """SAGE recall concurrency: 4 with GPU, 2 without. Override: SAGE_RECALL_WORKERS."""
+    env = os.getenv("SAGE_RECALL_WORKERS")
+    if env:
+        try:
+            return max(1, min(int(env), 8))
+        except (TypeError, ValueError):
+            pass
+    return 4 if _ollama_gpu_available() else 2
+
 
 def _throttle() -> None:
     """Optional delay between SAGE proposes. Default 0.
@@ -99,6 +135,16 @@ def _get_client() -> Optional[SageClient]:
         ):
             needs_init = True
         if needs_init:
+            if not _ollama_gpu_available() and not os.getenv("SAGE_FORCE_CPU"):
+                logger.debug(
+                    "SAGE pipeline hooks disabled on CPU — too slow for "
+                    "automated use. Set SAGE_FORCE_CPU=1 to override. "
+                    "MCP tools (sage_recall etc.) still work for manual use."
+                )
+                _client = None
+                _client_none_decided_at = time.time()
+                _client_initialised = True
+                return _client
             try:
                 config = SageConfig.from_env()
                 candidate = SageClient(config)
@@ -967,7 +1013,8 @@ def store_study_concepts(
             evidence_hashes = []
             for ev in concept.evidence:
                 loc = f"{ev.file}:{ev.line}" if ev.line else ev.file
-                parts.append(f"  Evidence ({ev.type}): {loc} — {ev.observation}")
+                h_tag = f" [h={ev.hash}]" if getattr(ev, "hash", None) else ""
+                parts.append(f"  Evidence ({ev.type}): {loc}{h_tag} — {ev.observation}")
                 if ev.file:
                     evidence_files.add(ev.file)
                 if getattr(ev, "hash", None):
@@ -1139,7 +1186,7 @@ def recall_concepts_for_study(
             rows = client.query(
                 text=f"Concept [{name}]: ownership, lifetime, contracts",
                 domain_tag=domain,
-                top_k=3,
+                top_k=8,
                 min_confidence=min_confidence,
             )
             return (name, rows)
@@ -1150,10 +1197,11 @@ def recall_concepts_for_study(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     total = len(identifiers)
-    logger.info(f"SAGE: recalling prior concepts for {total} identifiers (4 workers)")
+    workers = _recall_workers()
+    logger.info(f"SAGE: recalling prior concepts for {total} identifiers ({workers} workers)")
     done = 0
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_recall_one, n): n for n in identifiers}
         for fut in as_completed(futures):
             name, rows = fut.result()

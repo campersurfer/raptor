@@ -6,6 +6,11 @@
 #   ollama  - Embedding model server (port 11435)
 #
 # Ports use non-standard mappings to avoid conflicts with local services.
+#
+# Embedding model selection (auto-detected by raptor-sage-setup):
+#   GPU:      nomic-embed-text (137M F16, 768 dims, ~0.1s/embed)
+#   CPU-only: snowflake-arctic-embed:m (110M, 768 dims, ~3s/embed)
+#   Override: export SAGE_EMBED_MODEL=<model> SAGE_EMBED_DIM=<dim>
 
 services:
   ollama:
@@ -14,6 +19,10 @@ services:
       - "11435:11434"
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KEEP_ALIVE=24h
     healthcheck:
       test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 10s
@@ -35,7 +44,7 @@ services:
       ollama:
         condition: service_healthy
     restart: "no"
-    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+    entrypoint: ["ollama", "pull", "${SAGE_EMBED_MODEL:-snowflake-arctic-embed:m}"]
     environment:
       - OLLAMA_HOST=http://ollama:11434
 
@@ -52,9 +61,10 @@ services:
         condition: service_completed_successfully
     environment:
       - SAGE_HOME=/root/.sage
-      - SAGE_EMBEDDING_PROVIDER=ollama
+      - SAGE_EMBEDDING_PROVIDER=openai-compatible
       - SAGE_EMBEDDING_BASE_URL=http://ollama:11434
-      - SAGE_EMBEDDING_MODEL=nomic-embed-text
+      - SAGE_EMBEDDING_MODEL=${SAGE_EMBED_MODEL:-snowflake-arctic-embed:m}
+      - SAGE_EMBEDDING_DIMENSION=${SAGE_EMBED_DIM:-768}
       - REST_ADDR=0.0.0.0:8080
     healthcheck:
       # ghcr.io/l33tdawg/sage images ship with wget, not curl
