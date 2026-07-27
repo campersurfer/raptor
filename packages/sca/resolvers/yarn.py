@@ -82,12 +82,18 @@ class YarnResolver:
             cmd = ["yarn", "install", "--mode=update-lockfile",
                    "--immutable-cache"]
 
+        # Berry (2.x+) removed --ignore-scripts; the equivalent is the
+        # YARN_ENABLE_SCRIPTS env var.  Set it unconditionally — harmless
+        # on classic (ignores unknown env), load-bearing on Berry.
+        env = {"YARN_ENABLE_SCRIPTS": "false"}
+
         try:
             proc = _run(
                 cmd,
                 cwd=project_dir,
                 timeout=timeout,
                 proxy_hosts=self.proxy_hosts,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return ResolverResult(

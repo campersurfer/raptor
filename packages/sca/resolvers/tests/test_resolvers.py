@@ -756,6 +756,19 @@ def test_yarn_berry_uses_update_lockfile_mode(monkeypatch, tmp_path):
     assert "--mode=update-lockfile" in install
 
 
+def test_yarn_berry_disables_scripts(monkeypatch, tmp_path):
+    from packages.sca.resolvers.yarn import YarnResolver
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    _patch_run(monkeypatch, [
+        (lambda c: c == ["yarn", "--version"], _ok_proc("3.6.0")),
+    ])
+    captured = _capture_sandbox_call(monkeypatch)
+    YarnResolver().dry_run(tmp_path)
+    _, kwargs = next((c, k) for c, k in captured if c[:2] == ["yarn", "install"])
+    env = kwargs.get("env") or {}
+    assert env.get("YARN_ENABLE_SCRIPTS") == "false"
+
+
 def test_yarn_proxy_hosts(monkeypatch, tmp_path):
     from packages.sca.resolvers.yarn import YarnResolver
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
