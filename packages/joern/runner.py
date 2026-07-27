@@ -358,7 +358,7 @@ def run_query(
     joern = _joern_path() or "joern"
 
     query_path = Path(query)
-    if len(query) < 256 and query_path.exists() and query_path.suffix == ".sc":
+    if query_path.exists() and query_path.suffix == ".sc":
         cmd = [joern, "--script", str(query_path), "--import", str(cpg.path)]
     else:
         cmd = [joern, "--script-content", query, "--import", str(cpg.path)]

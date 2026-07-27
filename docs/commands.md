@@ -367,6 +367,38 @@ Analyse existing SARIF findings with LLM without re-scanning.
 
 ---
 
+## Systematic Review
+
+### /audit
+
+Hypothesis-driven, tool-grounded security review of coverage gaps.  The LLM
+forms hypotheses about assumption violations; deterministic tools (Semgrep,
+Coccinelle, CodeQL, SMT, Joern) validate.  The LLM never directly classifies
+code as vulnerable -- tool output is the verdict.
+
+```
+/audit <target_path> [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--strategy <name>` | Filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing |
+| `--budget <N>` | Maximum functions to review (default: all gaps) |
+| `--scope <dir>` | Restrict to a subdirectory (successive scoped runs accumulate) |
+| `--out <dir>` | Output directory |
+| `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep |
+| `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
+| `--max-time <seconds>` | Wall-clock time limit |
+| `--review-passes <N>` | Independent review passes per function for self-consistency |
+| `--model <name>` | Model ID (repeatable for multi-model consensus) |
+| `--adversarial` | Adversarial reviewer that challenges positive verdicts |
+| `--no-validate` | Skip the /validate post-pass |
+
+See [audit](audit.md) for the full pipeline, gates, strategies, and tool
+menu.
+
+---
+
 ## Exploitability & Validation
 
 ### /validate
@@ -978,6 +1010,40 @@ knowledge layer.
 
 Requires the SAGE Docker sidecar.  Run `libexec/raptor-sage-setup` to
 install it.
+
+---
+
+### /review
+
+Unified operator CLI for reviewing audit state across all four layers:
+mechanical coverage, review journal, context-map structural roles, and
+operator annotations.
+
+```
+/review <file> [function]           # unified per-function view
+/review findings                    # all findings across runs
+/review gaps                        # what needs review, and why
+/review coverage [file]             # mechanical tool coverage
+/review note <file> <fn> -m "..."   # add operator note
+/review edit <file> <fn>            # edit note in $EDITOR
+/review stale                       # source-drifted operator notes
+/review notes                       # list all operator notes
+/review history <file> <fn>         # all reviews over time
+/review stats                       # entry counts, costs, coverage %
+/review compact                     # compact project journal index
+```
+
+| Subcommand | What it does |
+|------------|--------------|
+| `<file> [function]` | Unified per-function view (verdict, role, notes, tools) |
+| `findings` | All findings across runs |
+| `gaps` | What needs review, and why |
+| `coverage [file]` | Mechanical tool coverage |
+| `note <file> <fn> -m "..."` | Add operator note |
+| `stale` | Source-drifted operator notes |
+| `stats` | Entry counts, costs, coverage % |
+
+Options: `--out DIR` (explicit output directory), `--raw` (JSON output).
 
 ---
 

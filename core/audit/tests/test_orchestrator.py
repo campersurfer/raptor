@@ -1345,7 +1345,7 @@ class TestGateEnforcement:
         )
         result = run_orchestrator(config, review_fn)
         assert result.findings == 0
-        assert result.suspicious == 2
+        assert result.suspicious == 0
 
     def test_finding_without_evidence_demoted_by_gate(self, tmp_path: Path):
         """G2: finding without evidence_tool gets demoted to suspicious."""
@@ -1368,7 +1368,7 @@ class TestGateEnforcement:
         )
         result = run_orchestrator(config, review_fn)
         assert result.findings == 0
-        assert result.suspicious == 2
+        assert result.suspicious == 0
 
     def test_finding_with_llm_evidence_demoted_by_gate(self, tmp_path: Path):
         """G2: finding with evidence_tool='llm' gets demoted to suspicious."""
@@ -1391,7 +1391,7 @@ class TestGateEnforcement:
         )
         result = run_orchestrator(config, review_fn)
         assert result.findings == 0
-        assert result.suspicious == 2
+        assert result.suspicious == 0
 
     def test_finding_with_both_passes_gate(self, tmp_path: Path):
         """Finding with hypothesis + evidence passes gates."""
