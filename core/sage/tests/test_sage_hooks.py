@@ -249,8 +249,11 @@ class TestGetClientThreadSafety(unittest.TestCase):
         import core.sage.hooks as hooks
         hooks._client = None
         hooks._client_initialised = False
+        self._gpu_patch = patch("core.sage.hooks._ollama_gpu_available", return_value=True)
+        self._gpu_patch.start()
 
     def tearDown(self):
+        self._gpu_patch.stop()
         import core.sage.hooks as hooks
         hooks._client = None
         hooks._client_initialised = False
