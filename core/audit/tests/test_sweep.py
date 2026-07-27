@@ -426,6 +426,51 @@ class TestSarifCache:
         assert len(cache) == 1
 
 
+# ── Overflow-to-OOB operand extraction ──────────────────────────────
+
+
+class TestExtractOverflowToOobOperands:
+    def test_backtick_ids_preferred(self):
+        from core.audit.sweep import _extract_overflow_to_oob_operands
+        h = "The `total_records` value multiplied by `elem_size` overflows and `write_pos` indexes past the buffer"
+        count, elem, index = _extract_overflow_to_oob_operands(h, "")
+        assert count == "total_records"
+        assert elem == "elem_size"
+        assert index == "write_pos"
+
+    def test_stop_words_not_matched(self):
+        from core.audit.sweep import _extract_overflow_to_oob_operands
+        h = "The loop writes buf[write_pos] where write_pos derives from total_records and elem_size without an overflow check"
+        count, elem, index = _extract_overflow_to_oob_operands(h, "")
+        assert count != "and"
+        assert index != "writes"
+        if count is not None:
+            assert count.lower() not in {"and", "the", "from", "writes"}
+        if index is not None:
+            assert index.lower() not in {"and", "the", "from", "writes"}
+
+    def test_compound_identifier_matched(self):
+        from core.audit.sweep import _extract_overflow_to_oob_operands
+        h = "num_entries multiplied by stride_size can overflow, index_val used as array offset"
+        count, elem, index = _extract_overflow_to_oob_operands(h, "")
+        assert count == "num_entries"
+        assert elem == "stride_size"
+        assert index == "index_val"
+
+    def test_fallback_to_source_for_count(self):
+        from core.audit.sweep import _extract_overflow_to_oob_operands
+        h = "the multiplication overflows and buf_offset indexes past the buffer"
+        src = "int nelem = get_count();"
+        count, elem, index = _extract_overflow_to_oob_operands(h, src)
+        assert count == "nelem"
+
+    def test_default_elem_size(self):
+        from core.audit.sweep import _extract_overflow_to_oob_operands
+        h = "num_items multiplied by something overflows, write_offset used as index"
+        count, elem, index = _extract_overflow_to_oob_operands(h, "")
+        assert elem == "4"
+
+
 # ── Joern sweep ─────────────────────────────────────────────────────
 
 

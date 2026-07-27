@@ -708,6 +708,16 @@ def _extract_oob_operands(
     return index, size
 
 
+_PROSE_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can",
+    "cause", "check", "could", "do", "does", "for", "from", "has",
+    "have", "if", "in", "into", "is", "it", "its", "leading", "may",
+    "no", "not", "of", "on", "or", "overflow", "so", "the", "that",
+    "then", "this", "to", "via", "was", "when", "which", "will",
+    "with", "without", "would", "writes", "integer", "large", "value",
+})
+
+
 def _extract_overflow_to_oob_operands(
     hypothesis: str, source: str,
 ) -> tuple:
@@ -719,25 +729,31 @@ def _extract_overflow_to_oob_operands(
         if len(valid) == 3:
             return tuple(valid)
 
-    ids = _IDENT_RE.findall(hypothesis)
-    count_kw = ("count", "num", "nelem", "n", "nitems")
+    ids = [
+        i for i in _IDENT_RE.findall(hypothesis)
+        if i.lower() not in _PROSE_STOP_WORDS and len(i) > 1
+    ]
+    count_kw = ("count", "num", "nelem", "nitems")
     size_kw = ("size", "elem_size", "element_size", "stride", "width")
-    idx_kw = ("index", "idx", "i", "offset")
+    idx_kw = ("index", "idx", "offset")
 
     count = next(
-        (i for i in ids if any(k in i.lower() for k in count_kw)), None,
+        (i for i in ids if any(k == i.lower() or i.lower().startswith(k + "_") or i.lower().endswith("_" + k) for k in count_kw)), None,
     )
     elem = next(
-        (i for i in ids if any(k in i.lower() for k in size_kw)), None,
+        (i for i in ids if any(k == i.lower() or i.lower().startswith(k + "_") or i.lower().endswith("_" + k) for k in size_kw)), None,
     )
     index = next(
-        (i for i in ids if any(k in i.lower() for k in idx_kw)), None,
+        (i for i in ids if any(k == i.lower() or i.lower().startswith(k + "_") or i.lower().endswith("_" + k) for k in idx_kw)), None,
     )
 
     if not count:
-        src_ids = _IDENT_RE.findall(source)
+        src_ids = [
+            i for i in _IDENT_RE.findall(source)
+            if i.lower() not in _PROSE_STOP_WORDS and len(i) > 1
+        ]
         count = next(
-            (i for i in src_ids if any(k in i.lower() for k in count_kw)), None,
+            (i for i in src_ids if any(k == i.lower() or i.lower().startswith(k + "_") or i.lower().endswith("_" + k) for k in count_kw)), None,
         )
     if not elem:
         elem = "4"
