@@ -131,34 +131,35 @@ def _result_sink_uri(result: dict) -> str | None:
 
 
 def _flow_passes_through(result: dict, file_substr: str, func_name: str) -> bool:
-    """True if any codeFlow or relatedLocations step references the sanitiser."""
+    """True if any codeFlow or relatedLocations step references the sanitiser.
+
+    Matching is on file URI alone: CodeQL flow steps inside a function
+    body reference interior lines whose message/snippet text rarely
+    contains the function name (e.g. ``result = _redact_with_patterns(...)``
+    inside ``redact_secrets()``).  The ``SanitizerFP`` entry already
+    constrains to a specific ``(rule_id, file, function)`` tuple, so a
+    flow step through the sanitiser file is specific enough.  The
+    ``func_name`` is recorded for audit/documentation but not required
+    in the step's text.
+    """
     for cf in result.get("codeFlows") or []:
         for tf in cf.get("threadFlows") or []:
             for loc_wrapper in tf.get("locations") or []:
                 loc = loc_wrapper.get("location") or {}
-                if _loc_matches(loc, file_substr, func_name):
+                if _loc_file_matches(loc, file_substr):
                     return True
     for rl in result.get("relatedLocations") or []:
-        if _loc_matches(rl, file_substr, func_name):
+        if _loc_file_matches(rl, file_substr):
             return True
     return False
 
 
-def _loc_matches(loc: dict, file_substr: str, func_name: str) -> bool:
+def _loc_file_matches(loc: dict, file_substr: str) -> bool:
+    """True if the location's URI contains the file substring."""
     phys = loc.get("physicalLocation") or {}
     artifact = phys.get("artifactLocation") or {}
     uri = artifact.get("uri") or ""
-    if file_substr not in uri:
-        return False
-    msg = loc.get("message", {}).get("text", "")
-    if func_name in msg:
-        return True
-    for region_key in ("contextRegion", "region"):
-        region = phys.get(region_key) or {}
-        snippet = region.get("snippet", {}).get("text", "")
-        if func_name in snippet:
-            return True
-    return False
+    return file_substr in uri
 
 
 def _matches_known_fp(result: dict) -> KnownFP | SanitizerFP | None:

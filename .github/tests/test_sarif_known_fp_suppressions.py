@@ -154,6 +154,26 @@ class SanitizerFPTests(unittest.TestCase):
         )
         self.assertIsNone(mod._matches_known_fp(result))
 
+    def test_matches_interior_line_without_func_name(self):
+        """CodeQL flow steps inside redact_secrets() reference interior
+        lines (e.g. ``result = _redact_with_patterns(...)``) whose
+        message/snippet text doesn't contain 'redact_secrets'. The
+        matcher must still recognise the flow as passing through the
+        sanitiser file."""
+        result = _make_result_with_flow(
+            "py/clear-text-logging-sensitive-data",
+            "libexec/raptor-audit",
+            [
+                ("libexec/raptor-audit", "ctx from assemble_context"),
+                ("core/security/redaction.py", "value"),
+                ("core/security/redaction.py", "text"),
+                ("libexec/raptor-audit", "print output"),
+            ],
+        )
+        match = mod._matches_known_fp(result)
+        self.assertIsNotNone(match)
+        self.assertIsInstance(match, mod.SanitizerFP)
+
     def test_matches_via_related_locations(self):
         result = _make_result(
             "py/clear-text-logging-sensitive-data",
