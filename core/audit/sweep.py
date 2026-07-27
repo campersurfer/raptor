@@ -52,6 +52,12 @@ class SarifCache:
     hit_count: int = 0
     miss_count: int = 0
 
+    def __bool__(self) -> bool:
+        return bool(self._by_file)
+
+    def __len__(self) -> int:
+        return len(self._by_file)
+
     def lookup(
         self, file_path: str, line_start: int = 0, line_end: int = 0,
     ) -> Optional[List[Dict[str, Any]]]:
