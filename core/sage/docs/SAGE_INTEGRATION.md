@@ -193,9 +193,10 @@ existing container with the old mount, it automatically migrates the data:
    `data/cometbft/*`) abort migration — both versions preserved for
    operator review. Non-critical collisions keep the destination version.
    After collision checks, merges only files missing from the destination.
-4. Runs a post-migration regression check (`agent.key`, `data/sage.db`,
-   `data/badger/`, `data/cometbft/`) and warns if critical state is
-   missing.
+4. Verifies every critical file and directory present in the backup exists
+   byte-for-byte in the destination. Copy, comparison, merge, validation,
+   and marker failures all abort before container recreation and preserve
+   the backup for recovery.
 5. Writes a `.migration-complete` marker (only if all checks pass).
 6. Preserves the backup directory for operator verification — the script
    prints its path and the operator removes it manually after checking.

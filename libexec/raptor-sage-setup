@@ -249,25 +249,63 @@ check_wrapper() {
     fi
 }
 
+preserve_migration_backup() {
+    local backup="$1"
+    local i
+    local old_tmps=("${_RAPTOR_TMP_FILES[@]}")
+    _RAPTOR_TMP_FILES=()
+    for i in "${old_tmps[@]}"; do
+        [ "$i" = "$backup" ] || _RAPTOR_TMP_FILES+=("$i")
+    done
+}
+
+abort_sage_home_migration() {
+    local backup="$1" volume_name="$2" reason="$3"
+    preserve_migration_backup "$backup"
+    echo "Migration ABORTED: $reason" >&2
+    echo "  Old container and both state locations were preserved." >&2
+    echo "  Backup: $backup" >&2
+    [ -z "$volume_name" ] || echo "  Destination volume: $volume_name" >&2
+    echo "  Resolve the failure, then re-run setup." >&2
+}
+
 migrate_sage_home_if_needed() {
     # SAGE <= 6.6.5 used /root/.sage-gui as the volume mount. SAGE 11.x
     # expects /root/.sage. If an existing container still has the old mount
     # we migrate the data into the volume before docker compose recreates
     # the container with the new mount point.
     local cid
-    cid=$(docker compose -f "$COMPOSE_FILE" ps -aq sage 2>/dev/null || true)
+    if ! cid=$(docker compose -f "$COMPOSE_FILE" ps -aq sage 2>/dev/null); then
+        echo "raptor-sage-setup: could not inspect the existing SAGE container." >&2
+        return 1
+    fi
     [ -z "$cid" ] && return 0
 
     # Check whether the container's mounts include the old path.
     local has_old_mount
-    has_old_mount=$(docker inspect "$cid" \
+    if ! has_old_mount=$(docker inspect "$cid" \
         --format '{{range .Mounts}}{{if eq .Destination "/root/.sage-gui"}}old{{end}}{{end}}' \
-        2>/dev/null || true)
+        2>/dev/null); then
+        echo "raptor-sage-setup: could not inspect mounts for container $cid." >&2
+        return 1
+    fi
     [ "$has_old_mount" != "old" ] && return 0
 
     echo "Detected old volume mount (/root/.sage-gui). Migrating data to /root/.sage..."
 
     docker compose -f "$COMPOSE_FILE" stop sage
+
+    local volume_name
+    if ! volume_name=$(docker inspect "$cid" \
+        --format '{{range .Mounts}}{{if eq .Destination "/root/.sage-gui"}}{{.Name}}{{end}}{{end}}' \
+        2>/dev/null); then
+        echo "raptor-sage-setup: could not resolve the legacy SAGE volume." >&2
+        return 1
+    fi
+    if [ -z "$volume_name" ]; then
+        echo "raptor-sage-setup: no volume backs /root/.sage-gui; migration stopped." >&2
+        return 1
+    fi
 
     local backup
     backup=$(mktemp -d "$RAPTOR_DIR/.sage-migration.XXXXXX")
@@ -277,41 +315,59 @@ migrate_sage_home_if_needed() {
     # /root/.sage — so state may be in either location. Copy both: the volume
     # contents (ledger, old data) and the writable-layer SAGE_HOME (agent keys,
     # ledger written to the default path).
-    docker cp "$cid:/root/.sage-gui/." "$backup/" 2>/dev/null || true
-    docker cp "$cid:/root/.sage/." "$backup/" 2>/dev/null || true
-
-    local volume_name
-    volume_name=$(docker inspect "$cid" \
-        --format '{{range .Mounts}}{{if eq .Destination "/root/.sage-gui"}}{{.Name}}{{end}}{{end}}' \
-        2>/dev/null || true)
-    if [ -z "$volume_name" ]; then
-        echo "raptor-sage-setup: could not resolve volume name for /root/.sage-gui mount." >&2
-        echo "  Skipping migration — the container will start fresh." >&2
-        return 0
+    if ! docker cp "$cid:/root/.sage-gui/." "$backup/" 2>/dev/null; then
+        abort_sage_home_migration "$backup" "$volume_name" \
+            "could not copy the legacy volume state."
+        return 1
+    fi
+    if ! docker cp "$cid:/root/.sage/." "$backup/" 2>/dev/null; then
+        abort_sage_home_migration "$backup" "$volume_name" \
+            "could not copy the writable-layer SAGE_HOME."
+        return 1
     fi
 
     # Resolve the SAGE image from the compose file so we don't hardcode a version.
-    local sage_image
-    sage_image=$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null \
-        | grep -m1 'sage' || true)
-    [ -z "$sage_image" ] && sage_image="ghcr.io/l33tdawg/sage:11.11.6"
+    local compose_images sage_image=""
+    if ! compose_images=$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null); then
+        abort_sage_home_migration "$backup" "$volume_name" \
+            "could not resolve the SAGE image from the compose file."
+        return 1
+    fi
+    while IFS= read -r image; do
+        case "$image" in
+            *sage*) sage_image="$image"; break ;;
+        esac
+    done <<< "$compose_images"
+    if [ -z "$sage_image" ]; then
+        abort_sage_home_migration "$backup" "$volume_name" \
+            "the compose file did not resolve a SAGE image."
+        return 1
+    fi
 
     # Only populate destination if the backup has content.
     if [ -d "$backup" ] && [ "$(ls -A "$backup" 2>/dev/null)" ]; then
         local dest_marker
-        dest_marker=$(docker run --rm \
+        if ! dest_marker=$(docker run --rm \
             -v "$volume_name:/dest:ro" \
             --entrypoint /bin/sh \
             "$sage_image" \
-            -c 'ls -A /dest 2>/dev/null | head -1' 2>/dev/null || true)
+            -c 'ls -A /dest 2>/dev/null | head -1' 2>/dev/null); then
+            abort_sage_home_migration "$backup" "$volume_name" \
+                "could not inspect the destination volume."
+            return 1
+        fi
         if [ -z "$dest_marker" ]; then
             # Destination empty — full copy.
-            docker run --rm \
+            if ! docker run --rm \
                 -v "$backup:/src:ro" \
                 -v "$volume_name:/dest" \
                 --entrypoint /bin/sh \
                 "$sage_image" \
-                -c 'cp -a /src/. /dest/'
+                -c 'cp -a /src/. /dest/'; then
+                abort_sage_home_migration "$backup" "$volume_name" \
+                    "full-copy extraction failed."
+                return 1
+            fi
             echo "Volume migration complete (full copy)."
         else
             # Destination already has data. Detect collisions (files in
@@ -319,7 +375,7 @@ migrate_sage_home_if_needed() {
             # Uses find -exec to avoid word-splitting on filenames.
             # cmp -s: byte-for-byte comparison (POSIX, no false negatives).
             local collisions critical_collisions
-            collisions=$(docker run --rm \
+            if ! collisions=$(docker run --rm \
                 -v "$backup:/src:ro" \
                 -v "$volume_name:/dest:ro" \
                 --entrypoint /bin/sh \
@@ -329,12 +385,22 @@ migrate_sage_home_if_needed() {
                     for src_path; do
                         rel="${src_path#/src/}"
                         dst_path="/dest/$rel"
-                        if [ -f "$dst_path" ] && ! cmp -s "$src_path" "$dst_path"; then
-                            printf "%s\n" "$rel"
+                        if [ -f "$dst_path" ]; then
+                            cmp -s "$src_path" "$dst_path"
+                            cmp_status=$?
+                            case "$cmp_status" in
+                                0) ;;
+                                1) printf "%s\n" "$rel" ;;
+                                *) printf "comparison failed: %s\n" "$rel" >&2; exit "$cmp_status" ;;
+                            esac
                         fi
                     done
                 '\'' _ {} +
-                ' 2>/dev/null || true)
+                '); then
+                abort_sage_home_migration "$backup" "$volume_name" \
+                    "collision comparison failed."
+                return 1
+            fi
 
             # Classify collisions: critical state must block migration.
             # SAGE layout: agent.key, vault.key, config.yaml at root;
@@ -357,103 +423,121 @@ migrate_sage_home_if_needed() {
             fi
 
             if [ "$critical_collisions" -gt 0 ]; then
-                # Remove backup from cleanup array BEFORE returning so the
-                # EXIT trap does not delete it — the operator needs both
-                # the backup and the destination volume for manual review.
-                local i new_tmps=()
-                for i in "${_RAPTOR_TMP_FILES[@]}"; do
-                    [ "$i" = "$backup" ] || new_tmps+=("$i")
-                done
-                _RAPTOR_TMP_FILES=("${new_tmps[@]}")
-                echo "Migration ABORTED: critical state files differ between backup and destination." >&2
-                echo "  Both versions preserved for operator review." >&2
-                echo "  Backup: $backup" >&2
-                echo "  Destination volume: $volume_name" >&2
-                echo "  Resolve manually, then re-run setup." >&2
+                abort_sage_home_migration "$backup" "$volume_name" \
+                    "critical state files differ between backup and destination."
                 return 1
             fi
 
             if [ -n "$collisions" ]; then
                 echo "  Destination version kept for non-critical files. Backup preserved."
             fi
-            # Merge files missing from destination. tar -k skips existing.
-            docker run --rm \
+            # Merge paths missing from destination. Existing files were
+            # compared above and remain untouched.
+            if ! docker run --rm \
                 -v "$backup:/src:ro" \
                 -v "$volume_name:/dest" \
                 --entrypoint /bin/sh \
                 "$sage_image" \
-                -c 'cd /src && tar cf - . | (cd /dest && tar xf - -k 2>/dev/null; true)'
+                -c '
+                find /src -mindepth 1 -type d -exec sh -c '\''
+                    for src_path; do
+                        rel="${src_path#/src/}"
+                        dst_path="/dest/$rel"
+                        if [ -e "$dst_path" ] && [ ! -d "$dst_path" ]; then
+                            printf "type collision: %s\n" "$rel" >&2
+                            exit 1
+                        fi
+                        mkdir -p "$dst_path" || exit 1
+                    done
+                '\'' _ {} + &&
+                find /src -mindepth 1 ! -type d -exec sh -c '\''
+                    for src_path; do
+                        rel="${src_path#/src/}"
+                        dst_path="/dest/$rel"
+                        if [ -e "$dst_path" ] || [ -L "$dst_path" ]; then
+                            continue
+                        fi
+                        cp -a "$src_path" "$dst_path" || exit 1
+                    done
+                '\'' _ {} +
+                '; then
+                abort_sage_home_migration "$backup" "$volume_name" \
+                    "missing-file merge failed."
+                return 1
+            fi
             echo "Destination volume already has data — merged missing files only."
         fi
 
-        # Post-migration regression: verify critical state survived.
-        # SAGE stores: agent.key (root identity), vault.key (encryption),
-        # data/sage.db (off-chain SQLite), data/badger/ (on-chain state),
-        # data/cometbft/ (consensus engine).
-        local check_result
-        check_result=$(docker run --rm \
+        # Post-migration regression: every critical file present in the
+        # backup must exist byte-for-byte in the destination. Directories
+        # must also survive even when empty.
+        local validation_result
+        if ! validation_result=$(docker run --rm \
+            -v "$backup:/src:ro" \
             -v "$volume_name:/dest:ro" \
             --entrypoint /bin/sh \
             "$sage_image" \
             -c '
-            # Root agent identity
-            if [ -f /dest/agent.key ]; then
-                echo "agent-key: ok"
-            else
-                echo "agent-key: missing"
-            fi
-            # Additional identities
-            nkeys=$(find /dest/identities -name "*.key" 2>/dev/null | wc -l)
-            [ "$nkeys" -gt 0 ] && echo "identities: $nkeys found"
-            # Off-chain memory store
-            if [ -f /dest/data/sage.db ]; then
-                echo "sage-db: ok"
-            else
-                echo "sage-db: missing"
-            fi
-            # On-chain state (BadgerDB)
-            if [ -d /dest/data/badger ]; then
-                echo "badger: ok"
-            else
-                echo "badger: missing"
-            fi
-            # Consensus engine (CometBFT)
-            if [ -d /dest/data/cometbft ]; then
-                echo "cometbft: ok"
-            else
-                echo "cometbft: missing"
-            fi
-            # Vault key
-            if [ -f /dest/vault.key ]; then
-                echo "vault-key: ok"
-            fi
-            ' 2>/dev/null || true)
-        if [ -n "$check_result" ]; then
-            echo "Post-migration check:"
-            echo "$check_result" | while IFS= read -r line; do echo "  $line"; done
-            if echo "$check_result" | grep -q "agent-key: missing"; then
-                echo "  Warning: no agent.key — SAGE will generate a new identity on next start." >&2
-            fi
-            if echo "$check_result" | grep -q "sage-db: missing"; then
-                echo "  Warning: no data/sage.db — SAGE will initialise an empty memory store." >&2
-            fi
+            for rel in agent.key vault.key config.yaml data/sage.db; do
+                src_path="/src/$rel"
+                dst_path="/dest/$rel"
+                [ -f "$src_path" ] || continue
+                if [ ! -f "$dst_path" ]; then
+                    printf "missing critical file: %s\n" "$rel"
+                    exit 1
+                fi
+                if ! cmp -s "$src_path" "$dst_path"; then
+                    printf "critical file mismatch: %s\n" "$rel"
+                    exit 1
+                fi
+            done
+            for rel in data/badger data/cometbft; do
+                src_dir="/src/$rel"
+                dst_dir="/dest/$rel"
+                [ -d "$src_dir" ] || continue
+                if [ ! -d "$dst_dir" ]; then
+                    printf "missing critical directory: %s\n" "$rel"
+                    exit 1
+                fi
+                find "$src_dir" -type f -exec sh -c '\''
+                    src_dir="$1"
+                    dst_dir="$2"
+                    shift 2
+                    for src_path; do
+                        rel_path="${src_path#"$src_dir"/}"
+                        dst_path="$dst_dir/$rel_path"
+                        if [ ! -f "$dst_path" ] || ! cmp -s "$src_path" "$dst_path"; then
+                            printf "critical state mismatch: %s\n" "$rel_path"
+                            exit 1
+                        fi
+                    done
+                '\'' _ "$src_dir" "$dst_dir" {} + || exit 1
+            done
+            printf "critical state: verified\n"
+            '); then
+            [ -z "$validation_result" ] || printf "%s\n" "$validation_result" >&2
+            abort_sage_home_migration "$backup" "$volume_name" \
+                "post-migration validation failed."
+            return 1
         fi
+        echo "Post-migration check:"
+        echo "  $validation_result"
 
-        docker run --rm \
+        if ! docker run --rm \
             -v "$volume_name:/dest" \
             --entrypoint /bin/sh \
             "$sage_image" \
-            -c 'date -u > /dest/.migration-complete'
+            -c 'date -u > /dest/.migration-complete'; then
+            abort_sage_home_migration "$backup" "$volume_name" \
+                "could not write the migration completion marker."
+            return 1
+        fi
     fi
 
     # Preserve backup so the operator can verify before removing.
     if [ -d "$backup" ] && [ "$(ls -A "$backup" 2>/dev/null)" ]; then
         # Remove from cleanup trap so it survives script exit.
-        local i new_tmps=()
-        for i in "${_RAPTOR_TMP_FILES[@]}"; do
-            [ "$i" = "$backup" ] || new_tmps+=("$i")
-        done
-        _RAPTOR_TMP_FILES=("${new_tmps[@]}")
+        preserve_migration_backup "$backup"
         echo "Migration backup preserved at: $backup"
         echo "  Remove manually after verifying: rm -rf $backup"
     else
