@@ -296,7 +296,13 @@ class VulnerabilityContext:
         if not self.file_path:
             return None
         clean_path = self.file_path.replace("file://", "")
-        return self.repo_path / clean_path
+        resolved = (self.repo_path / clean_path).resolve()
+        try:
+            resolved.relative_to(self.repo_path.resolve())
+        except ValueError:
+            logger.warning("Path traversal blocked: %s", self.file_path)
+            return None
+        return resolved
 
     def read_vulnerable_code(self) -> bool:
         """Read the actual vulnerable code from the file."""
