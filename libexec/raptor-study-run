@@ -74,18 +74,32 @@ def main() -> int:
     from packages.llm_analysis import get_client
 
     if parsed.model:
-        model_name = parsed.model
-        if "gemini" in model_name:
-            provider = "gemini"
-        elif "gpt" in model_name or "o1" in model_name or "o3" in model_name:
-            provider = "openai"
-        elif "mistral" in model_name or "codestral" in model_name:
-            provider = "mistral"
-        else:
-            provider = "anthropic"
-        client = get_client(prefer=provider)
-        if client and client.config.primary_model:
-            client.config.primary_model.model_name = model_name
+        from core.llm.config import (
+            LLMConfig, get_configured_models, model_config_from_entry,
+        )
+        from core.security.llm_family import bare_model_id, provider_of
+
+        name = parsed.model
+        provider = provider_of(name)
+        bare = bare_model_id(name)
+        entry = {"model": bare, "provider": provider}
+        for cfg_entry in get_configured_models():
+            if provider and cfg_entry.get("provider") != provider:
+                continue
+            cfg_name = cfg_entry.get("model")
+            cfg_alias = cfg_entry.get("_configured_model")
+            if (cfg_name == bare or cfg_alias == bare) and cfg_entry.get("api_key"):
+                entry["api_key"] = cfg_entry["api_key"]
+                break
+        mc = model_config_from_entry(entry)
+        if not mc.api_key:
+            print(
+                f"study-run: no API key for --model {name}\n"
+                f"  Set the provider env var or add the key to models.json",
+                file=sys.stderr,
+            )
+            return 1
+        client = get_client(config=LLMConfig(primary_model=mc, fallback_models=[]))
     else:
         client = get_client()
 
