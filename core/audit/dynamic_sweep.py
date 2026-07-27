@@ -55,7 +55,7 @@ def should_run_dynamic(
         return False
 
     evidence_tool = getattr(outcome, "evidence_tool", "")
-    if evidence_tool == "dynamic":
+    if evidence_tool and evidence_tool.startswith("dynamic"):
         return False
 
     file_path = getattr(outcome, "file", "")
@@ -282,9 +282,9 @@ def _run_c_harness(
         sanitizer_hit = _has_sanitizer_output(combined_output)
 
         if sanitizer_hit:
-            strength = "confirmed"
+            strength = "sanitizer"
         elif crashed:
-            strength = "confirmed"
+            strength = "crash"
         else:
             strength = "inconclusive"
 
@@ -363,8 +363,8 @@ def _run_python_harness(
 
         has_unexpected = "UNEXPECTED_EXCEPTION" in combined_output
 
-        if crashed or has_unexpected:
-            strength = "confirmed"
+        if has_unexpected or crashed:
+            strength = "crash"
         else:
             strength = "inconclusive"
 

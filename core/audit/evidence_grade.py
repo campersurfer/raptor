@@ -69,7 +69,7 @@ _SOURCE_CONFIDENCE: Dict[EvidenceSource, Confidence] = {
     EvidenceSource.LLM_CORROBORATED: Confidence.MEDIUM,
     EvidenceSource.DYNAMIC_SANITIZER: Confidence.HIGH,
     EvidenceSource.DYNAMIC_FRIDA: Confidence.HIGH,
-    EvidenceSource.DYNAMIC_CRASH: Confidence.HIGH,
+    EvidenceSource.DYNAMIC_CRASH: Confidence.MEDIUM,
 }
 
 _CONFIDENCE_PRIORITY: Dict[Confidence, int] = {
@@ -327,6 +327,11 @@ def grade_review_result(
         items.append(grade_evidence(
             EvidenceSource.DYNAMIC_SANITIZER,
             "confirmed by dynamic sanitizer",
+        ))
+    elif evidence_tool == "dynamic:crash":
+        items.append(grade_evidence(
+            EvidenceSource.DYNAMIC_CRASH,
+            "non-zero exit without sanitizer confirmation",
         ))
     elif evidence_tool == "frida":
         items.append(grade_evidence(

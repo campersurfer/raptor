@@ -906,8 +906,10 @@ def review_one_function(
             from .dynamic_sweep import should_run_dynamic, run_dynamic_sweep
             if should_run_dynamic(outcome, config):
                 dyn_result = run_dynamic_sweep(outcome, ctx, config)
-                if dyn_result and dyn_result.evidence_strength == "confirmed":
+                if dyn_result and dyn_result.evidence_strength == "sanitizer":
                     outcome.evidence_tool = "dynamic"
+                elif dyn_result and dyn_result.evidence_strength == "crash":
+                    outcome.evidence_tool = "dynamic:crash"
                 elif dyn_result and dyn_result.evidence_strength == "refuted":
                     outcome = _demote_outcome(outcome, "[dynamic: refuted]")
         except Exception:
@@ -916,6 +918,10 @@ def review_one_function(
                 gap.get("file"), gap.get("name"), exc_info=True,
             )
 
+        # Frida runs as a second opinion when the dynamic sweep produced only
+        # a bare crash ("dynamic:crash") — that's weak evidence and Frida may
+        # upgrade it to runtime-confirmed. Skip only when the sanitiser already
+        # confirmed ("dynamic").
         if outcome.status == "finding" and outcome.evidence_tool != "dynamic":
             try:
                 from .frida_observe import should_run_frida, run_frida_observation
@@ -7494,11 +7500,12 @@ def _check_layer_disagreement(outcome, ctx, gap):
     )
 
     dynamic_claim = None
-    if outcome.evidence_tool == "dynamic":
+    et = outcome.evidence_tool or ""
+    if et.startswith("dynamic"):
         dynamic_claim = LayerClaim(
             layer=LayerVerdict.DYNAMIC,
             reachable=True,
-            has_flow=True,
+            has_flow=et == "dynamic",
         )
 
     language = gap.get("language", "")
