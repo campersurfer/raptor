@@ -344,6 +344,7 @@ class SageClient:
                 embedding=embedding,
                 domain_tag=domain_tag,
                 top_k=top_k,
+                status_filter="committed",
             )
             if min_confidence is not None:
                 query_kwargs["min_confidence"] = min_confidence

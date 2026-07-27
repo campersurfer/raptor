@@ -130,7 +130,8 @@ def _restore_sdk(client_mod, snapshot):
 class TestSageClientWithMock(unittest.TestCase):
     """Test async methods with mocked sync SDK."""
 
-    def test_query_returns_results(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_query_returns_results(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
@@ -158,7 +159,8 @@ class TestSageClientWithMock(unittest.TestCase):
         finally:
             _restore_sdk(client_mod, snapshot)
 
-    def test_query_back_to_back_uses_cached_sdk_client(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_query_back_to_back_uses_cached_sdk_client(self, _mock_direct):
         """Regression: two queries in the same process must both succeed.
 
         The original async-based wrapper silently failed on the second
@@ -212,7 +214,8 @@ class TestSageClientWithMock(unittest.TestCase):
 class TestSageClientTagsAndMinConfidence(unittest.TestCase):
     """SAGE 11.9.2 features: tags on propose, min_confidence on query."""
 
-    def test_propose_passes_tags_when_provided(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_propose_passes_tags_when_provided(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
@@ -231,7 +234,8 @@ class TestSageClientTagsAndMinConfidence(unittest.TestCase):
         finally:
             _restore_sdk(client_mod, snapshot)
 
-    def test_propose_omits_tags_when_none(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_propose_omits_tags_when_none(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
@@ -250,7 +254,8 @@ class TestSageClientTagsAndMinConfidence(unittest.TestCase):
         finally:
             _restore_sdk(client_mod, snapshot)
 
-    def test_query_passes_min_confidence_when_provided(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_query_passes_min_confidence_when_provided(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
@@ -270,7 +275,8 @@ class TestSageClientTagsAndMinConfidence(unittest.TestCase):
         finally:
             _restore_sdk(client_mod, snapshot)
 
-    def test_query_omits_min_confidence_when_none(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_query_omits_min_confidence_when_none(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
@@ -396,7 +402,8 @@ class TestSageClientEgressProxyRegistration(unittest.TestCase):
 class TestSageClientWithFakeSdk(unittest.TestCase):
     """Coverage without mock objects: deterministic fake SDK."""
 
-    def test_propose_and_query_with_fake_sdk(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_propose_and_query_with_fake_sdk(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
