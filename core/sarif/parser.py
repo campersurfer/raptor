@@ -36,9 +36,9 @@ def _path_from_locations(
     }
     for idx, loc_wrapper in enumerate(locations):
         location = loc_wrapper.get("location", {})
-        physical_loc = location.get("physicalLocation", {})
-        artifact = physical_loc.get("artifactLocation", {})
-        region = physical_loc.get("region", {})
+        physical_loc = location.get("physicalLocation") or {}
+        artifact = physical_loc.get("artifactLocation") or {}
+        region = physical_loc.get("region") or {}
         # Untrusted scanner-supplied text — escape control / format
         # bytes before surfacing into the operator-facing dataflow
         # path. A scanner producing `message.text = "evil\x1b[2J"`
@@ -50,7 +50,7 @@ def _path_from_locations(
             location.get("message", {}).get("text", "") or ""
         )
         snippet = escape_nonprintable(
-            region.get("snippet", {}).get("text", "") or ""
+            (region.get("snippet") or {}).get("text", "") or ""
         )
         step_info = {
             "file": artifact.get("uri", ""),
@@ -165,8 +165,8 @@ def _result_key(
     """
     rule_id = result.get("ruleId", "")
     locs = result.get("locations") or [{}]
-    phys = locs[0].get("physicalLocation", {}) if locs else {}
-    uri = phys.get("artifactLocation", {}).get("uri", "")
+    phys = (locs[0].get("physicalLocation") or {}) if locs else {}
+    uri = (phys.get("artifactLocation") or {}).get("uri", "")
     region = phys.get("region", {}) or {}
     line = region.get("startLine", 0)
     end_line = region.get("endLine", line)  # multi-line spans differ
@@ -550,10 +550,10 @@ def parse_sarif_findings(sarif_path: Path) -> List[Dict[str, Any]]:
                 or sha
             )
 
-            loc = (result.get("locations") or [{}])[0].get("physicalLocation", {})
-            artifact = loc.get("artifactLocation", {})
-            region = loc.get("region", {})
-            snippet = region.get("snippet", {}).get("text", "")
+            loc = (result.get("locations") or [{}])[0].get("physicalLocation") or {}
+            artifact = loc.get("artifactLocation") or {}
+            region = loc.get("region") or {}
+            snippet = (region.get("snippet") or {}).get("text", "")
 
             # Extract dataflow path if present
             code_flows = result.get("codeFlows") or []
