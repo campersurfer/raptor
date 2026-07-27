@@ -136,6 +136,26 @@ SANITIZER_FP_RULES: tuple[SanitizerFP, ...] = (
 )
 
 
+def _validate_tables() -> None:
+    """Reject overly broad suppression entries at import time."""
+    for entry in KNOWN_FP_RULES:
+        for prefix in entry.sink_file_prefixes:
+            if "/" not in prefix:
+                raise ValueError(
+                    f"KnownFP sink_file_prefix {prefix!r} is too broad — "
+                    f"must contain at least one '/' (e.g. 'core/sandbox/context.py')"
+                )
+    for entry in SANITIZER_FP_RULES:
+        if "/" not in entry.sanitizer_file:
+            raise ValueError(
+                f"SanitizerFP sanitizer_file {entry.sanitizer_file!r} is too broad — "
+                f"must contain at least one '/' (e.g. 'core/security/redaction.py')"
+            )
+
+
+_validate_tables()
+
+
 def _result_sink_uri(result: dict) -> str | None:
     """Return the sink file URI, or None if the result has no location."""
     locations = result.get("locations") or []

@@ -379,6 +379,16 @@ class TableShapeTests(unittest.TestCase):
     def test_table_nonempty(self):
         self.assertTrue(mod.KNOWN_FP_RULES)
 
+    def test_known_fp_count_pinned(self):
+        """Adding a KnownFP entry requires updating this count.
+        If this test fails, you added a suppression — update the
+        expected count after confirming the new entry is justified."""
+        self.assertEqual(len(mod.KNOWN_FP_RULES), 3)
+
+    def test_sanitizer_fp_count_pinned(self):
+        """Adding a SanitizerFP entry requires updating this count."""
+        self.assertEqual(len(mod.SANITIZER_FP_RULES), 1)
+
     def test_every_entry_has_justification(self):
         for entry in mod.KNOWN_FP_RULES:
             self.assertTrue(
@@ -398,6 +408,23 @@ class TableShapeTests(unittest.TestCase):
             self.assertTrue(
                 entry.sink_file_prefixes,
                 msg=f"empty sink_file_prefixes on {entry.rule_id}",
+            )
+
+    def test_no_overly_broad_prefixes(self):
+        """Every sink_file_prefix must contain '/' — bare names like
+        'core' would suppress entire directory trees."""
+        for entry in mod.KNOWN_FP_RULES:
+            for prefix in entry.sink_file_prefixes:
+                self.assertIn(
+                    "/", prefix,
+                    msg=f"prefix {prefix!r} is too broad (no '/')",
+                )
+
+    def test_no_overly_broad_sanitizer_files(self):
+        for entry in mod.SANITIZER_FP_RULES:
+            self.assertIn(
+                "/", entry.sanitizer_file,
+                msg=f"sanitizer_file {entry.sanitizer_file!r} is too broad",
             )
 
 
