@@ -10,7 +10,7 @@ except ImportError:
     _HAS_TS = False
 pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
-from core.audit.fail_open_detector import (
+from core.audit.fail_open_detector import (  # noqa: E402
     FailOpenPattern,
     detect_fail_open_patterns,
 )

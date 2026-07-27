@@ -9,7 +9,7 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
 
-from core.audit.condition_cpg import (
+from core.audit.condition_cpg import (  # noqa: E402
     CallerGuard,
     CpgGuardResult,
     ExposureContext,
@@ -26,7 +26,7 @@ from core.audit.condition_cpg import (
     check_interprocedural_guards,
     verify_guard_relevance_cpg,
 )
-from core.audit.condition_extraction import GuardCondition, SinkGuard
+from core.audit.condition_extraction import GuardCondition, SinkGuard  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

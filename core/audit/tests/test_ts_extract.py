@@ -10,7 +10,7 @@ except ImportError:
     _HAS_TS = False
 pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
-from core.audit.ts_extract import (
+from core.audit.ts_extract import (  # noqa: E402
     CallChain,
     CallStep,
     DispatchTable,

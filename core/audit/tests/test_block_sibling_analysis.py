@@ -8,9 +8,9 @@ except ImportError:
     _HAS_TS = False
 pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
-import textwrap
+import textwrap  # noqa: E402
 
-from core.audit.block_sibling_analysis import (
+from core.audit.block_sibling_analysis import (  # noqa: E402
     BlockSiblingFinding,
     detect_block_sibling_asymmetries,
     format_block_sibling_findings_for_prompt,

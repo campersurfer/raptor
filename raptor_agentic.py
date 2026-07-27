@@ -1141,9 +1141,9 @@ Examples:
     parser.add_argument("--no-exploits", action="store_true", help="Skip exploit generation")
     parser.add_argument("--no-patches", action="store_true", help="Skip patch generation")
     parser.add_argument(
-        "--no-annotations",
+        "--no-journal",
         action="store_true",
-        help="Skip per-finding annotation emission (default: emit)",
+        help="Skip per-finding journal emission (default: emit)",
     )
     parser.add_argument(
         "--max-cost-usd", dest="max_cost_usd", type=float, default=None,
@@ -1911,14 +1911,44 @@ Examples:
             scan_inventory = load_json(_checklist_path)
         except Exception:
             pass
+    def _try_cached_joern(target: Path, run_out_dir: Path):
+        """Start a Joern server only if a cached CPG exists for this project."""
+        try:
+            from packages.joern.prereqs import is_available
+            if not is_available():
+                return None
+            project_dir = run_out_dir.parent
+            if project_dir == run_out_dir:
+                return None
+            from packages.joern.runner import load_cached_cpg
+            cpg = load_cached_cpg(target, project_dir)
+            if cpg is None:
+                return None
+            from packages.joern.server import JoernServer
+            srv = JoernServer()
+            srv.start()
+            srv.import_cpg(cpg.path)
+            logger.info("Joern server started with cached CPG for prepass")
+            return srv
+        except Exception:                           # noqa: BLE001
+            logger.debug("Joern cached CPG not available for prepass",
+                         exc_info=True)
+            return None
+
     try:
         from core.orchestration import run_reachability_prepass
-        reachability_prepass_result = run_reachability_prepass(
-            target=original_repo_path,
-            agentic_out_dir=out_dir,
-            allow_unreachable=getattr(args, "allow_unreachable", False),
-            inventory=scan_inventory,
-        )
+        joern_srv = _try_cached_joern(original_repo_path, out_dir)
+        try:
+            reachability_prepass_result = run_reachability_prepass(
+                target=original_repo_path,
+                agentic_out_dir=out_dir,
+                allow_unreachable=getattr(args, "allow_unreachable", False),
+                joern_server=joern_srv,
+                inventory=scan_inventory,
+            )
+        finally:
+            if joern_srv is not None:
+                joern_srv.stop()
         if reachability_prepass_result.ran:
             logger.info(
                 f"Reachability pre-pass marked "
@@ -2621,10 +2651,13 @@ Examples:
         if (out_dir / "checklist.json").exists():
             analysis_cmd.extend(["--checklist", str(out_dir / "checklist.json")])
 
-        # Forward --no-annotations opt-out so operators who don't
-        # want annotation side effects (CI / scratch runs) can suppress.
-        if args.no_annotations:
-            analysis_cmd.append("--no-annotations")
+        # Forward --no-journal opt-out so operators who don't
+        # want journal side effects (CI / scratch runs) can suppress.
+        if args.no_journal:
+            analysis_cmd.append("--no-journal")
+        precall_path = out_dir / "sage_precall_scan.json"
+        if precall_path.exists():
+            analysis_cmd.extend(["--sage-precall", str(precall_path)])
         if args.no_exploits:
             analysis_cmd.append("--no-exploits")
         if args.no_patches:

@@ -10,7 +10,7 @@ except ImportError:
     _HAS_TS = False
 pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
-from core.audit.condition_extraction import (
+from core.audit.condition_extraction import (  # noqa: E402
     GuardCondition,
     SinkGuard,
     extract_guards_for_files,
@@ -287,7 +287,7 @@ class TestGoExtraction:
         source = """\
 package main
 
-import "os/exec"
+import "os/exec"  # noqa: E402
 
 func runCmd(cmd string, authorized bool) error {
     if !authorized {

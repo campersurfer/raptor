@@ -10,7 +10,7 @@ except ImportError:
     _HAS_TS = False
 pytestmark = pytest.mark.skipif(not _HAS_TS, reason="tree-sitter not installed")
 
-from core.audit.sentinel_collapse import detect_sentinel_collapses
+from core.audit.sentinel_collapse import detect_sentinel_collapses  # noqa: E402
 
 
 class TestFalsyCoercion:
