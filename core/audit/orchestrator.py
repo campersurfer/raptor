@@ -7672,10 +7672,13 @@ def _run_dark_verification(
     config: OrchestratorConfig,
     llm_client: Optional[Callable] = None,
 ) -> None:
-    """Run dark-verification pass on dormant outcomes.
+    """Run dark-verification pass on eligible outcomes.
 
-    For each outcome with status ``"dark"``, asks the LLM to generate
-    a witness specification, then executes the witness mechanically.
+    Eligible outcomes are those with status ``"dark"`` (no tool could
+    confirm or refute) OR whose CWE class has ``dark_verify: True`` in
+    the dispatch table (auth/biz-logic CWEs where witness execution is
+    the primary grounding mechanism).
+
     Confirmed witnesses upgrade the outcome to ``"finding"``; refuted
     witnesses downgrade to ``"clean"``.
     """
@@ -7689,7 +7692,18 @@ def _run_dark_verification(
         parse_witness_response,
     )
 
-    dark_outcomes = [o for o in result.outcomes if o.status == "dark"]
+    try:
+        from .cwe_dispatch import dark_verify_applicable
+    except ImportError:
+        dark_verify_applicable = lambda _cwe: False  # noqa: E731
+
+    def _eligible(o: ReviewOutcome) -> bool:
+        if o.status == "dark":
+            return True
+        cwe = (o.review_result or {}).get("cwe_class") or (o.review_result or {}).get("cwe") or ""
+        return bool(cwe) and dark_verify_applicable(cwe)
+
+    dark_outcomes = [o for o in result.outcomes if _eligible(o)]
     if not dark_outcomes:
         return
 
@@ -7725,16 +7739,27 @@ def _run_dark_verification(
 
         verify_result = execute_witness(spec, config.target_path)
 
+        prior = outcome.status
         if verify_result.verdict == "confirmed":
             outcome.status = "finding"
             outcome.evidence_tool = "dark_verify:confirmed"
-            result.findings += 1
-            result.dormant -= 1
+            if prior != "finding":
+                result.findings += 1
+                if prior == "dark":
+                    result.dormant -= 1
+                elif prior == "suspicious":
+                    result.suspicious -= 1
         elif verify_result.verdict == "refuted":
             outcome.status = "clean"
             outcome.evidence_tool = "dark_verify:refuted"
-            result.clean += 1
-            result.dormant -= 1
+            if prior != "clean":
+                result.clean += 1
+                if prior == "dark":
+                    result.dormant -= 1
+                elif prior == "suspicious":
+                    result.suspicious -= 1
+                elif prior == "finding":
+                    result.findings -= 1
 
         records.append({
             "file": outcome.file,

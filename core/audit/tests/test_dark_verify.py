@@ -1898,3 +1898,52 @@ class TestRunDarkVerification:
         assert len(records) == 1
         assert records[0]["status"] == "finding"
         assert records[0]["evidence_tool"] == "dark_verify:confirmed"
+
+    def test_cwe_dispatch_eligibility(self, tmp_path):
+        """A non-dark outcome with an auth CWE (dark_verify: True in
+        dispatch) is eligible for dark verification."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig, _run_dark_verification,
+        )
+        src = tmp_path / "auth.py"
+        src.write_text(textwrap.dedent("""\
+            def check_login(user, pw):
+                return user == "admin"
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "auth.py", "check_login", status="suspicious",
+            hypothesis="authentication bypass",
+        )
+        outcome.review_result = {"cwe_class": "CWE-287"}
+        result = self._make_result([outcome])
+        result.suspicious = 1
+
+        llm_response = json.dumps({
+            "module_path": "auth",
+            "function": "check_login",
+            "args": ["admin", "wrong"],
+            "expected_return": True,
+            "rationale": "password not checked",
+        })
+
+        _run_dark_verification(result, config, llm_client=lambda s, u: llm_response)
+        assert result.outcomes[0].status == "finding"
+        assert result.outcomes[0].evidence_tool == "dark_verify:confirmed"
+        assert result.findings == 1
+        assert result.suspicious == 0
+
+    def test_non_auth_cwe_non_dark_skipped(self, tmp_path):
+        """A suspicious outcome with a non-auth CWE is not eligible."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig, _run_dark_verification,
+        )
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "buf.c", "copy_data", status="suspicious",
+        )
+        outcome.review_result = {"cwe_class": "CWE-120"}
+        result = self._make_result([outcome])
+        result.suspicious = 1
+        _run_dark_verification(result, config, llm_client=lambda s, u: "{}")
+        assert result.outcomes[0].status == "suspicious"

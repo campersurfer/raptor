@@ -133,6 +133,40 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Authentication / authorisation
+    "CWE-287": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": None,
+        "sinks": [
+            "authenticate", "verify_password", "check_credentials",
+            "login", "verify_token", "jwt.decode", "check_auth",
+        ],
+        "dark_verify": True,
+    },
+    "CWE-862": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": None,
+        "sinks": [
+            "authorize", "check_permission", "has_role", "is_admin",
+            "check_access", "require_auth", "can_access",
+        ],
+        "dark_verify": True,
+    },
+    "CWE-863": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": None,
+        "sinks": [
+            "authorize", "check_permission", "has_role", "is_admin",
+            "check_access", "require_auth", "can_access",
+        ],
+        "dark_verify": True,
+    },
 }
 
 
@@ -185,3 +219,11 @@ def joern_applicable(cwe: str) -> bool:
     if entry is None:
         return False
     return bool(entry.get("joern")) and bool(entry.get("sinks"))
+
+
+def dark_verify_applicable(cwe: str) -> bool:
+    """Return whether dark-verify witness execution is the primary grounding for a CWE."""
+    entry = lookup(cwe)
+    if entry is None:
+        return False
+    return bool(entry.get("dark_verify"))
