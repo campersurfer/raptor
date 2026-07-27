@@ -2198,9 +2198,23 @@ def _run_audit_body(
                     analyzer = CompositionalAnalyzer(call_graphs)
                     def bypass_runner(assumptions):
                         findings = []
+                        seen: set[tuple[str, str, str]] = set()
                         for a in assumptions:
                             findings.extend(analyzer.detect_bypasses(a))
-                        return findings
+                            findings.extend(analyzer.detect_ordering_violations(a))
+                            findings.extend(analyzer.detect_type_hierarchy_bypasses(a))
+                        widened: list = []
+                        for f in findings:
+                            if f.via_intermediate:
+                                widened.extend(analyzer.widen_from_finding(f))
+                        findings.extend(widened)
+                        deduped: list = []
+                        for f in findings:
+                            key = (f.caller_file, f.caller_function, f.missing_enforcer)
+                            if key not in seen:
+                                seen.add(key)
+                                deduped.append(f)
+                        return deduped
             except Exception:
                 logger.debug("IRIS bypass analyzer init failed", exc_info=True)
 
@@ -2295,6 +2309,30 @@ def _run_audit_body(
             post_loop_findings.append(tf.to_dict())
         for tf in check_config_dependent(gaps):
             post_loop_findings.append(tf.to_dict())
+
+        try:
+            from core.iris.synthesise import stored_taint_assumptions, config_provenance_assumptions
+            heuristic_assumptions = stored_taint_assumptions(gaps) + config_provenance_assumptions(gaps)
+            # Only pass assumptions that have enforcers — without enforced_by,
+            # detect_bypasses flags every caller as "unsafe" (false positive flood).
+            heuristic_with_enforcers = [a for a in heuristic_assumptions if a.enforced_by]
+            if heuristic_with_enforcers and bypass_runner is not None:
+                heuristic_bypasses = bypass_runner(heuristic_with_enforcers)
+                for bf in heuristic_bypasses:
+                    post_loop_findings.append({
+                        "check": f"iris_{bf.assumption.bug_class or 'bypass'}",
+                        "title": f"IRIS bypass: {bf.caller_function} skips {bf.missing_enforcer}",
+                        "description": (
+                            f"Caller {bf.caller_file}:{bf.caller_function} reaches "
+                            f"{bf.assumption.target} without {bf.missing_enforcer}"
+                        ),
+                        "file": bf.caller_file,
+                        "function": bf.caller_function,
+                        "cwe": bf.assumption.bug_class or "",
+                        "confidence": "medium",
+                    })
+        except Exception:
+            logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
 
         from .negative_space import (
             check_deployment_assumptions,
