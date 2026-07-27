@@ -153,9 +153,12 @@ def _loc_matches(loc: dict, file_substr: str, func_name: str) -> bool:
     msg = loc.get("message", {}).get("text", "")
     if func_name in msg:
         return True
-    ll = phys.get("contextRegion") or phys.get("region") or {}
-    snippet = ll.get("snippet", {}).get("text", "")
-    return func_name in snippet
+    for region_key in ("contextRegion", "region"):
+        region = phys.get(region_key) or {}
+        snippet = region.get("snippet", {}).get("text", "")
+        if func_name in snippet:
+            return True
+    return False
 
 
 def _matches_known_fp(result: dict) -> KnownFP | SanitizerFP | None:
