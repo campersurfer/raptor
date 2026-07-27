@@ -40,6 +40,7 @@ class WebScanner:
         max_depth: int = 3,
         max_pages: int = 100,
         ffuf_config: Optional[FfufConfig] = None,
+        block_private_ips: bool = True,
     ):
         self.base_url = base_url
         self.llm = llm
@@ -48,7 +49,10 @@ class WebScanner:
         self.ffuf_config = ffuf_config
 
         # Initialize components
-        self.client = WebClient(base_url, verify_ssl=verify_ssl, reveal_secrets=reveal_secrets)
+        self.client = WebClient(
+            base_url, verify_ssl=verify_ssl, reveal_secrets=reveal_secrets,
+            block_private_ips=block_private_ips,
+        )
         self.crawler = WebCrawler(self.client, max_depth=max_depth, max_pages=max_pages)
         self.fuzzer = WebFuzzer(self.client, llm) if llm else None
         self.ffuf = FfufRunner(base_url, out_dir, reveal_secrets=reveal_secrets) if ffuf_config else None
