@@ -909,3 +909,64 @@ def test_codeql_cli_wires_binary_flag_to_raptor_config() -> None:
         "binary_oracle_cli should declare --binary argparse arg")
     assert "BINARY_ORACLE_PATHS" in helper_src, (
         "binary_oracle_cli should mutate RaptorConfig.BINARY_ORACLE_PATHS")
+
+
+def test_extract_verdicts_from_enriched_inventory():
+    from core.analysis.binary_oracle import extract_verdicts
+
+    inventory = {
+        "files": [
+            {
+                "path": "src/main.c",
+                "language": "c",
+                "items": [
+                    {
+                        "name": "parse_input",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {"classification": "absent"},
+                        },
+                    },
+                    {
+                        "name": "process",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {"classification": "symbol_present"},
+                        },
+                    },
+                    {
+                        "name": "BUFSIZE",
+                        "kind": "macro",
+                        "metadata": {},
+                    },
+                ],
+            },
+            {
+                "path": "src/util.py",
+                "language": "python",
+                "items": [
+                    {"name": "helper", "kind": "function", "metadata": {}},
+                ],
+            },
+        ],
+    }
+
+    verdicts = extract_verdicts(inventory)
+    assert verdicts == {"parse_input": "absent", "process": "symbol_present"}
+
+
+def test_extract_verdicts_empty_inventory():
+    from core.analysis.binary_oracle import extract_verdicts
+
+    assert extract_verdicts({}) == {}
+    assert extract_verdicts({"files": []}) == {}
+
+
+def test_raptor_audit_wires_binary_args():
+    """raptor-audit ``run`` subparser must include binary oracle flags."""
+    repo_root = Path(__file__).resolve().parents[3]
+    audit_src = (repo_root / "libexec" / "raptor-audit").read_text()
+    assert "add_binary_args" in audit_src, (
+        "raptor-audit should wire binary oracle CLI flags via add_binary_args")
+    assert "binary_verdicts" in audit_src, (
+        "raptor-audit should pass binary_verdicts to OrchestratorConfig")

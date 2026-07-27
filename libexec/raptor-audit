@@ -966,6 +966,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     except (ImportError, Exception):
         pass
 
+    # --- binary oracle ---
+    binary_verdicts = None
+    from core.analysis.binary_oracle_cli import apply_to_config as _bo_apply
+    binary_paths = _bo_apply(args, target_path)
+    if binary_paths:
+        try:
+            checklist_data = json.loads(checklist_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            checklist_data = None
+        if checklist_data:
+            from core.analysis.binary_oracle import (
+                enrich_inventory_with_binary_oracle,
+                extract_verdicts,
+            )
+            bo_counts = enrich_inventory_with_binary_oracle(
+                checklist_data, binary_paths,
+            )
+            binary_verdicts = extract_verdicts(checklist_data)
+            if binary_verdicts:
+                print(
+                    f"Binary oracle: {bo_counts.get('classified', 0)} classified "
+                    f"({bo_counts.get('absent', 0)} absent, "
+                    f"{bo_counts.get('symbol_present', 0)} present)",
+                    flush=True,
+                )
+
     models = args.model or []
     config = OrchestratorConfig(
         target_path=target_path,
@@ -985,6 +1011,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         multi_model=len(models) > 1,
         adversarial=args.adversarial,
         max_propagation_depth=args.max_propagation_depth,
+        binary_verdicts=binary_verdicts,
     )
 
     # --- progress callback ---
@@ -1215,6 +1242,8 @@ def main() -> int:
                        help="Number of independent review passes per function (self-consistency)")
     p_run.add_argument("--subsystem-depth", type=int, default=0,
                        help="Directory grouping depth for subsystem-ordered review")
+    from core.analysis.binary_oracle_cli import add_binary_args
+    add_binary_args(p_run, include_edges=False)
 
     args = parser.parse_args()
 
