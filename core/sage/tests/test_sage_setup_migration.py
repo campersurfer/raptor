@@ -33,6 +33,7 @@ class TestSageSetupMigration(unittest.TestCase):
         )
 
         self.docker_log = self.checkout / "docker.log"
+        self.docker_stopped = self.checkout / "docker-stopped"
         self._write_executable(
             "docker",
             r"""
@@ -63,10 +64,25 @@ class TestSageSetupMigration(unittest.TestCase):
                 exit 0
             fi
             if [[ "$args" == *" stop sage"* ]]; then
+                : > "$DOCKER_STOPPED"
+                exit 0
+            fi
+            if [[ "$args" == exec\ -u\ 0\ old-sage-container\ /bin/sh\ -c* ]]; then
+                # Match real Docker: exec cannot run after the container stops.
+                [[ -e "$DOCKER_STOPPED" ]] && exit 125
+                [[ "$FAIL_STAGE" == "writable-probe" ]] && exit 125
+                if [[ "$FAIL_STAGE" == "writable-absent" ]]; then
+                    printf 'absent\n'
+                    exit 0
+                fi
+                printf 'present\n'
                 exit 0
             fi
             if [[ "$args" == cp\ * ]]; then
-                if [[ "$FAIL_STAGE" == "copy" ]]; then
+                if [[ "$FAIL_STAGE" == "copy" && "$args" == *"/root/.sage-gui/."* ]]; then
+                    exit 9
+                fi
+                if [[ "$FAIL_STAGE" == "writable-copy" && "$args" == *"/root/.sage/."* ]]; then
                     exit 9
                 fi
                 destination=""
@@ -107,6 +123,7 @@ class TestSageSetupMigration(unittest.TestCase):
             fi
             if [[ "$args" == *" up -d "* ]]; then
                 printf 'COMPOSE_UP\n' >> "$DOCKER_LOG"
+                [[ "$STOP_AFTER_RECREATION" == "1" ]] && exit 77
                 exit 0
             fi
             exit 0
@@ -123,14 +140,16 @@ class TestSageSetupMigration(unittest.TestCase):
         path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
         path.chmod(0o755)
 
-    def _run_setup(self, fail_stage):
+    def _run_setup(self, fail_stage, *, stop_after_recreation=False):
         env = os.environ.copy()
         env.update(
             {
                 "_RAPTOR_TRUSTED": "1",
                 "DOCKER_LOG": str(self.docker_log),
+                "DOCKER_STOPPED": str(self.docker_stopped),
                 "FAIL_STAGE": fail_stage,
                 "PATH": f"{self.checkout / 'fake-bin'}:{env['PATH']}",
+                "STOP_AFTER_RECREATION": "1" if stop_after_recreation else "0",
             }
         )
         return subprocess.run(
@@ -145,6 +164,7 @@ class TestSageSetupMigration(unittest.TestCase):
     def test_migration_failures_stop_before_recreation_and_marker(self):
         cases = {
             "copy": "could not copy the legacy volume state",
+            "writable-copy": "could not copy the writable-layer SAGE_HOME",
             "comparison": "collision comparison failed",
             "merge": "missing-file merge failed",
             "validation": "post-migration validation failed",
@@ -167,6 +187,7 @@ class TestSageSetupMigration(unittest.TestCase):
                 for backup in backups:
                     shutil.rmtree(backup)
                 self.docker_log.unlink(missing_ok=True)
+                self.docker_stopped.unlink(missing_ok=True)
 
     def test_missing_legacy_volume_stops_before_recreation(self):
         result = self._run_setup("volume")
@@ -176,6 +197,45 @@ class TestSageSetupMigration(unittest.TestCase):
         log = self.docker_log.read_text(encoding="utf-8")
         self.assertNotIn("COMPOSE_UP", log)
         self.assertNotIn("MARKER_WRITTEN", log)
+
+    def test_writable_home_probe_precedes_stop_and_present_state_is_copied(self):
+        result = self._run_setup("", stop_after_recreation=True)
+
+        self.assertEqual(result.returncode, 77, result.stderr)
+        log = self.docker_log.read_text(encoding="utf-8").splitlines()
+        probe_index = next(
+            i for i, line in enumerate(log)
+            if line.startswith("exec -u 0 old-sage-container /bin/sh -c")
+        )
+        stop_index = next(i for i, line in enumerate(log) if " stop sage" in line)
+        writable_copy_index = next(
+            i for i, line in enumerate(log) if "/root/.sage/." in line
+        )
+        self.assertLess(probe_index, stop_index)
+        self.assertLess(stop_index, writable_copy_index)
+        self.assertIn("MARKER_WRITTEN", log)
+        self.assertIn("COMPOSE_UP", log)
+
+    def test_absent_writable_home_is_optional(self):
+        result = self._run_setup("writable-absent", stop_after_recreation=True)
+
+        self.assertEqual(result.returncode, 77, result.stderr)
+        log = self.docker_log.read_text(encoding="utf-8")
+        self.assertNotIn("cp old-sage-container:/root/.sage/. ", log)
+        self.assertIn("MARKER_WRITTEN", log)
+        self.assertIn("COMPOSE_UP", log)
+
+    def test_writable_home_probe_failure_leaves_container_untouched(self):
+        result = self._run_setup("writable-probe")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not inspect writable-layer SAGE_HOME", result.stderr)
+        self.assertIn("old container was left untouched", result.stderr)
+        log = self.docker_log.read_text(encoding="utf-8")
+        self.assertNotIn(" stop sage", log)
+        self.assertNotIn("MARKER_WRITTEN", log)
+        self.assertNotIn("COMPOSE_UP", log)
+        self.assertEqual(list(self.checkout.glob(".sage-migration.*")), [])
 
 
 if __name__ == "__main__":

@@ -291,6 +291,38 @@ migrate_sage_home_if_needed() {
     fi
     [ "$has_old_mount" != "old" ] && return 0
 
+    # Determine whether the container has writable-layer SAGE_HOME state while
+    # it is still running. docker exec cannot inspect a stopped container, and
+    # treating every non-zero result as "absent" would also swallow daemon,
+    # permission, and I/O failures. The in-container probe therefore emits an
+    # explicit state only after a successful check; every other result leaves
+    # the old container untouched.
+    local has_writable_sage_home=0 writable_sage_home_state
+    if ! writable_sage_home_state=$(docker exec -u 0 "$cid" /bin/sh -c '
+        if [ -d /root/.sage ]; then
+            printf "%s\n" present
+            exit
+        fi
+        if [ -d /root ] && [ -x /root ] && [ ! -e /root/.sage ]; then
+            printf "%s\n" absent
+            exit
+        fi
+        exit 1
+    ' 2>/dev/null); then
+        echo "raptor-sage-setup: could not inspect writable-layer SAGE_HOME in container $cid." >&2
+        echo "  The old container was left untouched; ensure it is running and readable, then retry." >&2
+        return 1
+    fi
+    case "$writable_sage_home_state" in
+        present) has_writable_sage_home=1 ;;
+        absent) ;;
+        *)
+            echo "raptor-sage-setup: writable-layer SAGE_HOME probe returned an invalid result." >&2
+            echo "  The old container was left untouched; ensure it is running and readable, then retry." >&2
+            return 1
+            ;;
+    esac
+
     echo "Detected old volume mount (/root/.sage-gui). Migrating data to /root/.sage..."
 
     docker compose -f "$COMPOSE_FILE" stop sage
@@ -322,8 +354,8 @@ migrate_sage_home_if_needed() {
     fi
     # Writable-layer SAGE_HOME — 6.6.5 containers may not have /root/.sage
     # at all, but 11.x containers with the old volume mount store real state
-    # there (agent.key, data/sage.db, etc). Fail closed only when it exists.
-    if docker exec "$cid" test -d /root/.sage 2>/dev/null; then
+    # there (agent.key, data/sage.db, etc).
+    if [ "$has_writable_sage_home" -eq 1 ]; then
         if ! docker cp "$cid:/root/.sage/." "$backup/" 2>/dev/null; then
             abort_sage_home_migration "$backup" "$volume_name" \
                 "could not copy the writable-layer SAGE_HOME."
