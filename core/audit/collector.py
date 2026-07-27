@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .gaps import mark_checked
 from .journal import ReviewJournalEntry, append_entry, flush_journal, now_iso
 from .record import record_review
 
@@ -56,6 +57,11 @@ class Collector:
             strategies=gap.get("strategies"),
             checked_by=checked_by,
         )
+
+        if outcome.status != "error":
+            mark_checked(
+                self.out_dir, outcome.file, outcome.function, checked_by,
+            )
 
         self._append_journal_entry(outcome, gap, checked_by)
 

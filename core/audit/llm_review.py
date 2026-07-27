@@ -577,7 +577,7 @@ def make_review_fn(
         config: OrchestratorConfig,
     ) -> ReviewOutcome:
         budget = _prompt_budget(ctx, effective_system_prompt)
-        prompt = format_context_for_prompt(ctx, budget_tokens=budget)
+        prompt = format_context_for_prompt(ctx, budget_limit=budget)
         t0 = time.monotonic()
 
         kwargs: Dict[str, Any] = {}

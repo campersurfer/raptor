@@ -250,11 +250,11 @@ def assemble_context(
 
 def format_context_for_prompt(
     ctx: Dict[str, Any],
-    budget_tokens: int = 0,
+    budget_limit: int = 0,
 ) -> str:
     """Format a context slice as text for the LLM prompt.
 
-    When *budget_tokens* > 0, sections are shed by priority if the
+    When *budget_limit* > 0, sections are shed by priority if the
     total exceeds the budget.  Priority 0 sections (source, evidence,
     block analysis, fuzz, scope narrowing) are never shed.
 
@@ -836,8 +836,8 @@ def format_context_for_prompt(
     sections.append(PromptSection("tool_catalog", _get_tool_catalog(), 5))
 
     # ── Budget gate ─────────────────────────────────────────────────
-    if budget_tokens > 0:
-        kept, shed = fit_to_budget(sections, budget_tokens)
+    if budget_limit > 0:
+        kept, shed = fit_to_budget(sections, budget_limit)
         if shed:
             labels = [s.label for s in shed]
             logger.info(

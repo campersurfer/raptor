@@ -888,3 +888,335 @@ def store_sca_outcomes(
     if stored:
         logger.info(f"SAGE: stored {stored} SCA outcomes for {repo_name}")
     return stored
+
+
+# ------------------------------------------------------------------
+# Study / Teach — concept memory (N1)
+# ------------------------------------------------------------------
+
+def _concepts_domain(repo_path: str) -> str:
+    return f"raptor-concepts-{_repo_key(repo_path)}"
+
+
+_CONFIDENCE_TO_SAGE: Dict[str, float] = {
+    "inferred": 0.55,
+    "traced": 0.80,
+    "corroborated": 0.90,
+    "documented": 0.88,
+    "tested": 0.95,
+}
+
+
+def store_study_concepts(
+    repo_path: str,
+    domain_model: Any,
+    *,
+    study_scope: str = "",
+) -> int:
+    """Store concepts, invariants, and contracts from a domain model to SAGE.
+
+    Each concept is stored as a separate memory keyed by its identifier,
+    with invariants and contracts inlined. This enables per-identifier
+    recall for teach and cross-project reuse.
+
+    Args:
+        repo_path: Target repository path (for domain scoping).
+        domain_model: A DomainModel instance.
+        study_scope: The study target scope (e.g. "/usr/src/linux" vs
+            "crypto/af_alg"). Stored in content for relevance gating.
+
+    Returns:
+        Number of concepts stored.
+    """
+    client = _get_client()
+    if client is None:
+        return 0
+
+    stored = 0
+    repo_name = Path(repo_path).name
+    scope_label = study_scope or repo_name
+
+    concept_invariants: Dict[str, list] = {}
+    for inv in domain_model.invariants:
+        concept_invariants.setdefault(inv.concept, []).append(inv)
+
+    concept_contracts: Dict[str, list] = {}
+    for contract in domain_model.contracts:
+        for concept in domain_model.concepts:
+            if any(
+                contract.function in (ev.item or "")
+                or contract.function in concept.id
+                or contract.file in concept.id
+                for ev in concept.evidence
+            ):
+                concept_contracts.setdefault(concept.id, []).append(contract)
+                break
+
+    for concept in domain_model.concepts:
+        if concept.confidence == "inferred":
+            continue
+
+        try:
+            parts = [
+                f"Concept [{concept.id}] in {scope_label}: "
+                f"{concept.description}"
+            ]
+
+            evidence_files = set()
+            evidence_hashes = []
+            for ev in concept.evidence:
+                loc = f"{ev.file}:{ev.line}" if ev.line else ev.file
+                parts.append(f"  Evidence ({ev.type}): {loc} — {ev.observation}")
+                if ev.file:
+                    evidence_files.add(ev.file)
+                if getattr(ev, "hash", None):
+                    evidence_hashes.append(ev.hash)
+
+            invs = concept_invariants.get(concept.id, [])
+            for inv in invs:
+                parts.append(
+                    f"  Invariant [{inv.id}]: {inv.statement} "
+                    f"(negation: {inv.negation})"
+                )
+                if inv.relevant_cwes:
+                    parts.append(f"    CWEs: {', '.join(inv.relevant_cwes)}")
+
+            contracts = concept_contracts.get(concept.id, [])
+            for ct in contracts:
+                ct_parts = [f"  Contract [{ct.function}]"]
+                if ct.when:
+                    ct_parts.append(f"when: {ct.when}")
+                if ct.ownership_transfer:
+                    ct_parts.append(f"ownership: {ct.ownership_transfer}")
+                parts.append(" ".join(ct_parts))
+
+            parts.append(f"  Study scope: {scope_label}")
+            parts.append(f"  Confidence: {concept.confidence}")
+            if evidence_files:
+                parts.append(
+                    f"  Evidence files: {', '.join(sorted(evidence_files))}"
+                )
+            if evidence_hashes:
+                composite = sha256_string(
+                    "|".join(sorted(evidence_hashes))
+                )[:12]
+                parts.append(f"  Source hash: {composite}")
+
+            content = "\n".join(parts)
+
+            confidence = _CONFIDENCE_TO_SAGE.get(concept.confidence, 0.70)
+
+            tags = ["study", "concept", concept.id]
+            if invs:
+                tags.append("has_invariants")
+            for inv in invs:
+                tags.extend(inv.mechanism_tags[:3])
+
+            if _propose_redacted(
+                client=client,
+                content=content,
+                memory_type="fact",
+                domain_tag=_concepts_domain(repo_path),
+                confidence=confidence,
+                tags=tags,
+            ):
+                stored += 1
+            _throttle()
+        except Exception as e:
+            logger.debug(f"SAGE concept store failed for {concept.id}: {e}")
+
+    if stored:
+        logger.info(
+            f"SAGE: stored {stored} concepts from study of {scope_label}"
+        )
+    return stored
+
+
+def recall_concepts_for_teach(
+    repo_path: str,
+    subject: str,
+    *,
+    evidence_files: Optional[List[str]] = None,
+    inventory_functions: Optional[List[str]] = None,
+    min_confidence: float = 0.65,
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Recall prior study concepts relevant to a teach query.
+
+    Implements the N1 relevance gate: semantic match from SAGE, then
+    filtered by file overlap, caller/callee overlap, and confidence
+    floor.
+
+    Args:
+        repo_path: Target repository path (queries repo-scoped domain
+            first, then cross-project via methodology domain).
+        subject: The teach subject (e.g. "scatterlists", "struct page").
+        evidence_files: Files in the current target — used for file
+            overlap check.
+        inventory_functions: Functions in the current target — used for
+            caller/callee overlap check.
+        min_confidence: Minimum SAGE confidence score.
+        top_k: Maximum results to return.
+
+    Returns:
+        List of recall rows, each with content, confidence, domain,
+        and a relevance_score field (0.0–1.0).
+    """
+    client = _get_client()
+    if client is None:
+        return []
+
+    try:
+        _sage_metrics["recall_attempted"] += 1
+
+        query = (
+            f"Semantic concept for {subject}: ownership, lifetime, "
+            f"aliasing, invariants, contracts"
+        )
+
+        results = client.query(
+            text=query,
+            domain_tag=_concepts_domain(repo_path),
+            top_k=top_k * 2,
+            min_confidence=min_confidence,
+        )
+
+        cross_project = client.query(
+            text=query,
+            domain_tag="raptor-methodology",
+            top_k=3,
+            min_confidence=0.70,
+        )
+
+        all_rows = _merge_recall_rows(results, cross_project, top_k=top_k * 2)
+
+        scored = _apply_relevance_gate(
+            all_rows,
+            evidence_files=evidence_files,
+            inventory_functions=inventory_functions,
+        )
+
+        scored.sort(key=lambda r: r.get("relevance_score", 0), reverse=True)
+        out = scored[:top_k]
+
+        _sage_metrics["recall_hits"] += len(out)
+        return out
+    except Exception as e:
+        logger.debug(f"SAGE teach recall failed: {e}")
+        return []
+
+
+def recall_concepts_for_study(
+    repo_path: str,
+    identifiers: List[str],
+    *,
+    min_confidence: float = 0.65,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Recall prior concepts for study identifiers (skip/seed/cross-pollinate).
+
+    Returns a dict keyed by identifier name, each value a list of
+    matching recall rows. Empty list means no prior knowledge — study
+    from scratch.
+
+    Args:
+        repo_path: Target repository path.
+        identifiers: Identifier names from study-list.json.
+        min_confidence: Minimum SAGE confidence score.
+
+    Returns:
+        {identifier_name: [recall_rows]}.
+    """
+    client = _get_client()
+    if client is None:
+        return {}
+
+    result: Dict[str, List[Dict[str, Any]]] = {}
+
+    for name in identifiers:
+        try:
+            _sage_metrics["recall_attempted"] += 1
+            rows = client.query(
+                text=f"Concept [{name}]: ownership, lifetime, contracts",
+                domain_tag=_concepts_domain(repo_path),
+                top_k=3,
+                min_confidence=min_confidence,
+            )
+            if rows:
+                _sage_metrics["recall_hits"] += len(rows)
+                result[name] = rows
+        except Exception as e:
+            logger.debug(f"SAGE study recall failed for {name}: {e}")
+
+    if result:
+        logger.info(
+            f"SAGE: recalled prior concepts for "
+            f"{len(result)}/{len(identifiers)} identifiers"
+        )
+    return result
+
+
+def _apply_relevance_gate(
+    rows: List[Dict[str, Any]],
+    *,
+    evidence_files: Optional[List[str]] = None,
+    inventory_functions: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Score recall rows by relevance to the current context.
+
+    Relevance signals:
+    - File overlap: concept evidence cites files in the current target.
+    - Function overlap: concept mentions functions in the current inventory.
+    - Confidence: higher SAGE confidence → higher relevance.
+    - Scope breadth: broader study scopes score slightly higher for
+      universal applicability.
+
+    Each row gets a relevance_score field (0.0–1.0). Rows below 0.3
+    are dropped entirely.
+    """
+    evidence_set = set(evidence_files or [])
+    fn_set = set(inventory_functions or [])
+
+    scored: List[Dict[str, Any]] = []
+    for row in rows:
+        content = row.get("content", "")
+        sage_confidence = row.get("confidence", 0.5)
+
+        score = 0.0
+
+        score += min(sage_confidence, 1.0) * 0.3
+
+        if evidence_set:
+            file_hits = sum(
+                1 for f in evidence_set
+                if f in content
+            )
+            if file_hits:
+                score += min(file_hits / max(len(evidence_set), 1), 1.0) * 0.35
+
+        if fn_set:
+            fn_hits = sum(
+                1 for fn in fn_set
+                if fn in content
+            )
+            if fn_hits:
+                score += min(fn_hits / max(len(fn_set), 1), 1.0) * 0.25
+
+        if not evidence_set and not fn_set:
+            score += 0.2
+
+        if "Study scope:" in content:
+            scope_line = [
+                ln for ln in content.split("\n")
+                if ln.strip().startswith("Study scope:")
+            ]
+            if scope_line:
+                scope = scope_line[0].split(":", 1)[1].strip()
+                if "/" not in scope or scope.count("/") <= 1:
+                    score += 0.1
+
+        if score >= 0.3:
+            row_copy = dict(row)
+            row_copy["relevance_score"] = round(score, 3)
+            scored.append(row_copy)
+
+    return scored

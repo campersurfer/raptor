@@ -834,5 +834,265 @@ class TestRuleLibraryHooks(unittest.TestCase):
         self.assertIn("||tp_count=2||", content)
 
 
+class TestStoreStudyConcepts(unittest.TestCase):
+    """Tests for store_study_concepts (N1 study → SAGE)."""
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_returns_zero_when_unavailable(self, _):
+        from core.sage.hooks import store_study_concepts
+        model = self._make_model()
+        self.assertEqual(store_study_concepts("/repo", model), 0)
+
+    @patch("core.sage.hooks._throttle")
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_stores_concepts_above_inferred(self, mock_gc, mock_pr, _):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_study_concepts
+        model = self._make_model()
+        stored = store_study_concepts("/repo", model, study_scope="crypto/")
+        self.assertEqual(stored, 2)
+        self.assertEqual(mock_pr.call_count, 2)
+
+    @patch("core.sage.hooks._throttle")
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_skips_inferred_concepts(self, mock_gc, mock_pr, _):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_study_concepts
+        model = self._make_model(only_inferred=True)
+        stored = store_study_concepts("/repo", model)
+        self.assertEqual(stored, 0)
+        mock_pr.assert_not_called()
+
+    @patch("core.sage.hooks._throttle")
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_inlines_invariants_and_contracts(self, mock_gc, mock_pr, _):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_study_concepts
+        model = self._make_model()
+        store_study_concepts("/repo", model)
+        content = mock_pr.call_args_list[0][1]["content"]
+        self.assertIn("Invariant", content)
+        self.assertIn("Contract", content)
+
+    @patch("core.sage.hooks._throttle")
+    @patch("core.sage.hooks._propose_redacted", side_effect=Exception("boom"))
+    @patch("core.sage.hooks._get_client")
+    def test_handles_propose_error(self, mock_gc, mock_pr, _):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_study_concepts
+        model = self._make_model()
+        stored = store_study_concepts("/repo", model)
+        self.assertEqual(stored, 0)
+
+    @staticmethod
+    def _make_model(only_inferred=False):
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class FakeEvidence:
+            type: str = "code_path"
+            file: str = "auth.c"
+            observation: str = "refcount incremented"
+            line: int = 42
+            item: str = "get_page"
+            hash: str = ""
+
+        @dataclass
+        class FakeConcept:
+            id: str = "page_ownership"
+            description: str = "Pages are owned by the SGL"
+            evidence: list = field(default_factory=lambda: [FakeEvidence()])
+            confidence: str = "inferred" if only_inferred else "traced"
+            state: str = "proposed"
+
+        @dataclass
+        class FakeInvariant:
+            id: str = "inv_refcount"
+            concept: str = "page_ownership"
+            statement: str = "Every page has exactly one owner"
+            negation: str = "Double-free or leak"
+            relevant_cwes: list = field(default_factory=lambda: ["CWE-415"])
+            mechanism_tags: list = field(default_factory=lambda: ["refcount"])
+            mechanism_keywords: list = field(default_factory=list)
+            confidence: str = "traced"
+
+        @dataclass
+        class FakeContract:
+            function: str = "get_page"
+            file: str = "auth.c"
+            when: str = "before use"
+            ownership_transfer: str = "caller to callee"
+            input_semantics: str = ""
+            output_semantics: str = ""
+            implication: str = ""
+            hash: str = ""
+
+        @dataclass
+        class FakeModel:
+            concepts: list = field(default_factory=list)
+            invariants: list = field(default_factory=list)
+            contracts: list = field(default_factory=list)
+
+        if only_inferred:
+            return FakeModel(
+                concepts=[FakeConcept(), FakeConcept(id="c2")],
+                invariants=[],
+                contracts=[],
+            )
+        return FakeModel(
+            concepts=[
+                FakeConcept(),
+                FakeConcept(id="page_transfer", description="TX→RX"),
+            ],
+            invariants=[FakeInvariant()],
+            contracts=[FakeContract()],
+        )
+
+
+class TestRecallConceptsForTeach(unittest.TestCase):
+    """Tests for recall_concepts_for_teach (N1 teach ← SAGE)."""
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_returns_empty_when_unavailable(self, _):
+        from core.sage.hooks import recall_concepts_for_teach
+        self.assertEqual(
+            recall_concepts_for_teach("/repo", "struct page"), []
+        )
+
+    @patch("core.sage.hooks._get_client")
+    def test_queries_both_domains(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"content": "Concept [page_ownership]", "confidence": 0.85}
+        ]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_concepts_for_teach
+        results = recall_concepts_for_teach("/repo", "struct page")
+        self.assertEqual(mock_client.query.call_count, 2)
+        self.assertGreater(len(results), 0)
+
+    @patch("core.sage.hooks._get_client")
+    def test_handles_error_gracefully(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.side_effect = ConnectionError("SAGE down")
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_concepts_for_teach
+        self.assertEqual(
+            recall_concepts_for_teach("/repo", "struct page"), []
+        )
+
+    @patch("core.sage.hooks._get_client")
+    def test_respects_min_confidence(self, mock_gc):
+        mock_client = MagicMock()
+        mock_gc.return_value = mock_client
+        mock_client.query.return_value = []
+
+        from core.sage.hooks import recall_concepts_for_teach
+        recall_concepts_for_teach("/repo", "page", min_confidence=0.90)
+        call_kwargs = mock_client.query.call_args_list[0][1]
+        self.assertEqual(call_kwargs["min_confidence"], 0.90)
+
+
+class TestRecallConceptsForStudy(unittest.TestCase):
+    """Tests for recall_concepts_for_study (N1 study ← SAGE)."""
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_returns_empty_when_unavailable(self, _):
+        from core.sage.hooks import recall_concepts_for_study
+        self.assertEqual(
+            recall_concepts_for_study("/repo", ["get_page", "put_page"]), {}
+        )
+
+    @patch("core.sage.hooks._get_client")
+    def test_returns_per_identifier(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.side_effect = [
+            [{"content": "get_page concept", "confidence": 0.8}],
+            [],
+        ]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_concepts_for_study
+        result = recall_concepts_for_study("/repo", ["get_page", "put_page"])
+        self.assertIn("get_page", result)
+        self.assertNotIn("put_page", result)
+
+    @patch("core.sage.hooks._get_client")
+    def test_handles_partial_errors(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.side_effect = [
+            ConnectionError("boom"),
+            [{"content": "put_page concept", "confidence": 0.8}],
+        ]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_concepts_for_study
+        result = recall_concepts_for_study("/repo", ["get_page", "put_page"])
+        self.assertNotIn("get_page", result)
+        self.assertIn("put_page", result)
+
+
+class TestApplyRelevanceGate(unittest.TestCase):
+    """Tests for _apply_relevance_gate (N1 relevance scoring)."""
+
+    def test_drops_below_threshold(self):
+        from core.sage.hooks import _apply_relevance_gate
+        rows = [{"content": "unrelated stuff", "confidence": 0.1}]
+        scored = _apply_relevance_gate(rows)
+        self.assertEqual(scored, [])
+
+    def test_file_overlap_boosts_score(self):
+        from core.sage.hooks import _apply_relevance_gate
+        rows = [
+            {"content": "Evidence files: auth.c, crypto.c", "confidence": 0.7}
+        ]
+        no_overlap = _apply_relevance_gate(rows, evidence_files=["unrelated.c"])
+        with_overlap = _apply_relevance_gate(rows, evidence_files=["auth.c"])
+        self.assertGreater(
+            with_overlap[0]["relevance_score"],
+            no_overlap[0]["relevance_score"] if no_overlap else 0,
+        )
+
+    def test_function_overlap_boosts_score(self):
+        from core.sage.hooks import _apply_relevance_gate
+        rows = [
+            {"content": "Contract [get_page] when: before use", "confidence": 0.7}
+        ]
+        with_fn = _apply_relevance_gate(
+            rows, inventory_functions=["get_page"]
+        )
+        without_fn = _apply_relevance_gate(
+            rows, inventory_functions=["unrelated_fn"]
+        )
+        self.assertGreater(
+            with_fn[0]["relevance_score"],
+            without_fn[0]["relevance_score"] if without_fn else 0,
+        )
+
+    def test_broader_scope_boosts_score(self):
+        from core.sage.hooks import _apply_relevance_gate
+        broad = [{"content": "Study scope: linux\nOther content", "confidence": 0.7}]
+        narrow = [{"content": "Study scope: net/crypto/af_alg/impl\nOther content", "confidence": 0.7}]
+        broad_scored = _apply_relevance_gate(broad)
+        narrow_scored = _apply_relevance_gate(narrow)
+        if broad_scored and narrow_scored:
+            self.assertGreater(
+                broad_scored[0]["relevance_score"],
+                narrow_scored[0]["relevance_score"],
+            )
+
+    def test_no_context_still_scores(self):
+        from core.sage.hooks import _apply_relevance_gate
+        rows = [{"content": "Concept [page_ownership]", "confidence": 0.8}]
+        scored = _apply_relevance_gate(rows)
+        self.assertEqual(len(scored), 1)
+        self.assertGreater(scored[0]["relevance_score"], 0.3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -679,23 +679,30 @@ def build_evidence_index(
                 if key in index:
                     index[key].app_sink_targets = targets
         eligible = getattr(sink_results, "unreachable_eligible", None)
-        for key, rec in index.items():
-            if key not in _reachable:
-                if eligible is not None:
-                    fk = (rec.file, rec.function)
-                    verdict = eligible.get(fk)
-                    if verdict is not None and verdict.eligible:
+        # Guard: only mark functions as sink_unreachable when Joern
+        # actually produced valid flow data.  When _reachable is empty
+        # AND there's no eligible-verdict map, we can't distinguish
+        # "every function is genuinely unreachable" from "CPG failed to
+        # load" — default to no-signal rather than false suppression.
+        has_valid_data = bool(_reachable) or eligible is not None
+        if has_valid_data:
+            for key, rec in index.items():
+                if key not in _reachable:
+                    if eligible is not None:
+                        fk = (rec.file, rec.function)
+                        verdict = eligible.get(fk)
+                        if verdict is not None and verdict.eligible:
+                            rec.sink_unreachable = True
+                            rec.sink_narrowed_classes = list(
+                                _SINK_DEPENDENT_CWES,
+                            )
+                        elif verdict is not None:
+                            rec.sink_unreachable = False
+                    else:
                         rec.sink_unreachable = True
                         rec.sink_narrowed_classes = list(
                             _SINK_DEPENDENT_CWES,
                         )
-                    elif verdict is not None:
-                        rec.sink_unreachable = False
-                else:
-                    rec.sink_unreachable = True
-                    rec.sink_narrowed_classes = list(
-                        _SINK_DEPENDENT_CWES,
-                    )
 
     if taint_approx_results:
         for key, approx in taint_approx_results.items():

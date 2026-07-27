@@ -54,6 +54,17 @@ def _setup_target(tmp_path: Path):
         ],
     }
     (out / "checklist.json").write_text(json.dumps(checklist))
+
+    context_map = {
+        "entry_points": [
+            {"file": "src/auth.c", "name": "check_pw"},
+            {"file": "src/auth.c", "name": "validate"},
+        ],
+        "sinks": [],
+        "trust_boundaries": [],
+        "unchecked_flows": [],
+    }
+    (out / "context-map.json").write_text(json.dumps(context_map))
     return target, out
 
 
@@ -236,16 +247,26 @@ class TestRunOrchestrator:
         call_count = [0]
         def mixed_review(ctx, config):
             call_count[0] += 1
-            status = "finding" if call_count[0] == 1 else "suspicious"
+            if call_count[0] == 1:
+                return ReviewOutcome(
+                    file=ctx["file"],
+                    function=ctx["function"],
+                    status="finding",
+                    body="SQL injection via format string",
+                    hypothesis="SQL injection via string format",
+                    evidence_tool="semgrep:sql-injection",
+                )
             return ReviewOutcome(
                 file=ctx["file"],
                 function=ctx["function"],
-                status=status,
+                status="suspicious",
                 body="test",
             )
 
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            max_refinements=0,
         )
         result = run_orchestrator(config, mixed_review)
         assert result.findings == 1
@@ -405,6 +426,18 @@ def _setup_varied_sloc(tmp_path: Path):
         ],
     }
     (out / "checklist.json").write_text(json.dumps(checklist))
+
+    context_map = {
+        "entry_points": [
+            {"file": "src/a.c", "name": "tiny1"},
+            {"file": "src/a.c", "name": "tiny2"},
+            {"file": "src/a.c", "name": "big"},
+        ],
+        "sinks": [],
+        "trust_boundaries": [],
+        "unchecked_flows": [],
+    }
+    (out / "context-map.json").write_text(json.dumps(context_map))
     return target, out
 
 
@@ -538,6 +571,8 @@ class TestCheckedByLabels:
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
             batch_sloc_threshold=0,
+            prefilter=False,
+            max_refinements=0,
         )
         run_orchestrator(config, review_fn)
 
@@ -974,6 +1009,7 @@ class TestSweepValidation:
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False, batch_sloc_threshold=0,
+            prefilter=False, max_refinements=0,
         )
         result = run_orchestrator(config, review_fn)
         assert result.findings == 2
@@ -2151,6 +2187,13 @@ class TestIterativeReReview:
             }],
         }
         context_map = {
+            "entry_points": [
+                {"file": "src/handler.c", "name": "process"},
+                {"file": "src/handler.c", "name": "dangerous"},
+            ],
+            "sinks": [],
+            "trust_boundaries": [],
+            "unchecked_flows": [],
             "call_edges": [
                 {"caller": "process", "caller_file": "src/handler.c",
                  "callee": "dangerous"},
@@ -2206,8 +2249,9 @@ class TestIterativeReReview:
 
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
-            sweep_validate_findings=True, batch_sloc_threshold=0,
+            sweep_validate_findings=False, batch_sloc_threshold=0,
             propagate_constraints=True,
+            prefilter=False, max_refinements=0,
         )
         result = run_orchestrator(config, review_fn)
 
@@ -2463,6 +2507,10 @@ class TestDeepenSuspicious:
             }],
         }
         (out / "checklist.json").write_text(json.dumps(checklist))
+        (out / "context-map.json").write_text(json.dumps({
+            "entry_points": [{"file": "a.c", "name": "big"}],
+            "sinks": [], "trust_boundaries": [], "unchecked_flows": [],
+        }))
 
         call_count = [0]
         contexts_seen = []
@@ -2502,6 +2550,7 @@ class TestDeepenSuspicious:
             target_path=target, out_dir=out,
             budget=10, batch_sloc_threshold=0,
             deepen_suspicious=True,
+            max_refinements=0,
         )
         result = run_orchestrator(config, review_fn)
 
@@ -2527,6 +2576,10 @@ class TestDeepenSuspicious:
             }],
         }
         (out / "checklist.json").write_text(json.dumps(checklist))
+        (out / "context-map.json").write_text(json.dumps({
+            "entry_points": [{"file": "a.c", "name": "small"}],
+            "sinks": [], "trust_boundaries": [], "unchecked_flows": [],
+        }))
 
         call_count = [0]
 
@@ -2544,6 +2597,7 @@ class TestDeepenSuspicious:
             target_path=target, out_dir=out,
             budget=10, batch_sloc_threshold=0,
             deepen_suspicious=True,
+            max_refinements=0,
         )
         result = run_orchestrator(config, review_fn)
 
@@ -2566,6 +2620,10 @@ class TestDeepenSuspicious:
             }],
         }
         (out / "checklist.json").write_text(json.dumps(checklist))
+        (out / "context-map.json").write_text(json.dumps({
+            "entry_points": [{"file": "a.c", "name": "big"}],
+            "sinks": [], "trust_boundaries": [], "unchecked_flows": [],
+        }))
 
         call_count = [0]
 
@@ -2583,6 +2641,7 @@ class TestDeepenSuspicious:
             target_path=target, out_dir=out,
             budget=10, batch_sloc_threshold=0,
             deepen_suspicious=False,
+            max_refinements=0,
         )
         result = run_orchestrator(config, review_fn)
 

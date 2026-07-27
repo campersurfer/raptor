@@ -366,7 +366,7 @@ class TestAuditContextBudget:
         }
         prompt_full = format_context_for_prompt(ctx)
         prompt_tight = format_context_for_prompt(
-            ctx, budget_tokens=50,
+            ctx, budget_limit=50,
         )
         assert "int vuln" in prompt_tight
         assert len(prompt_tight) <= len(prompt_full)
