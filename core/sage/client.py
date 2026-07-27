@@ -13,8 +13,9 @@ caused httpx.AsyncClient loop-affinity failures ("Event loop is closed") on
 the second hook call onwards.
 """
 
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.logging import get_logger
 
@@ -258,12 +259,27 @@ class SageClient:
         """
         Query SAGE for semantically similar memories.
         Returns a list of dicts with content, confidence, and domain keys.
+
+        Results are LRU-cached (256 entries) keyed on
+        (text, domain_tag, top_k, min_confidence) so repeated queries
+        for the same identifier skip both embedding and vector search.
         """
+        cached = self._query_cached(text, domain_tag, top_k, min_confidence)
+        return [dict(zip(("content", "confidence", "domain"), row)) for row in cached]
+
+    @lru_cache(maxsize=256)
+    def _query_cached(
+        self,
+        text: str,
+        domain_tag: str,
+        top_k: int,
+        min_confidence: Optional[float],
+    ) -> Tuple[Tuple[str, float, str], ...]:
+        """LRU-cached query returning tuples (hashable for the cache)."""
         client = self._get_client()
         if client is None:
-            return []
+            return ()
         try:
-            # Query path uses the same SAGE-managed embedding model as propose().
             embedding = client.embed(text)
             query_kwargs: Dict[str, Any] = dict(
                 embedding=embedding,
@@ -273,15 +289,11 @@ class SageClient:
             if min_confidence is not None:
                 query_kwargs["min_confidence"] = min_confidence
             response = client.query(**query_kwargs)
-            return [
-                {
-                    "content": r.content,
-                    "confidence": r.confidence_score,
-                    "domain": r.domain_tag,
-                }
+            return tuple(
+                (r.content, r.confidence_score, r.domain_tag)
                 for r in response.results
-            ]
+            )
         except Exception as e:
             logger.warning(f"SAGE query failed: {e}")
-            return []
+            return ()
 

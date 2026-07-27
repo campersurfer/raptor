@@ -1132,26 +1132,43 @@ def recall_concepts_for_study(
         return {}
 
     result: Dict[str, List[Dict[str, Any]]] = {}
+    domain = _concepts_domain(repo_path)
 
-    for name in identifiers:
+    def _recall_one(name: str) -> tuple:
         try:
-            _sage_metrics["recall_attempted"] += 1
             rows = client.query(
                 text=f"Concept [{name}]: ownership, lifetime, contracts",
-                domain_tag=_concepts_domain(repo_path),
+                domain_tag=domain,
                 top_k=3,
                 min_confidence=min_confidence,
             )
+            return (name, rows)
+        except Exception as e:
+            logger.debug(f"SAGE study recall failed for {name}: {e}")
+            return (name, None)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    total = len(identifiers)
+    logger.info(f"SAGE: recalling prior concepts for {total} identifiers (4 workers)")
+    done = 0
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_recall_one, n): n for n in identifiers}
+        for fut in as_completed(futures):
+            name, rows = fut.result()
+            done += 1
+            _sage_metrics["recall_attempted"] += 1
             if rows:
                 _sage_metrics["recall_hits"] += len(rows)
                 result[name] = rows
-        except Exception as e:
-            logger.debug(f"SAGE study recall failed for {name}: {e}")
+            if done % 20 == 0 or done == total:
+                logger.info(f"SAGE: recall {done}/{total} ({len(result)} hits)")
 
     if result:
         logger.info(
             f"SAGE: recalled prior concepts for "
-            f"{len(result)}/{len(identifiers)} identifiers"
+            f"{len(result)}/{total} identifiers"
         )
     return result
 
