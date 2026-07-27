@@ -36,10 +36,20 @@ instructor==1.15.1
 # Without a grammar a language falls back to the regex extractor, which finds
 # fewer functions and no line_end — so anything that slices source by span
 # degrades silently. Install the grammars for the languages you scan.
-# pip install tree-sitter tree-sitter-python tree-sitter-java tree-sitter-javascript tree-sitter-c tree-sitter-go
-# JVM targets (Scala broker/service code alongside Java): tree-sitter-scala
-# Others with loader support: tree-sitter-cpp tree-sitter-typescript
-#   tree-sitter-rust tree-sitter-c-sharp tree-sitter-ruby tree-sitter-php tree-sitter-lua
+# pip install tree-sitter
+# pip install tree-sitter-c
+# pip install tree-sitter-c-sharp
+# pip install tree-sitter-cpp
+# pip install tree-sitter-go
+# pip install tree-sitter-java
+# pip install tree-sitter-javascript
+# pip install tree-sitter-lua
+# pip install tree-sitter-php
+# pip install tree-sitter-python
+# pip install tree-sitter-ruby
+# pip install tree-sitter-rust
+# pip install tree-sitter-scala
+# pip install tree-sitter-typescript
 
 # Optional: For enhanced dataflow visualization (recommended)
 tabulate==0.10.0
