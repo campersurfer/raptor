@@ -320,10 +320,15 @@ migrate_sage_home_if_needed() {
             "could not copy the legacy volume state."
         return 1
     fi
-    if ! docker cp "$cid:/root/.sage/." "$backup/" 2>/dev/null; then
-        abort_sage_home_migration "$backup" "$volume_name" \
-            "could not copy the writable-layer SAGE_HOME."
-        return 1
+    # Writable-layer SAGE_HOME — 6.6.5 containers may not have /root/.sage
+    # at all, but 11.x containers with the old volume mount store real state
+    # there (agent.key, data/sage.db, etc). Fail closed only when it exists.
+    if docker exec "$cid" test -d /root/.sage 2>/dev/null; then
+        if ! docker cp "$cid:/root/.sage/." "$backup/" 2>/dev/null; then
+            abort_sage_home_migration "$backup" "$volume_name" \
+                "could not copy the writable-layer SAGE_HOME."
+            return 1
+        fi
     fi
 
     # Resolve the SAGE image from the compose file so we don't hardcode a version.
