@@ -13,7 +13,7 @@ It is a work in progress, remember that.
 
 ```
 /understand <target> [--map] [--trace <entry>] [--hunt <pattern>] [--teach <subject>]
-                     [--out <dir>] [--model <name> ...]
+                     [--study <scope>] [--out <dir>] [--model <name> ...]
 ```
 
 If no mode flag is given, default to `--map`.
@@ -177,8 +177,11 @@ libexec/raptor-run-lifecycle fail "$OUTPUT_DIR" "error description"
 | `--trace <entry>` | Trace one data flow source → sink with full call chain |
 | `--hunt <pattern>` | Find all variants of a pattern across the codebase |
 | `--teach <subject>` | Explain a framework, library, or code pattern in depth |
+| `--study <scope>` | Extract semantic concepts (ownership, lifetime, contracts) → `domain-model.json` |
 
 Modes combine and run in order: map → trace → hunt → teach. This matches the natural attack progression, so build context first, then trace a specific flow, then hunt for variants. Running `--map --trace EP-001` first maps, then traces the specified entry point.
+
+`--study` runs independently — it is a separate pipeline (study-prep → LLM extraction → synthesis) that produces `domain-model.json`. Its output feeds into `--teach` via SAGE or local file lookup. Do not combine `--study` with other modes in a single invocation.
 
 ## Examples
 
@@ -191,6 +194,9 @@ Modes combine and run in order: map → trace → hunt → teach. This matches t
 
 # Find all variants of a finding from validation
 /understand ./src --hunt FIND-001
+
+# Learn semantic concepts (ownership, lifetime, contracts)
+/understand ./src --study crypto/
 
 # Understand an unfamiliar pattern before tracing
 /understand ./src --teach SQLAlchemy
@@ -229,6 +235,7 @@ Load before executing:
 - `.claude/skills/code-understanding/trace.md` — for `--trace`
 - `.claude/skills/code-understanding/hunt.md` — for `--hunt`
 - `.claude/skills/code-understanding/teach.md` — for `--teach`
+- `.claude/skills/code-understanding/study.md` — for `--study`
 
 ## Output
 
@@ -240,6 +247,7 @@ All JSON outputs write to `$WORKDIR` (resolved by `raptor-run-lifecycle start`, 
 | `flow-trace-<id>.json` | `--trace` | Step-by-step data flow with attacker control assessment |
 | `variants.json` | `--hunt` | All pattern matches, taint status, root-cause groups |
 | `diagrams.md` | `--map`, `--trace` | Mermaid diagrams (auto-generated) |
+| `domain-model.json` | `--study` | Concepts, invariants, contracts |
 | *(none)* | `--teach` | Inline explanation — no file written |
 
 Binary `--map` also writes:
