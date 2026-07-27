@@ -59,6 +59,8 @@ def main() -> int:
         level=logging.DEBUG if parsed.verbose else logging.INFO,
         format="%(name)s: %(message)s",
     )
+    for _noisy in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
 
     output_dir = Path(parsed.output_dir).resolve()
     study_list = output_dir / "study-list.json"

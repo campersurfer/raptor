@@ -897,7 +897,7 @@ def _parse_state_machines(
     concepts: list[Concept] = []
     invariants: list[Invariant] = []
 
-    for sm in raw.get("state_machines", []):
+    for sm in raw.get("state_machines") or []:
         sm_id = sm.get("id", "")
         if not sm_id:
             continue
@@ -906,7 +906,7 @@ def _parse_state_machines(
             sm_id = f"state_machine.{sm_id}"
 
         evidence = []
-        for e in sm.get("evidence", []):
+        for e in sm.get("evidence") or []:
             if isinstance(e, dict):
                 evidence.append(Evidence(
                     type=e.get("type", "code_path"),
@@ -919,7 +919,7 @@ def _parse_state_machines(
         if source_root is not None:
             _stamp_evidence_hashes(evidence, source_root)
 
-        transitions = sm.get("transitions", [])
+        transitions = sm.get("transitions") or []
         concept = Concept(
             id=sm_id,
             description=sm.get("description", ""),
@@ -1036,7 +1036,7 @@ def _parse_value_constraints(
     concepts: list[Concept] = []
     invariants: list[Invariant] = []
 
-    for vc in raw.get("value_constraints", []):
+    for vc in raw.get("value_constraints") or []:
         vc_id = vc.get("id", "")
         if not vc_id:
             continue
@@ -1045,7 +1045,7 @@ def _parse_value_constraints(
             vc_id = f"value_constraint.{vc_id}"
 
         evidence = []
-        for e in vc.get("evidence", []):
+        for e in vc.get("evidence") or []:
             if isinstance(e, dict):
                 evidence.append(Evidence(
                     type=e.get("type", "code_path"),
@@ -1095,9 +1095,9 @@ def _parse_batch_response(
     by looking up the function's line range in the study items.
     """
     concepts = []
-    for c in raw.get("concepts", []):
+    for c in raw.get("concepts", []) or []:
         evidence = []
-        for e in c.get("evidence", []):
+        for e in c.get("evidence") or []:
             if isinstance(e, str):
                 evidence.append(Evidence(
                     type="code_path", file="", observation=e,
@@ -1123,7 +1123,7 @@ def _parse_batch_response(
         ))
 
     invariants = []
-    for inv in raw.get("invariants", []):
+    for inv in raw.get("invariants") or []:
         inv_desc = inv.get("description", "")
         if not inv_desc:
             stmt = inv.get("statement", "")
@@ -1150,7 +1150,7 @@ def _parse_batch_response(
     invariants.extend(vc_invariants)
 
     contracts = []
-    for ct in raw.get("contracts", []):
+    for ct in raw.get("contracts") or []:
         contracts.append(Contract(
             function=ct["function"],
             file=ct.get("file", ""),
@@ -1320,6 +1320,25 @@ def _run_one_batch(
         logger.warning("Phase 2 batch %d: non-dict response", idx + 1)
         return [], [], []
 
+    n_c = len(result.get("concepts", []))
+    n_i = len(result.get("invariants", []))
+    n_ct = len(result.get("contracts", []))
+    n_sm = len(result.get("state_machines", []))
+    logger.info(
+        "Phase 2 batch %d/%d raw: keys=%s, concepts=%d, invariants=%d, "
+        "contracts=%d, state_machines=%d",
+        idx + 1, total,
+        sorted(result.keys()), n_c, n_i, n_ct, n_sm,
+    )
+    if n_c == 0 and n_i == 0 and n_ct == 0:
+        import json as _json
+        logger.warning(
+            "Phase 2 batch %d/%d: LLM returned empty result. "
+            "Raw (first 2000 chars): %s",
+            idx + 1, total,
+            _json.dumps(result, indent=None)[:2000],
+        )
+
     src_root = Path(source_root) if source_root else None
     concepts, invariants, contracts = _parse_batch_response(
         result, source_root=src_root, focus_items=focus,
@@ -1458,11 +1477,18 @@ def _run_phase2_parallel(
         )
 
     items = [(i, focus, ctx) for i, (focus, ctx) in enumerate(batches)]
+    def _on_batch_error(item: Any, exc: Exception) -> tuple:
+        logger.warning(
+            "Phase 2 batch %d/%d crashed: %s: %s",
+            item[0] + 1, total, type(exc).__name__, exc,
+        )
+        return ([], [], [])
+
     results = run_parallel(
         items, _do_batch,
         max_workers=max_workers,
         label="study-p2",
-        on_error=lambda _item, _exc: ([], [], []),
+        on_error=_on_batch_error,
     )
 
     all_concepts: list[Concept] = []
