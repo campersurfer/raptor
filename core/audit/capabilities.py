@@ -92,6 +92,7 @@ def format_capability_report(caps: AuditCapabilities) -> str:
         "semgrep": "Semgrep",
         "coccinelle": "Coccinelle",
         "codeql": "CodeQL",
+        "ghidra": "Ghidra",
     }
 
     for attr, label in tool_names.items():

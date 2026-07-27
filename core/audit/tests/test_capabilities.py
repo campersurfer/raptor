@@ -42,7 +42,7 @@ class TestFormatCapabilityReport:
     def test_all_present(self):
         caps = AuditCapabilities(
             joern=True, r2=True, frida=True,
-            semgrep=True, coccinelle=True, codeql=True,
+            semgrep=True, coccinelle=True, codeql=True, ghidra=True,
             binary_available=True, dwarf_available=True,
         )
         report = format_capability_report(caps)

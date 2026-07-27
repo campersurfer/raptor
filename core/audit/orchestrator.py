@@ -1180,6 +1180,7 @@ def _run_audit_body(
         "coccinelle": caps.coccinelle,
         "r2": caps.r2,
         "frida": caps.frida,
+        "ghidra": caps.ghidra,
     }
     degradation_report = assess_degradation(tool_capabilities)
     if degradation_report.degraded:
