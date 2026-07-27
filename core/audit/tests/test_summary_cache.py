@@ -125,6 +125,41 @@ class TestSummaryCache:
         assert result.function == "init"
 
 
+class TestPathTraversalRejection:
+    """All public methods must reject path-traversal components."""
+
+    _PAYLOADS = [
+        ("../../etc", "passwd"),
+        ("openssl", "../../etc"),
+        ("../", "1.0"),
+        ("lib", "../../../tmp"),
+        ("", "1.0"),
+        ("lib", ""),
+    ]
+
+    def test_store_raises(self, tmp_path):
+        import pytest
+        cache = SummaryCache(cache_dir=tmp_path)
+        for lib, ver in self._PAYLOADS:
+            with pytest.raises(ValueError):
+                cache.store(lib, ver, [])
+
+    def test_lookup_returns_none(self, tmp_path):
+        cache = SummaryCache(cache_dir=tmp_path)
+        for lib, ver in self._PAYLOADS:
+            assert cache.lookup(lib, ver, "f") is None
+
+    def test_lookup_library_returns_empty(self, tmp_path):
+        cache = SummaryCache(cache_dir=tmp_path)
+        for lib, ver in self._PAYLOADS:
+            assert cache.lookup_library(lib, ver) == {}
+
+    def test_has_library_returns_false(self, tmp_path):
+        cache = SummaryCache(cache_dir=tmp_path)
+        for lib, ver in self._PAYLOADS:
+            assert cache.has_library(lib, ver) is False
+
+
 class TestDetectLibraryVersion:
     def test_requirements_txt(self, tmp_path):
         (tmp_path / "requirements.txt").write_text(

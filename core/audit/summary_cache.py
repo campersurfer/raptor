@@ -129,6 +129,8 @@ class SummaryCache:
         return path
 
     def has_library(self, library: str, version: str) -> bool:
+        if not self._safe_component(library) or not self._safe_component(version):
+            return False
         path = self.cache_dir / library / version / "summaries.json"
         return path.is_file()
 
@@ -165,6 +167,8 @@ class SummaryCache:
         library: str,
         version: str,
     ) -> Dict[str, CachedSummary]:
+        if not self._safe_component(library) or not self._safe_component(version):
+            return {}
         path = self.cache_dir / library / version / "summaries.json"
         if not path.is_file():
             return {}
