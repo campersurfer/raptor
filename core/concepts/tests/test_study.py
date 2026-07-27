@@ -1271,8 +1271,11 @@ class TestApplySagePrior:
                           definition="int page_alloc(void) { return 0; }")]
         sage_prior = {
             "page": [{
-                "content": f"Concept [page]: ownership\n"
-                           f"  Source hash: {composite}",
+                "content": (
+                    f"Concept [page]: ownership\n"
+                    f"  Evidence (code_path): mm.c:1 [h={h}] — alloc\n"
+                    f"  Source hash: {composite}"
+                ),
                 "confidence": 0.85,
             }],
         }
