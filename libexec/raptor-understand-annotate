@@ -49,6 +49,19 @@ def main() -> int:
         return 1
 
     try:
+        from core.orchestration.audit_bridge import find_audit_output, load_summaries
+        from core.orchestration.understand_bridge import enrich_context_map_with_summaries
+        audit_dir = find_audit_output(out_dir)
+        if audit_dir:
+            summaries = load_summaries(audit_dir)
+            if summaries:
+                enriched = enrich_context_map_with_summaries(out_dir, summaries)
+                if enriched:
+                    print(f"Summaries: enriched {enriched} context-map entries from audit")
+    except Exception:
+        pass
+
+    try:
         from packages.code_understanding.annotation_synth import (
             synthesise_from_understand_output,
         )

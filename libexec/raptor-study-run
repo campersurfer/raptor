@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Run Phase 2 + 3 of /understand --study: LLM concept extraction.
+
+Usage:
+    raptor-study-run <output_dir> [--model MODEL]
+
+Reads study-list.json from output_dir (written by raptor-study-prep),
+dispatches items to an LLM in batches, synthesises results, and writes
+domain-model.json to the same directory.
+
+Requires an LLM provider (set ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.).
+"""
+import argparse
+import faulthandler
+import logging
+import os
+import signal
+import sys
+from pathlib import Path
+
+faulthandler.enable()
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
+
+# ─── trust-marker check ───
+if not (os.environ.get("CLAUDECODE") or os.environ.get("_RAPTOR_TRUSTED")):
+    sys.stderr.write(
+        f"{sys.argv[0]}: internal dispatch script.\n"
+        "  Run via 'bin/raptor' instead.\n"
+        "  Tests / power users: set _RAPTOR_TRUSTED=1 to bypass.\n"
+    )
+    sys.exit(2)
+# ─── end trust-marker check ───
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import core.startup.process_init  # noqa: E402,F401
+
+from core.concepts.study import run_study  # noqa: E402
+
+logger = logging.getLogger("raptor-study-run")
+
+
+def _progress(phase: str, message: str) -> None:
+    print(f"study-run[{phase}]: {message}", file=sys.stderr, flush=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="raptor-study-run",
+        description="Phase 2 + 3: LLM concept extraction and synthesis.",
+    )
+    ap.add_argument("output_dir", help="Directory with study-list.json.")
+    ap.add_argument("--model", default=None,
+                    help="LLM model override (e.g. claude-sonnet-4-6).")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    parsed = ap.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if parsed.verbose else logging.INFO,
+        format="%(name)s: %(message)s",
+    )
+
+    output_dir = Path(parsed.output_dir).resolve()
+    study_list = output_dir / "study-list.json"
+    if not study_list.is_file():
+        print(
+            f"study-run: {study_list} not found — run raptor-study-prep first",
+            file=sys.stderr,
+        )
+        return 1
+
+    from packages.llm_analysis import get_client
+
+    if parsed.model:
+        model_name = parsed.model
+        if "gemini" in model_name:
+            provider = "gemini"
+        elif "gpt" in model_name or "o1" in model_name or "o3" in model_name:
+            provider = "openai"
+        elif "mistral" in model_name or "codestral" in model_name:
+            provider = "mistral"
+        else:
+            provider = "anthropic"
+        client = get_client(prefer=provider)
+        if client and client.config.primary_model:
+            client.config.primary_model.model_name = model_name
+    else:
+        client = get_client()
+
+    if client is None:
+        print(
+            "study-run: no LLM provider available. "
+            "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or similar.",
+            file=sys.stderr,
+        )
+        return 1
+
+    _progress("start", f"Reading {study_list}")
+    model = run_study(
+        study_list,
+        output_dir,
+        client,
+        on_progress=_progress,
+    )
+
+    print(
+        f"study-run: domain model written — "
+        f"{len(model.concepts)} concepts, "
+        f"{len(model.invariants)} invariants, "
+        f"{len(model.contracts)} contracts",
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -105,18 +105,19 @@ core/sage/docker-compose.yml down -v` to wipe them.
 
 ## SAGE Domains
 
-Repo-scoped domains use a `{repo_key}` suffix (SHA-256 prefix of the target
-path) to prevent cross-project leakage. Global domains apply across targets.
+Domains use repo-scoped variants (`{repo_key}` = short hash of the
+repository path) to prevent cross-project leakage.  Global domains are
+used for knowledge that generalises across targets.
 
-| Domain | Scope | Purpose |
-|--------|-------|---------|
-| `raptor-findings-{repo_key}` | repo | Vulnerability findings and analysis results |
-| `raptor-sca-{repo_key}` | repo | SCA findings and verdicts |
-| `raptor-fp-{repo_key}` | repo | Finding verdicts for cross-run FP suppression |
-| `raptor-fuzzing` | global | Fuzzing strategies and crash outcomes |
-| `raptor-methodology` | global | Analysis methodology and expert reasoning |
-| `raptor-rule-library` | global | Proven checker rules (engine + CWE keyed, cross-target) |
-| `raptor-concepts` | global | Study concept recall (planned) |
+| Domain | Purpose |
+|--------|---------|
+| `raptor-findings-{repo_key}` | Vulnerability findings and analysis results (repo-scoped) |
+| `raptor-fp-{repo_key}` | Finding verdicts for cross-run FP suppression (repo-scoped) |
+| `raptor-sca-{repo_key}` | SCA findings and verdicts (repo-scoped) |
+| `raptor-concepts-{repo_key}` | Study concept recall for `/understand --teach` (repo-scoped) |
+| `raptor-fuzzing` | Fuzzing strategies and crash outcomes (global) |
+| `raptor-methodology` | Analysis methodology, CodeQL build reliability, expert reasoning (global) |
+| `raptor-rule-library` | Proven checker rules keyed by engine + CWE (global, cross-target) |
 
 See `core/sage/CLAUDE.md` for the authoritative domain list and hook table.
 
@@ -230,7 +231,8 @@ similar = await memory.recall_similar("heap overflow strategies for ASLR binarie
 SAGE usage instructions live in `core/sage/CLAUDE.md` and are conditionally
 loaded by RAPTOR's root `CLAUDE.md` only when the `sage_inception` tool is
 present (i.e. when `.mcp.json` registers SAGE, i.e. only when a user has
-actually run `libexec/raptor-sage-setup`). The tools exposed via MCP:
+actually run `libexec/raptor-sage-setup`). The full list of 30+ MCP tools
+is available via the MCP server's tool discovery; the core tools are:
 
 ```
 sage_inception          # Boot persistent memory
@@ -238,6 +240,22 @@ sage_turn               # Every turn: recall + store
 sage_remember           # Store important findings
 sage_recall             # Check for known patterns
 sage_reflect            # After tasks: dos and don'ts
+sage_forget             # Deprecate a memory
+sage_list               # List memories (with domain filter)
+sage_status             # Memory store overview
+sage_register           # Register an agent
+sage_reinstate          # Reinstate a deprecated memory
+sage_rename             # Rename a memory
+sage_link               # Link two memories
+sage_corroborate        # Independently back a memory
+sage_backlog            # Open tasks
+sage_task               # Create or update a task
+sage_timeline           # Time-bucketed activity view
+sage_pipe / sage_pipe_result  # Pipe data between agents
+sage_scope_list / sage_scope_get  # Scope management
+sage_red_pill           # Introspection
+sage_inbox              # Agent inbox
+sage_gov_propose / sage_gov_vote / sage_gov_status  # Governance
 ```
 
 ### Graceful Degradation

@@ -980,6 +980,7 @@ def run_reachability_prepass(
     agentic_out_dir: Path,
     *,
     allow_unreachable: bool = False,
+    joern_server=None,
     inventory: Optional[Dict[str, Any]] = None,
 ) -> "ReachabilityPrepassResult":
     """Always-on companion to ``run_understand_prepass``.
@@ -1037,6 +1038,9 @@ def run_reachability_prepass(
             enrich_with_frida_traces,
             mark_unreachable_low_priority,
         )
+        if joern_server is not None:
+            from core.analysis.reach_audit import set_joern_server
+            set_joern_server(joern_server)
         checklist = load_json(checklist_path)
         if not isinstance(checklist, dict):
             return ReachabilityPrepassResult(
@@ -1065,6 +1069,10 @@ def run_reachability_prepass(
             exc_info=True,
         )
         marked = 0
+    finally:
+        if joern_server is not None:
+            from core.analysis.reach_audit import set_joern_server
+            set_joern_server(None)
 
     return ReachabilityPrepassResult(
         ran=True,

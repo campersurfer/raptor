@@ -1761,3 +1761,54 @@ def _boundary_matches(boundary: Dict[str, Any], detail: Dict[str, Any]) -> bool:
     return any(long_[i:i + n] == short for i in range(len(long_) - n + 1))
 
 
+def enrich_context_map_with_summaries(
+    context_map: Dict[str, Any],
+    summaries: Dict[str, Any],
+) -> int:
+    """Augment context-map entries with audit-derived function summaries.
+
+    For each entry point and sink in the context map, if a corresponding
+    summary exists, annotates it with taint rules, preconditions, and
+    postconditions. This gives /understand --map richer per-function
+    annotations without re-running /audit.
+
+    summaries: dict mapping "file:function" -> summary dict (from core.audit.audit_bridge.load_summaries)
+    Returns number of entries enriched.
+    """
+    if not summaries or not context_map:
+        return 0
+
+    enriched = 0
+
+    for section_key in ("entry_points", "sinks", "sources"):
+        for entry in context_map.get(section_key, []):
+            if not isinstance(entry, dict):
+                continue
+            func = entry.get("function", entry.get("name", ""))
+            file_path = entry.get("file", "")
+            if not func:
+                continue
+
+            key = f"{file_path}:{func}"
+            summary = summaries.get(key)
+            if not summary:
+                continue
+
+            entry["audit_summary"] = {
+                "taint_rules": summary.get("taint_rules", []),
+                "preconditions": summary.get("preconditions", []),
+                "postconditions": summary.get("returns", []),
+                "confidence": summary.get("confidence", ""),
+                "source": summary.get("source", ""),
+            }
+            enriched += 1
+
+    if enriched:
+        logger.info(
+            "understand_bridge: enriched %d context-map entries with audit summaries",
+            enriched,
+        )
+
+    return enriched
+
+

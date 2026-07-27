@@ -532,7 +532,10 @@ class LLMDispatcher:
             parts.append(f"label={safe_worker}")
         if safe_reason:
             parts.append(f"reason={safe_reason}")
-        _logger.log(level, " ".join(parts))
+        try:
+            _logger.log(level, " ".join(parts))
+        except OSError:
+            pass
         if self._audit_path is None:
             return
         with self._audit_lock:

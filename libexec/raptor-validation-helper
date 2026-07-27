@@ -1326,6 +1326,46 @@ def _bridge_understand_output(out_dir, checklist, target,
               f" {n_traces} traces, {n_targets} priority targets")
 
 
+def _bridge_audit_output(out_dir, target=None):
+    """Import /audit constraints, attack chains, and summaries into the validate run."""
+    try:
+        from core.orchestration.audit_bridge import (
+            find_audit_output,
+            load_audit_constraints,
+            enrich_attack_paths,
+            load_attack_chains,
+            inject_chains_as_hypotheses,
+            load_summaries,
+            enrich_with_summaries,
+        )
+    except ImportError:
+        return
+
+    audit_dir = find_audit_output(out_dir, target_path=target)
+    if not audit_dir:
+        return
+
+    constraints = load_audit_constraints(audit_dir)
+    if constraints:
+        attack_paths_file = Path(out_dir) / "attack-paths.json"
+        enriched = enrich_attack_paths(attack_paths_file, constraints)
+        n_constraints = len(constraints)
+        print(f"  Audit bridge: loaded {n_constraints} constraints from {audit_dir.name}"
+              f" — enriched {enriched} attack-path steps")
+
+    chains = load_attack_chains(audit_dir)
+    if chains:
+        attack_surface_file = Path(out_dir) / "attack-surface.json"
+        injected = inject_chains_as_hypotheses(chains, attack_surface_file)
+        print(f"  Audit bridge: injected {injected} chain hypotheses into attack-surface")
+
+    summaries = load_summaries(audit_dir)
+    if summaries:
+        attack_paths_file = Path(out_dir) / "attack-paths.json"
+        enriched_steps = enrich_with_summaries(attack_paths_file, summaries)
+        print(f"  Audit bridge: enriched {enriched_steps} attack-path steps with callee contracts")
+
+
 def prepare_bridge(workdir, target=None):
     """Import /understand output into the validate run."""
     from core.json import load_json
@@ -1428,6 +1468,7 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
         if not no_bridge:
             _bridge_understand_output(out_dir, checklist, target,
                                       pre_rebuild_checklist=pre_rebuild_checklist)
+            _bridge_audit_output(out_dir, target)
 
         print(f"Checklist: {checklist['total_files']} files, {checklist['total_items']} items")
         print(f"OUTPUT_DIR={out_dir}")

@@ -1141,9 +1141,9 @@ Examples:
     parser.add_argument("--no-exploits", action="store_true", help="Skip exploit generation")
     parser.add_argument("--no-patches", action="store_true", help="Skip patch generation")
     parser.add_argument(
-        "--no-annotations",
+        "--no-journal",
         action="store_true",
-        help="Skip per-finding annotation emission (default: emit)",
+        help="Skip per-finding journal emission (default: emit)",
     )
     parser.add_argument(
         "--max-cost-usd", dest="max_cost_usd", type=float, default=None,
@@ -1709,24 +1709,6 @@ Examples:
 
     workflow_start = time.time()
 
-    # ========================================================================
-    # SAGE: Pre-scan recall — check for historical findings
-    # ========================================================================
-    sage_context = []
-    try:
-        from core.sage.hooks import recall_context_for_scan
-        sage_context = recall_context_for_scan(str(repo_path))
-        if sage_context:
-            print(f"\n📚 SAGE: Recalled {len(sage_context)} historical memories for context")
-            for mem in sage_context[:3]:
-                print(f"   [{mem['confidence']:.0%}] {mem['content'][:100]}...")
-        try:
-            save_json(out_dir / "sage_precall_scan.json", {"memories": sage_context})
-        except Exception:
-            pass
-    except Exception as e:
-        logger.debug(f"SAGE pre-scan recall skipped: {e}")
-
     # Detect LLM availability once — single source of truth for all phases
     from packages.llm_analysis import detect_llm_availability
     llm_env = detect_llm_availability()
@@ -1773,7 +1755,13 @@ Examples:
             print(format_analysis_summary(mitigation_result, verbose=True))
 
             verdict = mitigation_result.get('verdict', 'unknown')
-            if verdict == 'unlikely':
+            if verdict == 'unsupported_platform':
+                print("\n" + "=" * 70)
+                print("NOTE: EXPLOIT FEASIBILITY REQUIRES LINUX — SKIPPED")
+                print("=" * 70)
+                print("\nContinuing scan without mitigation analysis...")
+
+            elif verdict == 'unlikely':
                 print("\n" + "=" * 70)
                 print("NOTE: EXPLOITATION UNLIKELY WITH CURRENT MITIGATIONS")
                 print("=" * 70)
@@ -1923,14 +1911,44 @@ Examples:
             scan_inventory = load_json(_checklist_path)
         except Exception:
             pass
+    def _try_cached_joern(target: Path, run_out_dir: Path):
+        """Start a Joern server only if a cached CPG exists for this project."""
+        try:
+            from packages.joern.prereqs import is_available
+            if not is_available():
+                return None
+            project_dir = run_out_dir.parent
+            if project_dir == run_out_dir:
+                return None
+            from packages.joern.runner import load_cached_cpg
+            cpg = load_cached_cpg(target, project_dir)
+            if cpg is None:
+                return None
+            from packages.joern.server import JoernServer
+            srv = JoernServer()
+            srv.start()
+            srv.import_cpg(cpg.path)
+            logger.info("Joern server started with cached CPG for prepass")
+            return srv
+        except Exception:                           # noqa: BLE001
+            logger.debug("Joern cached CPG not available for prepass",
+                         exc_info=True)
+            return None
+
     try:
         from core.orchestration import run_reachability_prepass
-        reachability_prepass_result = run_reachability_prepass(
-            target=original_repo_path,
-            agentic_out_dir=out_dir,
-            allow_unreachable=getattr(args, "allow_unreachable", False),
-            inventory=scan_inventory,
-        )
+        joern_srv = _try_cached_joern(original_repo_path, out_dir)
+        try:
+            reachability_prepass_result = run_reachability_prepass(
+                target=original_repo_path,
+                agentic_out_dir=out_dir,
+                allow_unreachable=getattr(args, "allow_unreachable", False),
+                joern_server=joern_srv,
+                inventory=scan_inventory,
+            )
+        finally:
+            if joern_srv is not None:
+                joern_srv.stop()
         if reachability_prepass_result.ran:
             logger.info(
                 f"Reachability pre-pass marked "
@@ -2633,10 +2651,13 @@ Examples:
         if (out_dir / "checklist.json").exists():
             analysis_cmd.extend(["--checklist", str(out_dir / "checklist.json")])
 
-        # Forward --no-annotations opt-out so operators who don't
-        # want annotation side effects (CI / scratch runs) can suppress.
-        if args.no_annotations:
-            analysis_cmd.append("--no-annotations")
+        # Forward --no-journal opt-out so operators who don't
+        # want journal side effects (CI / scratch runs) can suppress.
+        if args.no_journal:
+            analysis_cmd.append("--no-journal")
+        precall_path = out_dir / "sage_precall_scan.json"
+        if precall_path.exists():
+            analysis_cmd.extend(["--sage-precall", str(precall_path)])
         if args.no_exploits:
             analysis_cmd.append("--no-exploits")
         if args.no_patches:
@@ -3008,60 +3029,6 @@ Examples:
             except Exception as e:
                 logger.error(f"Fuzz phase failed: {e}", exc_info=True)
                 print(f"\n  ✗ Fuzz phase error: {e}", file=sys.stderr)
-
-    # ========================================================================
-    # SAGE: Post-scan storage — store findings for cross-run learning
-    # ========================================================================
-    try:
-        from core.sage.hooks import store_scan_results, store_analysis_results
-
-        # Collect findings from orchestration results or analysis
-        findings_to_store = []
-        if orchestration_result:
-            findings_to_store = orchestration_result.get("results", [])
-        elif analysis:
-            findings_to_store = analysis.get("results", [])
-
-        sage_stored = store_scan_results(
-            repo_path=str(repo_path),
-            findings=findings_to_store,
-            scan_metrics=scan_metrics,
-        )
-
-        if analysis:
-            store_analysis_results(
-                repo_path=str(repo_path),
-                analysis=analysis,
-                orchestration=orchestration_result,
-            )
-
-        if sage_stored > 0:
-            print(f"\n📚 SAGE: Stored {sage_stored} findings for cross-run learning")
-
-        # Store exploit outcomes when exploit generation was attempted
-        if orchestration_result and not getattr(args, "no_exploits", True):
-            from core.sage.hooks import store_exploit_outcomes
-
-            exploit_outcomes = []
-            for f in orchestration_result.get("results", []):
-                if f.get("exploitable") or f.get("has_exploit"):
-                    exploit_outcomes.append({
-                        "finding_id": f.get("finding_id", ""),
-                        "vuln_type": f.get("rule_id", ""),
-                        "cwe_id": f.get("cwe_id", ""),
-                        "file_path": f.get("file_path", ""),
-                        "has_exploit": f.get("has_exploit", False),
-                        "result": "success" if f.get("has_exploit") else "blocked",
-                    })
-            if exploit_outcomes:
-                sage_exploits = store_exploit_outcomes(
-                    repo_path=str(repo_path),
-                    outcomes=exploit_outcomes,
-                )
-                if sage_exploits > 0:
-                    print(f"📚 SAGE: Stored {sage_exploits} exploit outcomes")
-    except Exception as e:
-        logger.debug(f"SAGE post-scan storage skipped: {e}")
 
     print("\n📊 Summary:")
     print(f"   Total findings: {scan_metrics.get('total_findings', 0)}")

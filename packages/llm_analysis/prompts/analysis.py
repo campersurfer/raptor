@@ -663,20 +663,6 @@ def build_analysis_prompt_bundle(
                 origin=file_path,
             ))
 
-    # SAGE historical context is prior LLM output —
-    # propagated trust label is "untrusted".
-    try:
-        from core.sage.hooks import enrich_analysis_prompt
-        sage_context = enrich_analysis_prompt(rule_id, file_path, repo_path=repo_path)
-        if sage_context:
-            blocks.append(UntrustedBlock(
-                content=sage_context,
-                kind="sage-historical-context",
-                origin="sage:cross-run-learning",
-            ))
-    except Exception:
-        pass
-
     # Caller-supplied extra blocks (e.g. RetryTask prior-reasoning + contradictions).
     # All extras are untrusted by definition (callers cannot pass trusted content here).
     blocks.extend(extra_blocks)

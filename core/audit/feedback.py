@@ -1,0 +1,417 @@
+"""/validate → /audit feedback loop (Reflexion pattern).
+
+Reads a /validate report (Stage-D ``stage-d.json`` or final
+``findings.json``), matches findings back to audit annotations
+by file+function, and updates:
+
+1. **Annotation status** — downgrades disproven findings, upgrades
+   missed ones, appends corroboration notes for confirmed findings.
+2. **Annotation body** — appends a ``### /validate feedback`` block
+   with the validation verdict, reason, and extracted lesson.
+3. **coverage-audit.json** — syncs the status change so the gap
+   list reflects the corrected state.
+4. **Audit log** — records each feedback action for the critique
+   pass and reporting.
+
+Status transitions:
+  - ``ruled_out`` or ``is_true_positive=False`` → annotation
+    ``finding``/``suspicious`` downgraded to ``clean``
+  - ``confirmed``/``exploitable`` when annotation was ``clean`` →
+    upgraded to ``finding``
+  - ``confirmed``/``exploitable`` when annotation was already
+    ``finding`` → no status change, corroboration appended
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+_DISPROVEN_STATUSES = frozenset({
+    "ruled_out", "false_positive", "disproven",
+})
+
+_CONFIRMED_STATUSES = frozenset({
+    "confirmed", "exploitable",
+})
+
+
+def import_validation_results(
+    *,
+    validation_report: Path,
+    annotations_dir: Path,
+    audit_out_dir: Optional[Path] = None,
+) -> Dict[str, int]:
+    """Import /validate results into audit annotations.
+
+    Args:
+        validation_report: Path to /validate output — accepts
+            ``findings.json`` (flat list or ``{"findings": [...]}``)
+            or ``stage-d.json`` (``{"findings": [...],"summary":...}``).
+        annotations_dir: Path to the audit annotations directory.
+        audit_out_dir: If provided, updates ``coverage-audit.json``
+            and appends to ``.audit-log.jsonl``.
+
+    Returns:
+        Dict with counts: updated, downgraded, upgraded, corroborated,
+        skipped.
+    """
+    from core.annotations.storage import read_annotation, write_annotation
+    from core.annotations.models import Annotation
+
+    try:
+        with open(validation_report) as f:
+            report = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("failed to load validation report %s: %s", validation_report, exc)
+        return {"updated": 0, "downgraded": 0, "upgraded": 0, "corroborated": 0, "skipped": 0}
+
+    findings = _extract_findings(report)
+    findings = _deduplicate_findings(findings)
+
+    counts = {
+        "updated": 0,
+        "downgraded": 0,
+        "upgraded": 0,
+        "corroborated": 0,
+        "skipped": 0,
+    }
+
+    for finding in findings:
+        file_path = finding.get("file", "")
+        function_name = finding.get("function", "")
+        if not file_path or not function_name:
+            counts["skipped"] += 1
+            continue
+
+        existing = read_annotation(annotations_dir, file_path, function_name)
+        if not existing:
+            counts["skipped"] += 1
+            continue
+
+        if existing.metadata.get("source") == "human":
+            logger.info(
+                "Skipping feedback for %s:%s — human annotation preserved",
+                file_path, function_name,
+            )
+            counts["skipped"] += 1
+            continue
+
+        validate_verdict = _classify_verdict(finding)
+        audit_status = existing.metadata.get("status", "")
+        transition = _compute_transition(audit_status, validate_verdict)
+
+        reason = _sanitize_markdown(_extract_reason(finding))
+        lesson = _extract_lesson(finding, audit_status, validate_verdict)
+
+        feedback_block = _format_feedback_block(
+            validate_verdict, reason, lesson, transition,
+        )
+
+        new_body = existing.body.rstrip() + "\n\n" + feedback_block + "\n"
+
+        new_metadata = dict(existing.metadata)
+        if transition["new_status"]:
+            new_metadata["status"] = transition["new_status"]
+
+        updated_ann = Annotation(
+            file=existing.file,
+            function=existing.function,
+            body=new_body,
+            metadata=new_metadata,
+        )
+        write_annotation(annotations_dir, updated_ann, overwrite="all")
+
+        counts["updated"] += 1
+        counts[transition["kind"]] += 1
+
+        if audit_out_dir:
+            _update_audit_state(
+                audit_out_dir, file_path, function_name,
+                transition, validate_verdict, reason,
+            )
+
+    return counts
+
+
+def _deduplicate_findings(
+    findings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep only the last finding per (file, function) pair."""
+    seen: Dict[tuple, int] = {}
+    for idx, finding in enumerate(findings):
+        key = (finding.get("file", ""), finding.get("function", ""))
+        seen[key] = idx
+    return [findings[i] for i in sorted(seen.values())]
+
+
+def _sanitize_markdown(text: str) -> str:
+    """Strip markdown heading markers from untrusted text.
+
+    Prevents injection of ``## function_name`` sections that the
+    annotation parser would interpret as real function headings.
+    """
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            line = stripped.lstrip("#").lstrip()
+        if "<!-- meta:" in line:
+            line = line.replace("<!--", "").replace("-->", "")
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _extract_findings(report: Any) -> List[Dict[str, Any]]:
+    """Normalise different /validate output shapes into a flat list."""
+    if isinstance(report, list):
+        return report
+    if isinstance(report, dict):
+        if "findings" in report:
+            return report["findings"]
+        if "results" in report:
+            return report["results"]
+    return []
+
+
+def _classify_verdict(finding: Dict[str, Any]) -> str:
+    """Map /validate's various status fields to a canonical verdict.
+
+    Returns one of: ``disproven``, ``confirmed``, ``unknown``.
+    """
+    ruling = finding.get("ruling", {})
+    if isinstance(ruling, dict):
+        status = ruling.get("status", "")
+    else:
+        status = str(ruling)
+
+    if status in _DISPROVEN_STATUSES:
+        return "disproven"
+    if status in _CONFIRMED_STATUSES:
+        return "confirmed"
+
+    if finding.get("is_true_positive") is False:
+        return "disproven"
+    if finding.get("is_true_positive") is True:
+        return "confirmed"
+
+    return "unknown"
+
+
+def _compute_transition(
+    audit_status: str,
+    validate_verdict: str,
+) -> Dict[str, Any]:
+    """Decide what status transition to make.
+
+    Returns dict with ``kind`` (downgraded/upgraded/corroborated),
+    ``new_status`` (or None if no change), and ``description``.
+    """
+    if validate_verdict == "disproven":
+        if audit_status in ("finding", "suspicious"):
+            return {
+                "kind": "downgraded",
+                "new_status": "clean",
+                "description": (
+                    f"Downgraded {audit_status} → clean "
+                    f"(/validate disproved)"
+                ),
+            }
+        return {
+            "kind": "corroborated",
+            "new_status": None,
+            "description": (
+                f"/validate disproved but audit status was already "
+                f"{audit_status!r}"
+            ),
+        }
+
+    if validate_verdict == "confirmed":
+        if audit_status == "clean":
+            return {
+                "kind": "upgraded",
+                "new_status": "finding",
+                "description": (
+                    "Upgraded clean → finding "
+                    "(/validate confirmed a missed vulnerability)"
+                ),
+            }
+        if audit_status in ("finding", "suspicious"):
+            return {
+                "kind": "corroborated",
+                "new_status": None,
+                "description": (
+                    f"/validate confirmed — corroborates audit "
+                    f"status {audit_status!r}"
+                ),
+            }
+        return {
+            "kind": "corroborated",
+            "new_status": None,
+            "description": f"/validate confirmed (audit status: {audit_status!r})",
+        }
+
+    return {
+        "kind": "corroborated",
+        "new_status": None,
+        "description": f"/validate verdict unknown (audit status: {audit_status!r})",
+    }
+
+
+def _extract_reason(finding: Dict[str, Any]) -> str:
+    """Pull the human-readable reason from the /validate finding."""
+    ruling = finding.get("ruling", {})
+    if isinstance(ruling, dict):
+        reason = ruling.get("reason", "")
+        if not reason:
+            synth = ruling.get("evidence_synthesis", {})
+            reason = synth.get("synthesis", "")
+        if not reason:
+            disq = ruling.get("disqualifier", "")
+            if disq:
+                reason = f"Disqualifier: {disq}"
+        if reason:
+            return reason
+
+    if finding.get("false_positive_reason"):
+        return finding["false_positive_reason"]
+    if finding.get("reasoning"):
+        return finding["reasoning"]
+    return ""
+
+
+def _extract_lesson(
+    finding: Dict[str, Any],
+    audit_status: str,
+    validate_verdict: str,
+) -> str:
+    """Generate a lesson-learned string for the feedback block.
+
+    The lesson captures WHY the audit was wrong so future runs
+    can adjust (Reflexion pattern).
+    """
+    if validate_verdict == "disproven" and audit_status == "finding":
+        ruling = finding.get("ruling", {})
+        if isinstance(ruling, dict):
+            disq = ruling.get("disqualifier", "")
+            if disq == "D-0":
+                return "Lesson: hypothesis was wrong — re-examine evidence."
+            if disq == "D-1":
+                return "Lesson: code was test/mock/example, not production."
+            if disq in ("D-1.5", "D-2"):
+                return "Lesson: preconditions make this unreachable."
+            if disq == "D-3":
+                return "Lesson: finding was hedged — require concrete proof."
+            if disq == "D-4":
+                return "Lesson: real bug but no security impact."
+        return "Lesson: check /validate's reasoning for correction."
+
+    if validate_verdict == "confirmed" and audit_status == "clean":
+        return (
+            "Lesson: missed vulnerability — review strategy may need "
+            "broader scope or different tool checks."
+        )
+
+    return ""
+
+
+def _format_feedback_block(
+    validate_verdict: str,
+    reason: str,
+    lesson: str,
+    transition: Dict[str, Any],
+) -> str:
+    """Format the feedback block appended to the annotation body."""
+    lines = ["### /validate feedback"]
+    lines.append(f"Verdict: {validate_verdict}")
+    lines.append(f"Transition: {transition['description']}")
+    if reason:
+        lines.append(f"Reason: {reason}")
+    if lesson:
+        lines.append(lesson)
+    return "\n".join(lines)
+
+
+def _update_audit_state(
+    audit_out_dir: Path,
+    file_path: str,
+    function_name: str,
+    transition: Dict[str, Any],
+    validate_verdict: str,
+    reason: str,
+) -> None:
+    """Update coverage-audit.json and audit log with the feedback."""
+    if transition["new_status"]:
+        _update_coverage_audit_status(
+            audit_out_dir, file_path, function_name,
+            transition["new_status"],
+        )
+
+    from core.audit.record import append_audit_log
+    append_audit_log(audit_out_dir, {
+        "action": "feedback",
+        "key": f"{file_path}:{function_name}",
+        "file": file_path,
+        "function": function_name,
+        "validate_verdict": validate_verdict,
+        "transition": transition["kind"],
+        "new_status": transition.get("new_status"),
+        "reason": reason,
+    })
+
+
+def _update_coverage_audit_status(
+    audit_out_dir: Path,
+    file_path: str,
+    function_name: str,
+    new_status: str,
+) -> None:
+    """Update a single function's status in coverage-audit.json."""
+    import tempfile
+
+    audit_path = audit_out_dir / "coverage-audit.json"
+    if not audit_path.exists():
+        return
+
+    try:
+        with open(audit_path) as f:
+            audit_data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Cannot read %s: %s", audit_path, exc)
+        return
+
+    updated = False
+
+    files = audit_data.get("files", {})
+    file_entry = files.get(file_path, {})
+    functions = file_entry.get("functions", {})
+    if function_name in functions:
+        functions[function_name]["status"] = new_status
+        updated = True
+
+    for entry in audit_data.get("functions_analysed", []):
+        if entry.get("file") == file_path and entry.get("function") == function_name:
+            entry["status"] = new_status
+            updated = True
+            break
+
+    if updated:
+        fd, tmp = tempfile.mkstemp(
+            dir=str(audit_out_dir), suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(audit_data, f, indent=2)
+            Path(tmp).replace(audit_path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        logger.debug(
+            "Updated coverage-audit %s:%s -> %s",
+            file_path, function_name, new_status,
+        )

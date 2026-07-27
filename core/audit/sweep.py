@@ -1,0 +1,1111 @@
+"""Tool-grounded sweep execution for /audit.
+
+Wraps existing tool packages (semgrep, coccinelle) and SMT verb shims
+to run a hypothesis test against a specific file/function, then logs
+the result to the audit trail.  The sweep log entry is the breadcrumb
+that G3 (NO-SELF-CRITIQUE) checks: re-recording a function requires a
+sweep since the last record.
+
+Uses ``packages.semgrep.runner.run_rule``,
+``packages.coccinelle.runner.run_rule``, and the
+``libexec/raptor-smt-*`` CLI shims.
+"""
+
+from __future__ import annotations
+
+import json as _json
+import logging
+import os
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from ._util import is_valid_identifier, safe_join
+
+logger = logging.getLogger(__name__)
+
+_IDENTIFIER_QUALIFIED_RE = None  # lazy import
+
+
+def _is_valid_qualified(name: str) -> bool:
+    """Validate a potentially qualified identifier (e.g., os.system)."""
+    global _IDENTIFIER_QUALIFIED_RE
+    if _IDENTIFIER_QUALIFIED_RE is None:
+        import re
+        _IDENTIFIER_QUALIFIED_RE = re.compile(
+            r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$"
+        )
+    return bool(_IDENTIFIER_QUALIFIED_RE.match(name))
+
+
+@dataclass
+class SarifCache:
+    """Index of prior SARIF results keyed by (file, rule_id).
+
+    Loaded once at orchestrator start from scan/*.sarif in the output
+    directory. When the sweep engine wants to run semgrep on a file,
+    it checks here first — a cache hit returns the pre-existing matches
+    without spawning a subprocess.
+    """
+    _by_file: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    hit_count: int = 0
+    miss_count: int = 0
+
+    def lookup(
+        self, file_path: str, line_start: int = 0, line_end: int = 0,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Return SARIF results overlapping the given file and line range.
+
+        Returns None on cache miss (file not in any prior SARIF).
+        Returns [] if the file was scanned but had no hits in range.
+        """
+        normalized = _normalize_sarif_path(file_path)
+        results = self._by_file.get(normalized)
+        if results is None:
+            self.miss_count += 1
+            return None
+
+        self.hit_count += 1
+        if not line_start:
+            return results
+
+        return [
+            r for r in results
+            if _sarif_result_in_range(r, line_start, line_end)
+        ]
+
+    @classmethod
+    def from_directory(cls, out_dir: Path) -> "SarifCache":
+        """Load all .sarif files from out_dir/scan/."""
+        cache = cls()
+        scan_dir = out_dir / "scan"
+        if not scan_dir.is_dir():
+            return cache
+
+        for sarif_file in scan_dir.glob("*.sarif"):
+            try:
+                data = _json.loads(sarif_file.read_text())
+            except (OSError, _json.JSONDecodeError):
+                continue
+            for run in data.get("runs", []):
+                for result in run.get("results", []):
+                    locs = result.get("locations") or [{}]
+                    loc = locs[0] if locs else {}
+                    phys = loc.get("physicalLocation", {})
+                    uri = phys.get("artifactLocation", {}).get("uri", "")
+                    normalized = _normalize_sarif_path(uri)
+                    if normalized:
+                        cache._by_file.setdefault(normalized, []).append(result)
+
+        total = sum(len(v) for v in cache._by_file.values())
+        if total:
+            logger.info(
+                "sarif_cache: loaded %d results across %d files",
+                total, len(cache._by_file),
+            )
+        return cache
+
+
+def _normalize_sarif_path(uri_or_path: str) -> str:
+    """Normalize a SARIF artifact URI or file path to a stable key.
+
+    Strips leading ``file://`` and ``./`` prefixes, collapses to a
+    forward-slash-separated relative path so that lookup keys match
+    insertion keys regardless of how the caller spells the path.
+    """
+    p = uri_or_path
+    if p.startswith("file://"):
+        p = p[len("file://"):]
+    p = p.lstrip("/")
+    if p.startswith("./"):
+        p = p[2:]
+    return p.replace("\\", "/")
+
+
+def _sarif_result_in_range(
+    result: Dict[str, Any], line_start: int, line_end: int,
+) -> bool:
+    locs = result.get("locations") or [{}]
+    loc = locs[0] if locs else {}
+    region = loc.get("physicalLocation", {}).get("region", {})
+    rline = region.get("startLine", 0)
+    if not rline:
+        return True
+    if line_end:
+        return line_start <= rline <= line_end
+    return rline >= line_start
+
+
+def _check_path_containment(
+    target_path: Path, file_path: str, tool: str,
+) -> Optional[SweepResult]:
+    """Return an error SweepResult if file_path escapes target_path."""
+    if safe_join(target_path, file_path) is None:
+        return SweepResult(
+            tool=tool,
+            file_path=file_path,
+            function_name="",
+            outcome="error",
+            errors=[f"path escapes target: {file_path}"],
+        )
+    return None
+
+
+@dataclass
+class SweepResult:
+    tool: str
+    file_path: str
+    function_name: str
+    outcome: str  # confirmed | refuted | error | inconclusive
+    matches: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    rule_id: Optional[str] = None
+    raw_output: Optional[str] = None
+
+    def to_log_entry(self) -> Dict[str, Any]:
+        entry: Dict[str, Any] = {
+            "action": "sweep",
+            "key": f"{self.file_path}:{self.function_name}",
+            "file": self.file_path,
+            "function": self.function_name,
+            "tool": self.tool,
+            "outcome": self.outcome,
+        }
+        if self.rule_id:
+            entry["rule_id"] = self.rule_id
+        if self.matches:
+            entry["match_count"] = len(self.matches)
+        if self.errors:
+            entry["errors"] = self.errors
+        return entry
+
+
+def run_semgrep_sweep(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    rule_config: str,
+    line_start: int = 0,
+    line_end: int = 0,
+) -> SweepResult:
+    """Run a semgrep rule against a single file and classify matches.
+
+    Args:
+        target_path: Root of the target codebase.
+        file_path: Relative path to the source file.
+        function_name: Function being audited (for match filtering).
+        rule_config: Semgrep config — can be a .yaml path, rule pack, or
+            inline rule written to a temp file by the caller.
+        line_start: Function start line (for filtering matches to function).
+        line_end: Function end line.
+
+    Returns:
+        SweepResult with outcome and matches.
+    """
+    escape = _check_path_containment(target_path, file_path, "semgrep")
+    if escape:
+        return escape
+
+    full_path = target_path / file_path
+    if not full_path.exists():
+        return SweepResult(
+            tool="semgrep",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"file not found: {full_path}"],
+        )
+
+    try:
+        from packages.semgrep.runner import run_rule, is_available
+
+        if not is_available():
+            return SweepResult(
+                tool="semgrep",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=["semgrep not installed"],
+            )
+
+        result = run_rule(full_path, rule_config, timeout=120)
+
+        in_function = []
+        for finding in result.findings:
+            if hasattr(finding, "line"):
+                finding_line = finding.line
+            elif isinstance(finding, dict):
+                finding_line = finding.get("start", {}).get("line", 0)
+            else:
+                finding_line = 0
+            if line_start and line_end:
+                if line_start <= finding_line <= line_end:
+                    in_function.append(finding)
+            else:
+                in_function.append(finding)
+
+        outcome = "confirmed" if in_function else "refuted"
+        serialized = []
+        for f in in_function:
+            if hasattr(f, "to_dict"):
+                serialized.append(f.to_dict())
+            elif isinstance(f, dict):
+                serialized.append(f)
+            else:
+                serialized.append({"line": getattr(f, "line", 0),
+                                   "rule_id": getattr(f, "rule_id", ""),
+                                   "message": getattr(f, "message", "")})
+        return SweepResult(
+            tool="semgrep",
+            file_path=file_path,
+            function_name=function_name,
+            outcome=outcome,
+            matches=serialized,
+            rule_id=rule_config,
+            errors=result.errors,
+        )
+    except Exception as exc:
+        return SweepResult(
+            tool="semgrep",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[str(exc)],
+        )
+
+
+def run_coccinelle_sweep(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    cocci_rule: str,
+    defines: Optional[Dict[str, str]] = None,
+) -> SweepResult:
+    """Run a Coccinelle rule against a single C file.
+
+    Args:
+        target_path: Root of the target codebase.
+        file_path: Relative path to the C source file.
+        function_name: Function being audited.
+        cocci_rule: Path to the .cocci rule file.
+        defines: Optional spatch -D defines (e.g. {"func": "parse_input"}).
+
+    Returns:
+        SweepResult with outcome and matches.
+    """
+    escape = _check_path_containment(target_path, file_path, "coccinelle")
+    if escape:
+        return escape
+
+    full_path = target_path / file_path
+    if not full_path.exists():
+        return SweepResult(
+            tool="coccinelle",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"file not found: {full_path}"],
+        )
+
+    try:
+        from packages.coccinelle.runner import run_rule, is_available
+
+        if not is_available():
+            return SweepResult(
+                tool="coccinelle",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=["coccinelle (spatch) not installed"],
+            )
+
+        result = run_rule(
+            full_path,
+            cocci_rule,
+            defines=defines or {},
+            timeout=120,
+        )
+
+        outcome = "confirmed" if result.matches else "refuted"
+        matches = []
+        for f in result.matches:
+            if hasattr(f, "to_dict"):
+                matches.append(f.to_dict())
+            else:
+                matches.append({"raw": str(f)})
+        return SweepResult(
+            tool="coccinelle",
+            file_path=file_path,
+            function_name=function_name,
+            outcome=outcome,
+            matches=matches,
+            rule_id=cocci_rule,
+            errors=result.errors if hasattr(result, "errors") else [],
+        )
+    except Exception as exc:
+        return SweepResult(
+            tool="coccinelle",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[str(exc)],
+        )
+
+
+# SMT verb names → libexec shim basenames
+_SMT_VERBS = {
+    "check-overflow": "raptor-smt-check-overflow",
+    "check-oob": "raptor-smt-check-oob",
+    "check-null-deref": "raptor-smt-check-null-deref",
+    "check-overflow-to-oob": "raptor-smt-check-overflow-to-oob",
+    "check-negative-bypass": "raptor-smt-check-negative-bypass",
+    "validate-path": "raptor-smt-validate-path",
+}
+
+
+def run_smt_sweep(
+    *,
+    file_path: str,
+    function_name: str,
+    verb: str,
+    smt_args: Dict[str, Any],
+) -> SweepResult:
+    """Run an SMT verb shim and classify the result.
+
+    Args:
+        file_path: Source file being audited (for logging).
+        function_name: Function being audited.
+        verb: SMT verb name (e.g. "check-overflow", "validate-path").
+        smt_args: Dict of CLI args for the verb (keys become --key flags,
+            values become their arguments). List values are serialised
+            as JSON.
+
+    Returns:
+        SweepResult with outcome ``confirmed`` (sat — the condition is
+        feasible) or ``refuted`` (unsat — the condition is infeasible).
+    """
+    shim_name = _SMT_VERBS.get(verb)
+    if not shim_name:
+        return SweepResult(
+            tool="smt",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"unknown SMT verb {verb!r}; valid: {sorted(_SMT_VERBS)}"],
+        )
+
+    raptor_dir = Path(__file__).resolve().parents[2]
+    shim_path = raptor_dir / "libexec" / shim_name
+    if not shim_path.exists():
+        return SweepResult(
+            tool="smt",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"shim not found: {shim_path}"],
+        )
+
+    cmd = ["python3", str(shim_path)]
+    import re as _re
+    _safe_key_re = _re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+    for key, value in smt_args.items():
+        if not _safe_key_re.match(key):
+            return SweepResult(
+                tool="smt",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=[
+                    f"invalid smt_args key {key!r}: "
+                    "must be alphanumeric/underscore/hyphen"
+                ],
+            )
+        flag = f"--{key}"
+        if isinstance(value, bool):
+            if value:
+                cmd.append(flag)
+        elif isinstance(value, (list, dict)):
+            cmd.extend([flag, _json.dumps(value)])
+        else:
+            cmd.extend([flag, str(value)])
+
+    try:
+        try:
+            from core.config import RaptorConfig
+            safe_env = RaptorConfig.get_safe_env()
+        except ImportError:
+            safe_env = dict(os.environ)
+            for var in ("TERMINAL", "EDITOR", "VISUAL", "BROWSER", "PAGER"):
+                safe_env.pop(var, None)
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=safe_env,
+        )
+        raw = proc.stdout.strip()
+
+        if proc.returncode != 0:
+            return SweepResult(
+                tool="smt",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=[proc.stderr.strip() or f"exit code {proc.returncode}"],
+                raw_output=raw,
+                rule_id=f"smt:{verb}",
+            )
+
+        try:
+            result_data = _json.loads(raw)
+        except _json.JSONDecodeError:
+            result_data = {"raw": raw}
+
+        smt_result = result_data.get("result", raw.lower())
+        if smt_result in ("sat", "satisfiable", "feasible"):
+            outcome = "confirmed"
+        elif smt_result in ("unsat", "unsatisfiable", "infeasible"):
+            outcome = "refuted"
+        else:
+            outcome = "inconclusive"
+
+        return SweepResult(
+            tool="smt",
+            file_path=file_path,
+            function_name=function_name,
+            outcome=outcome,
+            matches=[result_data] if outcome == "confirmed" else [],
+            rule_id=f"smt:{verb}",
+            raw_output=raw,
+        )
+    except subprocess.TimeoutExpired:
+        return SweepResult(
+            tool="smt",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=["SMT solver timed out (60s)"],
+            rule_id=f"smt:{verb}",
+        )
+    except Exception as exc:
+        return SweepResult(
+            tool="smt",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[str(exc)],
+            rule_id=f"smt:{verb}",
+        )
+
+
+def run_smt_verb_direct(
+    *,
+    file_path: str,
+    function_name: str,
+    verb: str,
+    source: str,
+    hypothesis: str,
+) -> SweepResult:
+    """Call an SMT verb directly from Python (no shim subprocess).
+
+    Extracts operands from the hypothesis text and calls the verb
+    function.  Falls back to inconclusive if operands can't be extracted
+    or Z3 is unavailable.
+    """
+    try:
+        if verb == "check-negative-bypass":
+            from packages.exploit_feasibility.smt_verbs import check_negative_bypass
+            value, limit = _extract_negative_bypass_operands(hypothesis, source)
+            if not value or not limit:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            result = check_negative_bypass(value, limit, profile="int32")
+        elif verb == "check-null-deref":
+            from packages.exploit_feasibility.smt_verbs import check_null_deref
+            ptr = _extract_ptr_operand(hypothesis)
+            if not ptr:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            result = check_null_deref(ptr, profile="uint64")
+        elif verb == "check-overflow":
+            from packages.exploit_feasibility.smt_verbs import check_overflow
+            operands = _extract_arithmetic_operands(hypothesis, source)
+            if len(operands) < 2:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            result = check_overflow(operands, "+", profile="uint32")
+        elif verb == "check-oob":
+            from packages.exploit_feasibility.smt_verbs import check_oob
+            index, size = _extract_oob_operands(hypothesis, source)
+            if not index or not size:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            result = check_oob(size, index, profile="uint64")
+        else:
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="inconclusive",
+                errors=[f"no direct caller for verb {verb!r}"],
+                rule_id=f"smt:{verb}",
+            )
+
+        feasible = result.get("feasible")
+        if feasible is True:
+            outcome = "confirmed"
+        elif feasible is False:
+            outcome = "refuted"
+        else:
+            outcome = "inconclusive"
+
+        return SweepResult(
+            tool="smt", file_path=file_path,
+            function_name=function_name, outcome=outcome,
+            matches=[result] if outcome == "confirmed" else [],
+            rule_id=f"smt:{verb}",
+            raw_output=_json.dumps(result),
+        )
+    except Exception as exc:
+        return SweepResult(
+            tool="smt", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[str(exc)], rule_id=f"smt:{verb}",
+        )
+
+
+_IDENT_RE = __import__("re").compile(r"[a-z_][a-z0-9_]*", __import__("re").IGNORECASE)
+
+
+def _extract_negative_bypass_operands(
+    hypothesis: str, source: str,
+) -> tuple:
+    """Extract (value, limit) from hypothesis like 'negative msg_qbytes bypasses size check'."""
+    import re
+    hyp = hypothesis.lower()
+    m = re.search(
+        r"negative\s+(?:value\s+(?:for\s+)?)?(?:the\s+)?[`'\"]?(\w+)[`'\"]?",
+        hyp,
+    )
+    value = m.group(1) if m else None
+
+    m = re.search(
+        r"(?:bypass|exceed|circumvent)\w*\s+(?:the\s+)?[`'\"]?(\w+)[`'\"]?\s+(?:check|limit|bound)",
+        hyp,
+    )
+    if m:
+        limit = m.group(1)
+    else:
+        identifiers = _IDENT_RE.findall(source)
+        limit_candidates = [
+            i for i in identifiers
+            if any(kw in i.lower() for kw in ("limit", "max", "size", "bound", "rlim"))
+        ]
+        limit = limit_candidates[0] if limit_candidates else None
+
+    if value and not _IDENT_RE.fullmatch(value):
+        value = None
+    if limit and not _IDENT_RE.fullmatch(limit):
+        limit = None
+
+    return value, limit
+
+
+def _extract_ptr_operand(hypothesis: str) -> Optional[str]:
+    """Extract pointer name from hypothesis like 'NULL pointer dereference of ptr'."""
+    import re
+    m = re.search(r"[`'\"]?(\w+)[`'\"]?\s+(?:is\s+)?(?:null|NULL)", hypothesis)
+    if m and _IDENT_RE.fullmatch(m.group(1)):
+        return m.group(1)
+    m = re.search(r"(?:null|NULL)\s+(?:pointer\s+)?(?:dereference\s+)?(?:of\s+)?[`'\"]?(\w+)[`'\"]?", hypothesis)
+    if m and _IDENT_RE.fullmatch(m.group(1)):
+        return m.group(1)
+    return None
+
+
+def _extract_arithmetic_operands(
+    hypothesis: str, source: str,
+) -> list:
+    """Extract operand identifiers from hypothesis about integer overflow."""
+    import re
+    backtick_ids = re.findall(r"`(\w+)`", hypothesis)
+    if len(backtick_ids) >= 2:
+        return [i for i in backtick_ids[:3] if _IDENT_RE.fullmatch(i)]
+    ids = _IDENT_RE.findall(hypothesis)
+    candidates = [
+        i for i in ids
+        if i.lower() not in {
+            "integer", "overflow", "the", "in", "of", "can", "cause",
+            "value", "large", "leading", "to", "size", "check", "a",
+            "an", "this", "that", "with", "from", "by", "for", "is",
+        }
+    ]
+    return candidates[:2]
+
+
+def _extract_oob_operands(
+    hypothesis: str, source: str,
+) -> tuple:
+    """Extract (index, size) from hypothesis about out-of-bounds access."""
+    import re
+    m = re.search(r"[`'\"]?(\w+)[`'\"]?\s+(?:is\s+)?(?:used\s+)?(?:as\s+)?(?:an?\s+)?(?:array\s+)?index", hypothesis.lower())
+    index = m.group(1) if m and _IDENT_RE.fullmatch(m.group(1)) else None
+
+    m = re.search(r"(?:array|buffer)\s+(?:of\s+)?(?:size\s+)?[`'\"]?(\w+)[`'\"]?", hypothesis.lower())
+    if m and _IDENT_RE.fullmatch(m.group(1)):
+        size = m.group(1)
+    else:
+        ids = _IDENT_RE.findall(source)
+        size_candidates = [
+            i for i in ids
+            if any(kw in i.lower() for kw in ("size", "len", "count", "num", "nsems"))
+        ]
+        size = size_candidates[0] if size_candidates else None
+
+    return index, size
+
+
+def run_codeql_sweep(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    query_path: str,
+    database_path: Optional[str] = None,
+    line_start: int = 0,
+    line_end: int = 0,
+) -> SweepResult:
+    """Run a CodeQL query against a database and classify matches.
+
+    Args:
+        target_path: Root of the target codebase.
+        file_path: Relative path to the source file being audited.
+        function_name: Function being audited.
+        query_path: Path to the .ql query file.
+        database_path: Path to the CodeQL database. If None, attempts
+            to find one under ``target_path``.
+        line_start: Function start line (for match filtering).
+        line_end: Function end line.
+
+    Returns:
+        SweepResult with outcome based on whether any matches fall
+        within the target function.
+    """
+    qpath = Path(query_path)
+    if not qpath.exists():
+        return SweepResult(
+            tool="codeql",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"query file not found: {query_path}"],
+        )
+
+    try:
+        from core.dataflow.codeql_augmented_run import analyze
+
+        db = database_path
+        if not db:
+            for candidate in (
+                target_path / "codeql-db",
+                target_path / ".codeql" / "db",
+                target_path / "codeql-database",
+            ):
+                if candidate.is_dir():
+                    db = str(candidate)
+                    break
+
+        if not db:
+            return SweepResult(
+                tool="codeql",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=["no CodeQL database found; build one first"],
+            )
+
+        result = analyze(
+            database=db,
+            query=str(qpath),
+            timeout=300,
+        )
+
+        if result.get("error"):
+            return SweepResult(
+                tool="codeql",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=[result["error"]],
+            )
+
+        sarif_results = result.get("results", [])
+        in_function = []
+        for r in sarif_results:
+            locs = r.get("locations") or [{}]
+            loc = locs[0] if locs else {}
+            phys = loc.get("physicalLocation", {})
+            art = phys.get("artifactLocation", {}).get("uri", "")
+            region = phys.get("region", {})
+            rline = region.get("startLine", 0)
+
+            if art.endswith("/" + file_path) or art == file_path:
+                if line_start and line_end:
+                    if line_start <= rline <= line_end:
+                        in_function.append(r)
+                else:
+                    in_function.append(r)
+
+        outcome = "confirmed" if in_function else "refuted"
+        return SweepResult(
+            tool="codeql",
+            file_path=file_path,
+            function_name=function_name,
+            outcome=outcome,
+            matches=in_function,
+            rule_id=query_path,
+        )
+    except ImportError:
+        return SweepResult(
+            tool="codeql",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=["core.dataflow.codeql_augmented_run not available"],
+        )
+    except Exception as exc:
+        return SweepResult(
+            tool="codeql",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[str(exc)],
+        )
+
+
+def run_consistency_check(
+    *,
+    target_path: Path,
+    function_name: str,
+    cocci_rule: str,
+) -> SweepResult:
+    """Run a Coccinelle consistency check across the entire target.
+
+    The design pattern: "9/10 callers check return, find the 10th."
+    Runs a parametric Coccinelle rule with -D func=<function_name>
+    against the full target tree to find callers that violate a
+    consistency pattern (e.g. unchecked return value).
+
+    Unlike run_coccinelle_sweep (single file), this scans the whole
+    codebase — it's the Mode 2 (checker synthesis) pattern applied
+    to inconsistency detection.
+
+    Args:
+        target_path: Root of the target codebase.
+        function_name: Function whose callers to check.
+        cocci_rule: Path to the .cocci rule file. Must accept
+            -D func=<name> for parametric matching.
+
+    Returns:
+        SweepResult with matches being the inconsistent call sites.
+    """
+    if not is_valid_identifier(function_name):
+        return SweepResult(
+            tool="coccinelle_consistency",
+            file_path="<codebase>",
+            function_name=function_name,
+            outcome="error",
+            errors=[f"invalid function name for -D define: {function_name!r}"],
+        )
+
+    try:
+        from packages.coccinelle.runner import run_rule, is_available
+
+        if not is_available():
+            return SweepResult(
+                tool="coccinelle_consistency",
+                file_path="<codebase>",
+                function_name=function_name,
+                outcome="error",
+                errors=["coccinelle (spatch) not installed"],
+            )
+
+        result = run_rule(
+            target_path,
+            cocci_rule,
+            defines={"func": function_name},
+            timeout=300,
+        )
+
+        matches = []
+        for match in result.matches:
+            if hasattr(match, "to_dict"):
+                matches.append(match.to_dict())
+            else:
+                matches.append({"raw": str(match)})
+
+        outcome = "confirmed" if matches else "refuted"
+        return SweepResult(
+            tool="coccinelle_consistency",
+            file_path="<codebase>",
+            function_name=function_name,
+            outcome=outcome,
+            matches=matches,
+            rule_id=cocci_rule,
+        )
+    except ImportError:
+        return SweepResult(
+            tool="coccinelle_consistency",
+            file_path="<codebase>",
+            function_name=function_name,
+            outcome="error",
+            errors=["coccinelle package not available"],
+        )
+    except Exception as exc:
+        return SweepResult(
+            tool="coccinelle_consistency",
+            file_path="<codebase>",
+            function_name=function_name,
+            outcome="error",
+            errors=[str(exc)],
+        )
+
+
+# ── Joern CPG sweep ─────────────────────────────────────────────────
+
+
+def run_joern_sweep(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    source_param: str,
+    sink_call: str,
+    cpg=None,
+    timeout: int = 300,
+) -> SweepResult:
+    """Run a Joern taint query for a specific function.
+
+    If cpg is provided, reuses it. If not, returns an error (CPG
+    should be built once per run via run_joern_pre_sweep).
+    """
+    escape = _check_path_containment(target_path, file_path, "joern")
+    if escape:
+        return escape
+
+    if not is_valid_identifier(function_name):
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"invalid function name: {function_name!r}"],
+        )
+
+    if not _is_valid_qualified(source_param):
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"invalid source_param: {source_param!r}"],
+        )
+
+    if not _is_valid_qualified(sink_call):
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=[f"invalid sink_call: {sink_call!r}"],
+        )
+
+    try:
+        from packages.joern.runner import run_taint_query
+    except ImportError:
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=["joern package not available"],
+        )
+
+    if cpg is None:
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=["no CPG provided (build via run_joern_pre_sweep)"],
+        )
+
+    flows = run_taint_query(
+        cpg,
+        function_name,
+        sink_call,
+        source_param=source_param,
+        timeout=timeout,
+    )
+
+    if flows:
+        matches = [f.to_dict() for f in flows]
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="confirmed",
+            matches=matches,
+            rule_id=f"joern:taint:{function_name}->{sink_call}",
+        )
+
+    return SweepResult(
+        tool="joern",
+        file_path=file_path,
+        function_name=function_name,
+        outcome="refuted",
+        rule_id=f"joern:taint:{function_name}->{sink_call}",
+    )
+
+
+def run_joern_pre_sweep(
+    target_path: Path,
+    checklist: dict,
+    cache_dir: Optional[Path] = None,
+    on_progress: Optional[Callable] = None,
+    stall_timeout: int = 600,
+    query_timeout: int = 300,
+    heap_mb: Optional[int] = None,
+    server=None,
+) -> Dict[str, list]:
+    """Run standard taint queries before the LLM loop.
+
+    Builds the CPG once and runs the standard_sinks.sc query.
+    Returns per-function flows keyed by "file:function".
+    When cache_dir is set, reuses a cached CPG if fresh.
+    When server is provided, uses the already-running JoernServer.
+
+    Returns {} when joern is unavailable.
+    """
+    try:
+        from packages.joern.prereqs import is_available
+        from packages.joern.runner import (
+            build_cpg,
+            build_cpg_cached,
+            cleanup_cpg,
+            run_query,
+        )
+    except ImportError:
+        logger.debug("joern package not importable; skipping pre-sweep")
+        return {}
+
+    if server is None and not is_available():
+        logger.debug("joern not available on PATH; skipping pre-sweep")
+        return {}
+
+    target_path = Path(target_path)
+    if not target_path.is_dir():
+        return {}
+
+    queries_dir = Path(__file__).resolve().parents[2] / "packages" / "joern" / "queries"
+    sinks_script = queries_dir / "standard_sinks.sc"
+    if not sinks_script.exists():
+        logger.warning("standard_sinks.sc not found at %s", sinks_script)
+        return {}
+
+    if server is not None:
+        result = server.query_script(sinks_script, timeout=query_timeout)
+        if result.errors:
+            logger.warning("joern pre-sweep errors: %s", result.errors)
+
+        flows_by_key: Dict[str, list] = {}
+        for flow in result.flows:
+            if flow.steps:
+                step_file = flow.steps[0].file
+                if safe_join(target_path, step_file) is None:
+                    logger.debug("joern flow step has unsafe path: %s", step_file)
+                    continue
+                key = f"{step_file}:{flow.source_method}"
+                flows_by_key.setdefault(key, []).append(flow)
+        return flows_by_key
+
+    build_kwargs = {"timeout": stall_timeout, "on_progress": on_progress}
+    if heap_mb is not None:
+        build_kwargs["heap_mb"] = heap_mb
+
+    if cache_dir is not None:
+        cpg = build_cpg_cached(target_path, cache_dir, **build_kwargs)
+    else:
+        cpg = build_cpg(target_path, **build_kwargs)
+    if not cpg.exists():
+        logger.warning("CPG build produced no output")
+        return {}
+
+    try:
+        result = run_query(cpg, str(sinks_script), timeout=query_timeout)
+        if result.errors:
+            logger.warning("joern pre-sweep errors: %s", result.errors)
+
+        flows_by_key: Dict[str, list] = {}
+        for flow in result.flows:
+            if flow.steps:
+                step_file = flow.steps[0].file
+                if safe_join(target_path, step_file) is None:
+                    logger.debug("joern flow step has unsafe path: %s", step_file)
+                    continue
+                key = f"{step_file}:{flow.source_method}"
+                flows_by_key.setdefault(key, []).append(flow)
+
+        return flows_by_key
+    finally:
+        cleanup_cpg(cpg)
+
+
+_MECHANICAL_CHECK_PATTERNS: Dict[str, str] = {
+    "unchecked return": (
+        "$X = $FUNC(...);\n"
+        "...\n"
+        "// ERROR: missing NULL check on $X"
+    ),
+    "missing null check": (
+        "$X = $FUNC(...);\n"
+        "...\n"
+        "// ERROR: no null check on $X before use"
+    ),
+    "missing bounds check": (
+        "$BUF[$IDX]\n"
+        "// ERROR: index $IDX not bounds-checked"
+    ),
+    "format string": (
+        "printf($FMT, ...);\n"
+        "// ERROR: format string from user input"
+    ),
+}
+
+
+def mechanical_check_to_semgrep(check: str) -> Optional[str]:
+    """Map a mechanical_check string to a Semgrep pattern.
+
+    Returns the pattern string if the check maps to a known shape,
+    None otherwise.
+    """
+    check_lower = check.lower().strip()
+    for keyword, pattern in _MECHANICAL_CHECK_PATTERNS.items():
+        if keyword in check_lower:
+            return pattern
+    return None
