@@ -188,7 +188,8 @@ class TestSageClientWithMock(unittest.TestCase):
         finally:
             _restore_sdk(client_mod, snapshot)
 
-    def test_propose_auto_embeds(self):
+    @patch("core.sage.client._use_direct_embed", return_value=False)
+    def test_propose_auto_embeds(self, _mock_direct):
         import core.sage.client as client_mod
 
         snapshot = _snapshot_sdk(client_mod)
