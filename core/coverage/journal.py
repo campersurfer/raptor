@@ -298,17 +298,15 @@ def _write_index(path: Path, entries: dict[str, dict[str, Any]]) -> None:
 # ── Domain model hash ───────────────────────────────────────────────
 
 def _find_domain_model_file(out_dir: Path) -> Path | None:
-    """Locate domain-model.json — co-located first, then audit bridge."""
-    local = out_dir / "domain-model.json"
-    if local.is_file():
-        return local
-    try:
-        from core.concepts.audit_bridge import _find_domain_model
-        model = _find_domain_model(out_dir)
-        if model is not None:
-            return local if local.is_file() else None
-    except Exception:
-        pass
+    """Locate domain-model.json in standard locations."""
+    candidates = [
+        out_dir / "domain-model.json",
+        out_dir.parent / "concepts" / "domain-model.json",
+        out_dir.parent / "domain-model.json",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
     return None
 
 
