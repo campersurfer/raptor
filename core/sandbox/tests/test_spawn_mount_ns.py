@@ -277,8 +277,14 @@ class TestDeathPipeOrphanTeardown(unittest.TestCase):
         the grandchild and exit 137."""
         import signal as _signal
         import time
+        import warnings
         death_r, death_w = os.pipe()
-        pid = os.fork()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=DeprecationWarning,
+                message=r".*fork.*may lead to deadlocks.*",
+            )
+            pid = os.fork()
         if pid == 0:
             os.close(death_w)
             grand = os.fork()
@@ -322,8 +328,14 @@ class TestDeathPipeOrphanTeardown(unittest.TestCase):
     def test_normal_exit_no_death_pipe(self):
         """When the grandchild exits normally, the intermediate child
         mirrors the exit code and death_r stays open (no false trigger)."""
+        import warnings
         death_r, death_w = os.pipe()
-        pid = os.fork()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=DeprecationWarning,
+                message=r".*fork.*may lead to deadlocks.*",
+            )
+            pid = os.fork()
         if pid == 0:
             os.close(death_w)
             grand = os.fork()
