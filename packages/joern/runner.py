@@ -226,12 +226,19 @@ def build_cpg(
             output=str(output_dir),
         )
     except TypeError:
-        proc = runner(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            proc = runner(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("joern-parse timed out after %ds", timeout)
+            return JoernCPG(path=cpg_path, target=target)
+        except OSError as e:
+            logger.error("joern-parse failed: %s", e)
+            return JoernCPG(path=cpg_path, target=target)
     except subprocess.TimeoutExpired:
         logger.warning("joern-parse timed out after %ds", timeout)
         return JoernCPG(path=cpg_path, target=target)
@@ -380,12 +387,20 @@ def run_query(
             block_network=True,
         )
     except TypeError:
-        proc = runner(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            proc = runner(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return JoernResult(
+                query=query,
+                errors=[f"query timed out after {timeout}s"],
+            )
+        except OSError as e:
+            return JoernResult(query=query, errors=[str(e)])
     except subprocess.TimeoutExpired:
         return JoernResult(
             query=query,
@@ -727,7 +742,7 @@ def _parse_output(stdout: str) -> tuple:
             continue
 
         if not in_flows:
-            in_flows = True
+            continue
 
         json_str = line[marker_idx + len("JOERN_FLOW:"):]
         steps_data, parse_err = _try_parse_flow_json(json_str)
