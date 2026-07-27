@@ -138,7 +138,7 @@ The coverage tracking plugin (`plugins/coverage/`) tracks which source files the
 
 When scanning untrusted repositories:
 
-- **Environment sanitisation**: `RaptorConfig.get_safe_env()` strips environment variables that tools may shell-evaluate (`TERMINAL`, `EDITOR`, `VISUAL`, `BROWSER`, `PAGER`). Always use `get_safe_env()` when spawning subprocesses.
+- **Environment sanitisation**: `RaptorConfig.get_safe_env()` uses a strict allowlist (`SAFE_ENV_ALLOWLIST`) — only ~30 explicitly named variables plus `LC_*` prefixes are kept; everything else is dropped. A secondary blocklist (`DANGEROUS_ENV_VARS`) covers `TERMINAL`, `EDITOR`, `VISUAL`, `BROWSER`, `PAGER` as belt-and-braces. Always use `get_safe_env()` when spawning subprocesses.
 - **File path injection**: Never interpolate file paths from scanned repos into shell command strings. Use list-based `subprocess` arguments.
 
 ---
@@ -374,7 +374,7 @@ Default behaviour (no flags): /agentic and /codeql auto-detect debug binaries un
 - `symbol_present` / `inlined` / `folded` — the function survived compilation in some form
 - `absent` — the compiler / linker removed it from the analysed binary
 
-`absent` is corpus-earned for suppression: **1952/1952 verdicts correct across 6 iteratively-tuned corpora (consistency) + 187/187 on the held-out zstd v1.5.6 corpus with NO classifier tuning (generalization)** — rule-of-three 95% UB on miss rate ≤1.6% on first-contact-with-unseen-data. The held-out is non-vacuous: 473/1431 functions exercised by the workload, zero `absent` verdicts on actually-live functions. Conditional on full-DWARF evidence — a stripped binary in the analysed set downgrades to `tier="symbol_only"` and the chokepoint refuses to suppress.
+`absent` is corpus-earned for suppression: **1952/1952 absent verdicts correct across 6 iteratively-tuned corpora (consistency) + 187/187 absent verdicts correct on the held-out zstd v1.5.6 corpus with NO classifier tuning (generalization)** — rule-of-three 95% UB on miss rate ≤1.6% on first-contact-with-unseen-data. The held-out is non-vacuous: 473/1431 functions exercised by the workload, zero `absent` verdicts on actually-live functions. Conditional on full-DWARF evidence — a stripped binary in the analysed set downgrades to `tier="symbol_only"` and the chokepoint refuses to suppress.
 
 The verdict flows through the existing reachability chokepoint: /codeql + /agentic skip LLM analysis on absent-function findings (pre-LLM hard-suppress); /validate's demoter clamps attack-path proximity; /understand --map annotates entry-points and sinks with the per-binary verdict + tier.
 
