@@ -936,7 +936,7 @@ def review_one_function(
                 )
 
     # ── Mid-loop synthesis ────────────────────────────────────────────
-    if outcome.status == "finding" and outcome.evidence_tool:
+    if outcome.status == "finding" and _is_tool_confirmed(outcome.evidence_tool or ""):
         try:
             from .checker_synthesis import synthesize_and_sweep
             seen_keys = (reviewed_set or set()) | {
@@ -3436,7 +3436,7 @@ def _accumulate_observations(
     source = f"{gap['file']}:{gap['name']}"
 
     if sweep_pre_status is not None:
-        if outcome.status == "finding" and outcome.evidence_tool:
+        if outcome.status == "finding" and _is_tool_confirmed(outcome.evidence_tool or ""):
             session_observations.append({
                 "source": source,
                 "text": (
@@ -5789,22 +5789,17 @@ def _persist_project_learnings(
             logger.debug("could not save project context", exc_info=True)
 
 
-_TOOL_EVIDENCE_PREFIXES = (
-    "prefilter", "critique", "sweep",
-    "smt:", "coccinelle:", "joern:", "codeql:", "sarif_cache:",
-)
-
 
 def _is_tool_confirmed(evidence_tool: str) -> bool:
     """Return True if evidence_tool was set by an actual tool run.
 
-    Actual tool evidence uses namespaced prefixes (prefilter:, critique:,
-    sweep:).  LLM-suggested values like "Semgrep" or "CodeQL" are bare
-    names that should not short-circuit mechanical validation.
+    Delegates to evidence_grade.is_tool_evidence which checks canonical
+    stamps (dynamic, frida, semgrep, etc.) and namespaced prefixes
+    (prefilter:, critique:, sweep:).  LLM-suggested values like
+    "Semgrep" or "CodeQL" do not pass.
     """
-    if not evidence_tool or evidence_tool == "none":
-        return False
-    return evidence_tool.startswith(_TOOL_EVIDENCE_PREFIXES)
+    from .evidence_grade import is_tool_evidence
+    return is_tool_evidence(evidence_tool)
 
 
 def _stamp_evidence(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
