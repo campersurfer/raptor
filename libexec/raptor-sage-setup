@@ -317,7 +317,8 @@ migrate_sage_home_if_needed() {
             # Destination already has data. Detect collisions (files in
             # both src and dest with different content) before merging.
             # Uses find -exec to avoid word-splitting on filenames.
-            local collisions
+            # cmp -s: byte-for-byte comparison (POSIX, no false negatives).
+            local collisions critical_collisions
             collisions=$(docker run --rm \
                 -v "$backup:/src:ro" \
                 -v "$volume_name:/dest:ro" \
@@ -328,18 +329,52 @@ migrate_sage_home_if_needed() {
                     for src_path; do
                         rel="${src_path#/src/}"
                         dst_path="/dest/$rel"
-                        if [ -f "$dst_path" ]; then
-                            s=$(cksum < "$src_path" | cut -d" " -f1)
-                            d=$(cksum < "$dst_path" | cut -d" " -f1)
-                            [ "$s" != "$d" ] && printf "  %s\n" "$rel"
+                        if [ -f "$dst_path" ] && ! cmp -s "$src_path" "$dst_path"; then
+                            printf "%s\n" "$rel"
                         fi
                     done
                 '\'' _ {} +
                 ' 2>/dev/null || true)
+
+            # Classify collisions: critical state must block migration.
+            # SAGE layout: agent.key, vault.key, config.yaml at root;
+            # data/sage.db (off-chain), data/badger/ (on-chain),
+            # data/cometbft/ (consensus) under data/.
+            critical_collisions=0
             if [ -n "$collisions" ]; then
                 echo "Collision: these files differ between backup and destination volume:"
-                echo "$collisions"
-                echo "  Destination version kept. Backup preserved for manual comparison."
+                while IFS= read -r rel; do
+                    case "$rel" in
+                        agent.key|vault.key|config.yaml|data/sage.db|data/badger/*|data/cometbft/*)
+                            printf "  %s  [CRITICAL]\n" "$rel"
+                            critical_collisions=$((critical_collisions + 1))
+                            ;;
+                        *)
+                            printf "  %s\n" "$rel"
+                            ;;
+                    esac
+                done <<< "$collisions"
+            fi
+
+            if [ "$critical_collisions" -gt 0 ]; then
+                # Remove backup from cleanup array BEFORE returning so the
+                # EXIT trap does not delete it — the operator needs both
+                # the backup and the destination volume for manual review.
+                local i new_tmps=()
+                for i in "${_RAPTOR_TMP_FILES[@]}"; do
+                    [ "$i" = "$backup" ] || new_tmps+=("$i")
+                done
+                _RAPTOR_TMP_FILES=("${new_tmps[@]}")
+                echo "Migration ABORTED: critical state files differ between backup and destination." >&2
+                echo "  Both versions preserved for operator review." >&2
+                echo "  Backup: $backup" >&2
+                echo "  Destination volume: $volume_name" >&2
+                echo "  Resolve manually, then re-run setup." >&2
+                return 1
+            fi
+
+            if [ -n "$collisions" ]; then
+                echo "  Destination version kept for non-critical files. Backup preserved."
             fi
             # Merge files missing from destination. tar -k skips existing.
             docker run --rm \
@@ -350,46 +385,65 @@ migrate_sage_home_if_needed() {
                 -c 'cd /src && tar cf - . | (cd /dest && tar xf - -k 2>/dev/null; true)'
             echo "Destination volume already has data — merged missing files only."
         fi
-        docker run --rm \
-            -v "$volume_name:/dest" \
-            --entrypoint /bin/sh \
-            "$sage_image" \
-            -c 'date -u > /dest/.migration-complete'
 
         # Post-migration regression: verify critical state survived.
+        # SAGE stores: agent.key (root identity), vault.key (encryption),
+        # data/sage.db (off-chain SQLite), data/badger/ (on-chain state),
+        # data/cometbft/ (consensus engine).
         local check_result
         check_result=$(docker run --rm \
             -v "$volume_name:/dest:ro" \
             --entrypoint /bin/sh \
             "$sage_image" \
             -c '
-            # Chain database — check common locations
-            if find /dest -maxdepth 2 -name "chain.db" 2>/dev/null | grep -q .; then
-                echo "chain: ok"
+            # Root agent identity
+            if [ -f /dest/agent.key ]; then
+                echo "agent-key: ok"
             else
-                echo "chain: missing"
+                echo "agent-key: missing"
             fi
-            # Agent keys
-            nkeys=$(find /dest/agents -name "*.key" 2>/dev/null | wc -l)
-            if [ "$nkeys" -gt 0 ]; then
-                echo "keys: ok ($nkeys found)"
+            # Additional identities
+            nkeys=$(find /dest/identities -name "*.key" 2>/dev/null | wc -l)
+            [ "$nkeys" -gt 0 ] && echo "identities: $nkeys found"
+            # Off-chain memory store
+            if [ -f /dest/data/sage.db ]; then
+                echo "sage-db: ok"
             else
-                echo "keys: missing"
+                echo "sage-db: missing"
             fi
-            # Data directory
-            if [ -d /dest/data ] || [ -d /dest/memories ]; then
-                echo "data: ok"
+            # On-chain state (BadgerDB)
+            if [ -d /dest/data/badger ]; then
+                echo "badger: ok"
             else
-                echo "data: missing"
+                echo "badger: missing"
+            fi
+            # Consensus engine (CometBFT)
+            if [ -d /dest/data/cometbft ]; then
+                echo "cometbft: ok"
+            else
+                echo "cometbft: missing"
+            fi
+            # Vault key
+            if [ -f /dest/vault.key ]; then
+                echo "vault-key: ok"
             fi
             ' 2>/dev/null || true)
         if [ -n "$check_result" ]; then
             echo "Post-migration check:"
             echo "$check_result" | while IFS= read -r line; do echo "  $line"; done
-            if echo "$check_result" | grep -q "chain: missing"; then
-                echo "  Warning: no chain database found — SAGE will initialise a new chain." >&2
+            if echo "$check_result" | grep -q "agent-key: missing"; then
+                echo "  Warning: no agent.key — SAGE will generate a new identity on next start." >&2
+            fi
+            if echo "$check_result" | grep -q "sage-db: missing"; then
+                echo "  Warning: no data/sage.db — SAGE will initialise an empty memory store." >&2
             fi
         fi
+
+        docker run --rm \
+            -v "$volume_name:/dest" \
+            --entrypoint /bin/sh \
+            "$sage_image" \
+            -c 'date -u > /dest/.migration-complete'
     fi
 
     # Preserve backup so the operator can verify before removing.
