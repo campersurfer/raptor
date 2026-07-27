@@ -66,7 +66,7 @@ def should_run_frida(
         return False
 
     evidence_tool = getattr(outcome, "evidence_tool", "")
-    if evidence_tool in ("dynamic", "frida"):
+    if evidence_tool and evidence_tool.startswith(("dynamic:sanitizer", "frida:")):
         return False
 
     if not _frida_available():

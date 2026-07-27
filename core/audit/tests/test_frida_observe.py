@@ -27,12 +27,12 @@ class TestShouldRunFrida:
         assert not should_run_frida(outcome, config)
 
     def test_disabled_when_already_dynamic(self):
-        outcome = mock.Mock(status="finding", evidence_tool="dynamic")
+        outcome = mock.Mock(status="finding", evidence_tool="dynamic:sanitizer")
         config = mock.Mock(dynamic_validation=True)
         assert not should_run_frida(outcome, config)
 
     def test_disabled_when_already_frida(self):
-        outcome = mock.Mock(status="finding", evidence_tool="frida")
+        outcome = mock.Mock(status="finding", evidence_tool="frida:runtime")
         config = mock.Mock(dynamic_validation=True)
         assert not should_run_frida(outcome, config)
 

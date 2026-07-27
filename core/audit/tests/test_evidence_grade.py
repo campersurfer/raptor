@@ -231,7 +231,7 @@ class TestGradeReviewResult:
         assert len(ts) == 0
 
     def test_evidence_tool_dynamic(self):
-        items = grade_review_result({}, evidence_tool="dynamic")
+        items = grade_review_result({}, evidence_tool="dynamic:sanitizer")
         assert any(e.source == EvidenceSource.DYNAMIC_SANITIZER for e in items)
 
     def test_evidence_tool_dynamic_crash(self):
@@ -294,6 +294,10 @@ class TestIsToolEvidence:
         assert is_tool_evidence("critique:prefilter:rule-id")
         assert is_tool_evidence("smt:path_feasibility")
         assert is_tool_evidence("sarif_cache:hit")
+        assert is_tool_evidence("dynamic:sanitizer")
+        assert is_tool_evidence("frida:runtime")
+        assert is_tool_evidence("dark_verify:confirmed")
+        assert is_tool_evidence("triage:classifier")
 
     def test_llm_hallucinations_rejected(self):
         assert not is_tool_evidence("Semgrep")

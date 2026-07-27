@@ -376,7 +376,7 @@ def review_one_function(
                 f"Triage classifier determined this function "
                 f"does not need LLM review."
             ),
-            evidence_tool="triage",
+            evidence_tool="triage:classifier",
         )
         outcome.line = gap.get("line_start", 0)
         result.prefilter_skipped += 1
@@ -656,7 +656,7 @@ def review_one_function(
                     f"Mechanical pre-filter determined this function "
                     f"cannot contain vulnerabilities."
                 ),
-                evidence_tool="prefilter",
+                evidence_tool="prefilter:skip",
             )
             outcome.line = gap.get("line_start", 0)
             result.prefilter_skipped += 1
@@ -907,7 +907,7 @@ def review_one_function(
             if should_run_dynamic(outcome, config):
                 dyn_result = run_dynamic_sweep(outcome, ctx, config)
                 if dyn_result and dyn_result.evidence_strength == "sanitizer":
-                    outcome.evidence_tool = "dynamic"
+                    outcome.evidence_tool = "dynamic:sanitizer"
                 elif dyn_result and dyn_result.evidence_strength == "crash":
                     outcome.evidence_tool = "dynamic:crash"
                 elif dyn_result and dyn_result.evidence_strength == "refuted":
@@ -921,14 +921,14 @@ def review_one_function(
         # Frida runs as a second opinion when the dynamic sweep produced only
         # a bare crash ("dynamic:crash") — that's weak evidence and Frida may
         # upgrade it to runtime-confirmed. Skip only when the sanitiser already
-        # confirmed ("dynamic").
-        if outcome.status == "finding" and outcome.evidence_tool != "dynamic":
+        # confirmed ("dynamic:sanitizer").
+        if outcome.status == "finding" and outcome.evidence_tool != "dynamic:sanitizer":
             try:
                 from .frida_observe import should_run_frida, run_frida_observation
                 if should_run_frida(outcome, config):
                     frida_result = run_frida_observation(outcome, ctx, config)
                     if frida_result and frida_result.evidence_strength == "confirmed":
-                        outcome.evidence_tool = "frida"
+                        outcome.evidence_tool = "frida:runtime"
             except Exception:
                 logger.debug(
                     "Frida observation failed for %s:%s",
@@ -7568,7 +7568,7 @@ def _check_layer_disagreement(outcome, ctx, gap):
         dynamic_claim = LayerClaim(
             layer=LayerVerdict.DYNAMIC,
             reachable=True,
-            has_flow=et == "dynamic",
+            has_flow=et == "dynamic:sanitizer",
         )
 
     language = gap.get("language", "")
@@ -7727,12 +7727,12 @@ def _run_dark_verification(
 
         if verify_result.verdict == "confirmed":
             outcome.status = "finding"
-            outcome.evidence_tool = "dark_verify"
+            outcome.evidence_tool = "dark_verify:confirmed"
             result.findings += 1
             result.dormant -= 1
         elif verify_result.verdict == "refuted":
             outcome.status = "clean"
-            outcome.evidence_tool = "dark_verify"
+            outcome.evidence_tool = "dark_verify:refuted"
             result.clean += 1
             result.dormant -= 1
 

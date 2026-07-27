@@ -74,19 +74,20 @@ _SOURCE_CONFIDENCE: Dict[EvidenceSource, Confidence] = {
 
 VALID_EVIDENCE_TOOLS: frozenset = frozenset({
     "semgrep", "coccinelle", "codeql", "smt", "joern",
-    "compilation", "dynamic", "dynamic:crash", "frida", "dark_verify",
+    "compilation", "dynamic:sanitizer", "dynamic:crash", "frida:runtime",
+    "dark_verify:confirmed", "dark_verify:refuted",
 })
 
 _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
-    "prefilter", "critique", "sweep", "sarif_cache",
-    "triage", "triage_batch",
+    "prefilter", "critique", "sweep", "sarif_cache", "triage",
+    "dynamic", "frida", "dark_verify",
 })
 
 
 def is_tool_evidence(stamp: str) -> bool:
     """Return True if *stamp* was set by an actual tool run, not an LLM claim.
 
-    Matches exact canonical stamps (``"dynamic"``, ``"semgrep"``, etc.)
+    Matches canonical stamps (``"dynamic:sanitizer"``, ``"semgrep"``, etc.)
     and namespaced composites (``"semgrep:rule-123"``, ``"critique:prefilter:id"``).
     """
     if not stamp or stamp == "none":
@@ -94,6 +95,17 @@ def is_tool_evidence(stamp: str) -> bool:
     root = stamp.split(":")[0] if ":" in stamp else stamp
     return root in _TOOL_NAMESPACES or stamp in _TOOL_NAMESPACES
 
+
+_RECEIPT_MAP: Dict[str, tuple] = {
+    "dynamic:sanitizer": (EvidenceSource.DYNAMIC_SANITIZER, "confirmed by dynamic sanitizer"),
+    "dynamic:crash": (EvidenceSource.DYNAMIC_CRASH, "non-zero exit without sanitizer confirmation"),
+    "frida": (EvidenceSource.DYNAMIC_FRIDA, "confirmed by Frida runtime observation"),
+    "joern": (EvidenceSource.JOERN, "confirmed by Joern CPG analysis"),
+    "semgrep": (EvidenceSource.SEMGREP, "confirmed by Semgrep pattern match"),
+    "codeql": (EvidenceSource.CODEQL, "confirmed by CodeQL analysis"),
+    "coccinelle": (EvidenceSource.COCCINELLE, "confirmed by Coccinelle"),
+    "smt": (EvidenceSource.SMT, "path feasibility confirmed by SMT solver"),
+}
 
 _CONFIDENCE_PRIORITY: Dict[Confidence, int] = {
     Confidence.HIGH: 0,
@@ -346,46 +358,11 @@ def grade_review_result(
             confidence_override=Confidence.HIGH,
         ))
 
-    if evidence_tool == "dynamic":
-        items.append(grade_evidence(
-            EvidenceSource.DYNAMIC_SANITIZER,
-            "confirmed by dynamic sanitizer",
-        ))
-    elif evidence_tool == "dynamic:crash":
-        items.append(grade_evidence(
-            EvidenceSource.DYNAMIC_CRASH,
-            "non-zero exit without sanitizer confirmation",
-        ))
-    elif evidence_tool == "frida":
-        items.append(grade_evidence(
-            EvidenceSource.DYNAMIC_FRIDA,
-            "confirmed by Frida runtime observation",
-        ))
-    elif evidence_tool == "joern":
-        items.append(grade_evidence(
-            EvidenceSource.JOERN,
-            "confirmed by Joern CPG analysis",
-        ))
-    elif evidence_tool == "semgrep":
-        items.append(grade_evidence(
-            EvidenceSource.SEMGREP,
-            "confirmed by Semgrep pattern match",
-        ))
-    elif evidence_tool == "codeql":
-        items.append(grade_evidence(
-            EvidenceSource.CODEQL,
-            "confirmed by CodeQL analysis",
-        ))
-    elif evidence_tool == "coccinelle":
-        items.append(grade_evidence(
-            EvidenceSource.COCCINELLE,
-            "confirmed by Coccinelle",
-        ))
-    elif evidence_tool == "smt":
-        items.append(grade_evidence(
-            EvidenceSource.SMT,
-            "path feasibility confirmed by SMT solver",
-        ))
+    namespace = evidence_tool.split(":")[0] if ":" in evidence_tool else evidence_tool
+    entry = _RECEIPT_MAP.get(evidence_tool) or _RECEIPT_MAP.get(namespace)
+    if entry:
+        source, description = entry
+        items.append(grade_evidence(source, description))
 
     return items
 

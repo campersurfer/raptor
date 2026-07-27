@@ -47,7 +47,7 @@ class TestShouldRunDynamic:
         assert should_run_dynamic(o, c) is False
 
     def test_already_dynamic_does_not_trigger(self):
-        o = FakeOutcome(status="finding", evidence_tool="dynamic")
+        o = FakeOutcome(status="finding", evidence_tool="dynamic:sanitizer")
         c = FakeConfig(dynamic_validation=True)
         assert should_run_dynamic(o, c) is False
 

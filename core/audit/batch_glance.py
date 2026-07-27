@@ -156,7 +156,7 @@ def make_batch_review_fn(
                     cost_usd=per_cost,
                     model=model,
                     duration_s=duration / len(contexts),
-                    evidence_tool="triage_batch",
+                    evidence_tool="triage:batch",
                 ))
             else:
                 outcomes.append(ReviewOutcome(

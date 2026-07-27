@@ -116,7 +116,7 @@ class TestBuildGradedFinding:
 
     def test_dynamic_evidence_tool(self):
         outcome = FakeOutcome(
-            evidence_tool="dynamic",
+            evidence_tool="dynamic:sanitizer",
             review_result={"hypothesis": "crash"},
         )
         finding = build_graded_finding(outcome)

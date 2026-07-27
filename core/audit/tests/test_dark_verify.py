@@ -1813,7 +1813,7 @@ class TestRunDarkVerification:
 
         _run_dark_verification(result, config, llm_client=lambda s, u: llm_response)
         assert result.outcomes[0].status == "finding"
-        assert result.outcomes[0].evidence_tool == "dark_verify"
+        assert result.outcomes[0].evidence_tool == "dark_verify:confirmed"
         assert result.findings == 1
         assert result.dormant == 0
 
@@ -1897,4 +1897,4 @@ class TestRunDarkVerification:
         records = json.loads(results_path.read_text(encoding="utf-8"))
         assert len(records) == 1
         assert records[0]["status"] == "finding"
-        assert records[0]["evidence_tool"] == "dark_verify"
+        assert records[0]["evidence_tool"] == "dark_verify:confirmed"
