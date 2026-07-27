@@ -168,10 +168,11 @@ def cmd_context(args: argparse.Namespace) -> int:
             "function": args.function,
         })
 
+    from core.security.redaction import redact_secrets
     if args.json:
-        print(json.dumps(ctx, indent=2, default=str))
+        print(redact_secrets(json.dumps(ctx, indent=2, default=str)))
     else:
-        print(format_context_for_prompt(ctx))
+        print(redact_secrets(format_context_for_prompt(ctx)))
 
     return 0
 

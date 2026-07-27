@@ -224,7 +224,7 @@ _C_FUNC_RE = re.compile(
     r"public|private|protected|func|function|export|async|fn|"
     r"override|virtual|abstract|final|synchronized)\s+)*"
     r"(?:\([^)]*\)\s+)?"      # Go method receiver
-    r"(?:\w+[\s*&]*\s+)*"     # return type(s) with pointer/ref
+    r"(?:\w+[*&]*\s+)*"       # return type(s) with pointer/ref
     r"(\w+)\s*\([^)]*\)\s*\{",
     re.MULTILINE,
 )
@@ -592,7 +592,7 @@ def _extract_function_body_regex(source: str, func_name: str) -> str:
             r"func|function|export|async|public|private|protected|fn|"
             r"override|virtual|abstract|final|synchronized)\s+)*"
             r"(?:\([^)]*\)\s+)?"
-            r"(?:\w+[\s*&]*\s+)*"
+            r"(?:\w+[*&]*\s+)*"
             r"(\w+)\s*\([^)]*\)\s*(?:[^{]*)\{",
             line,
         )

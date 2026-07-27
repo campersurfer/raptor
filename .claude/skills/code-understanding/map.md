@@ -363,6 +363,19 @@ from `false`; consumers must not collapse `null` to `false`. Cache-keyed
 on `(binary_sha256, build_flags_source, schema_version)` — one
 `analyze_binary` call per run. Idempotent.
 
+**[MAP-5h] Build Joern CPG cache (optional)**
+
+When Joern is available and the target contains C/C++/Java/Scala source,
+pre-build a cached CPG so that later `/audit` and `/agentic` runs can
+query callers/callees without the cold-start penalty:
+
+```bash
+libexec/raptor-build-cpg-cache "$RESOLVED_TARGET" "$WORKDIR"
+```
+
+Opt-in — skipped when Joern is not installed or the target has no
+supported source files. Writes `cpg-cache-manifest.json` to `$WORKDIR`.
+
 **[MAP-6] Record Coverage**
 
 After writing `context-map.json`, update the inventory with which functions you examined.

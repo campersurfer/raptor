@@ -44,10 +44,10 @@ if not (os.environ.get("CLAUDECODE") or os.environ.get("_RAPTOR_TRUSTED")):
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
 
-import argparse
-from dataclasses import asdict
+import argparse  # noqa: E402
+from dataclasses import asdict  # noqa: E402
 
-from core.concepts.model import StudyItem
+from core.concepts.model import StudyItem  # noqa: E402
 
 # ------------------------------------------------------------------
 # Patterns
@@ -202,7 +202,7 @@ _NULL_GUARD_PATTERN = re.compile(
 )
 
 _VALIDATION_BOUND_PATTERN = re.compile(
-    r"if\s*\(\s*(\w+(?:->\w+)*)\s*([><!]=?)\s*(\w+(?:->\w+|\(\)|\([^)]*\))*)\s*\)"
+    r"if\s*\(\s*(\w+(?:->\w+)*)\s*([><!]=?)\s*(\w+(?:->\w+|\([^)]*\))*)\s*\)"
     r"\s*\{?\s*\n?\s*return\s+(-\w+)",
 )
 

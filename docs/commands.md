@@ -104,7 +104,7 @@ patches.
 |------|-------------|
 | `--no-exploits` | Skip exploit generation |
 | `--no-patches` | Skip patch generation |
-| `--no-annotations` | Skip per-function [annotation](#annotate) emission |
+| `--no-journal` | Skip journal updates |
 | `--no-visualizations` | Skip diagram generation |
 
 **Binary oracle** (see [binary analysis](binary-analysis.md))
@@ -350,7 +350,7 @@ Analyse existing SARIF findings with LLM without re-scanning.
 | `--prefer <glob>` | Prioritise findings matching glob (repeatable) |
 | `--exclude-dir <glob>` | Exclude directories matching glob (repeatable) |
 | `--checklist` | Generate a review checklist |
-| `--no-annotations` | Skip annotation emission |
+| `--no-journal` | Skip journal updates |
 | `--no-checker-synthesis` | Skip checker synthesis |
 | `--no-verify-exploits` | Skip exploit verification |
 | `--no-judge-intent` | Skip intent judgement |

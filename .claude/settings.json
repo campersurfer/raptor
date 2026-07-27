@@ -8,6 +8,8 @@
     "allow": [
       "Bash(libexec/raptor-agentic *)",
       "Bash(libexec/raptor-annotate *)",
+      "Bash(libexec/raptor-audit *)",
+      "Bash(libexec/raptor-build-cpg-cache *)",
       "Bash(libexec/raptor-build-checklist *)",
       "Bash(libexec/raptor-coverage-summary *)",
       "Bash(libexec/raptor-enrich-context-map-ast-view *)",

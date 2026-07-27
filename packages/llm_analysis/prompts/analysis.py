@@ -667,20 +667,6 @@ def build_analysis_prompt_bundle(
     # All extras are untrusted by definition (callers cannot pass trusted content here).
     blocks.extend(extra_blocks)
 
-    # SAGE historical context is prior LLM output —
-    # propagated trust label is "untrusted".
-    try:
-        from core.sage.hooks import enrich_analysis_prompt
-        sage_context = enrich_analysis_prompt(rule_id, file_path, repo_path=repo_path)
-        if sage_context:
-            blocks.append(UntrustedBlock(
-                content=sage_context,
-                kind="sage-historical-context",
-                origin="sage:cross-run-learning",
-            ))
-    except Exception:
-        pass
-
     if budget_tokens > 0:
         from core.llm.prompt_budget import shed_blocks
         blocks, shed = shed_blocks(
