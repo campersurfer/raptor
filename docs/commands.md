@@ -39,9 +39,9 @@ Static analysis scan using Semgrep (and optionally CodeQL and Coccinelle).
 | `--extra-config <path>` | Additional Semgrep config file (repeatable) |
 | `--show-suppressed` | Include suppressed findings in output |
 | `--sandbox` / `--no-sandbox` | Enable or disable [sandbox](sandbox.md) isolation |
-| `--audit` | Enable the systematic review layer |
-| `--audit-verbose` | Verbose audit output |
-| `--audit-budget <n>` | Maximum audit budget (finding count) |
+| `--audit` | Enable sandbox audit mode (log would-be-blocked syscalls) |
+| `--audit-verbose` | Verbose audit output (strace-style) |
+| `--audit-budget <n>` | Maximum audit event budget |
 
 See [architecture](architecture.md) for scanner configuration and rule-set
 details.
@@ -172,13 +172,13 @@ patches.
 | `--sandbox <mode>` | Sandbox mode: `debug`, `frida`, `full`, `network-only`, `none`, `strict`, `target_run` |
 | `--no-sandbox` | Disable sandbox entirely |
 
-**Audit layer**
+**Audit layer** (sandbox syscall audit)
 
 | Flag | Description |
 |------|-------------|
-| `--audit` | Enable systematic code review layer |
-| `--audit-verbose` | Verbose audit output |
-| `--audit-budget <n>` | Maximum audit budget |
+| `--audit` | Enable sandbox audit mode (log would-be-blocked syscalls) |
+| `--audit-verbose` | Verbose audit output (strace-style: every traced syscall) |
+| `--audit-budget <n>` | Maximum audit event budget |
 
 ---
 
