@@ -5482,6 +5482,7 @@ def _resolve_gate_demoted(
             )
             result.outcomes[i] = resolved
             result.suspicious -= 1
+            result.dormant += 1
             logger.info(
                 "gate-resolved %s:%s → dark "
                 "(no mechanical corroboration, class not tool-covered)",
