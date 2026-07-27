@@ -289,10 +289,12 @@ class TestRunOrchestrator:
 
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
+            max_refinements=0,
         )
         run_orchestrator(config, review_fn, on_progress=on_progress)
-        assert len(progress_log) == 2
-        assert progress_log[0][1] == 2
+        reviews = [(i, t, fn) for i, t, fn in progress_log if t > 0]
+        assert len(reviews) == 2
+        assert reviews[0][1] == 2
 
     def test_no_checklist_returns_early(self, tmp_path: Path):
         target = tmp_path / "target"
@@ -1417,6 +1419,7 @@ class TestGateEnforcement:
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False,
+            max_refinements=0,
             batch_sloc_threshold=0,
         )
         result = run_orchestrator(config, review_fn)
