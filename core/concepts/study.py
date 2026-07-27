@@ -1320,10 +1320,10 @@ def _run_one_batch(
         logger.warning("Phase 2 batch %d: non-dict response", idx + 1)
         return [], [], []
 
-    n_c = len(result.get("concepts", []))
-    n_i = len(result.get("invariants", []))
-    n_ct = len(result.get("contracts", []))
-    n_sm = len(result.get("state_machines", []))
+    n_c = len(result.get("concepts") or [])
+    n_i = len(result.get("invariants") or [])
+    n_ct = len(result.get("contracts") or [])
+    n_sm = len(result.get("state_machines") or [])
     logger.info(
         "Phase 2 batch %d/%d raw: keys=%s, concepts=%d, invariants=%d, "
         "contracts=%d, state_machines=%d",
@@ -1867,17 +1867,20 @@ def run_study(
     model.save(out_path)
 
     # SAGE: store concepts for cross-session recall (N1)
-    try:
-        from core.sage.hooks import store_study_concepts
-        stored = store_study_concepts(
-            repo_path=source_root or target,
-            domain_model=model,
-            study_scope=target,
-        )
-        if stored and on_progress:
-            on_progress("sage", f"Stored {stored} concepts to SAGE")
-    except Exception:
-        logger.debug("SAGE concept store skipped", exc_info=True)
+    # Skip store when everything came from SAGE (nothing new learned).
+    has_new_llm_output = len(items) > 0
+    if has_new_llm_output:
+        try:
+            from core.sage.hooks import store_study_concepts
+            stored = store_study_concepts(
+                repo_path=source_root or target,
+                domain_model=model,
+                study_scope=target,
+            )
+            if stored and on_progress:
+                on_progress("sage", f"Stored {stored} concepts to SAGE")
+        except Exception:
+            logger.debug("SAGE concept store skipped", exc_info=True)
 
     pending = reading_list.pending()
     if pending:
@@ -1904,37 +1907,154 @@ def run_study(
 # ------------------------------------------------------------------
 
 
+_EVIDENCE_HASH_RE = re.compile(r"\[h=([a-f0-9]+)\]")
+
+
+def _extract_evidence_hashes(content: str) -> set[str]:
+    """Extract per-evidence [h=...] hashes from SAGE content."""
+    return set(_EVIDENCE_HASH_RE.findall(content))
+
+
 def _extract_source_hash(content: str) -> str:
-    """Extract the 'Source hash: ...' line from SAGE content."""
+    """Extract the composite 'Source hash: ...' line from SAGE content."""
     for ln in content.split("\n"):
         if ln.strip().startswith("Source hash:"):
             return ln.split(":", 1)[1].strip()
     return ""
 
 
-def _compute_item_source_hash(
-    item: StudyItem,
-    source_root: Path | None,
-) -> str:
-    """Compute a composite hash for a study item's source span.
+def _verify_evidence_hashes(
+    content: str,
+    source_root: Path,
+) -> bool:
+    """Recompute evidence hashes from SAGE content and check all still match.
 
-    Must match the format stored by ``store_study_concepts``:
-    ``sha256_string("|".join(sorted(evidence_hashes)))[:12]``.
-    For a single-evidence item this is ``sha256_string(span_hash)[:12]``.
+    Each ``Evidence (...): file:line [h=xxxx]`` line records the hash of
+    that source line at store time.  Re-hash the same locations now; if
+    ALL still match, the concept is fresh.  Returns False when any
+    evidence line has changed or when the content has no hashes at all.
     """
-    if source_root is None or not item.file or not item.line:
-        return ""
-    try:
-        from core.hash import sha256_string
-        from core.staleness import hash_span
-        defn_lines = len(item.definition.splitlines()) if item.definition else 1
-        end_line = item.line + max(defn_lines - 1, 0)
-        h = hash_span(source_root / item.file, item.line, end_line)
-        if not h:
-            return ""
-        return sha256_string(h)[:12]
-    except Exception:
-        return ""
+    from core.staleness import hash_span
+
+    checked = 0
+    for m in _SAGE_EVIDENCE_RE.finditer(content):
+        file_str = m.group(2).strip()
+        line_str = m.group(3)
+        stored_hash = m.group(4)
+        if not stored_hash or not line_str:
+            continue
+        line_num = int(line_str)
+        full_path = source_root / file_str
+        if not full_path.is_file():
+            return False
+        current = hash_span(full_path, line_num, line_num)
+        if current != stored_hash:
+            return False
+        checked += 1
+    return checked > 0
+
+
+_SAGE_EVIDENCE_RE = re.compile(
+    r"Evidence\s+\((\w+)\):\s+(.+?)(?::(\d+))?"
+    r"(?:\s+\[h=([a-f0-9]+)\])?\s+[-–—]\s+(.*)"
+)
+_SAGE_INVARIANT_RE = re.compile(
+    r"Invariant\s+\[([^\]]+)\]:\s+(.*?)\s*\(negation:\s*(.*)\)"
+)
+_SAGE_CONTRACT_RE = re.compile(r"Contract\s+\[([^\]]+)\]")
+_SAGE_CWE_RE = re.compile(r"CWEs:\s+(.*)")
+
+
+def _reconstruct_from_sage(
+    item: StudyItem,
+    content: str,
+) -> tuple[list[Concept], list[Invariant], list[Contract]] | None:
+    """Parse structured SAGE recall text back into domain-model objects.
+
+    Returns None if the content doesn't parse into at least one concept.
+    """
+    lines = content.split("\n")
+    if not lines:
+        return None
+
+    # First line is "Concept [id] in scope: description"
+    first = lines[0]
+    m = re.match(r"Concept\s+\[([^\]]+)\]\s+in\s+.+?:\s+(.*)", first)
+    if not m:
+        return None
+
+    concept_id = m.group(1)
+    description = m.group(2).strip()
+
+    evidence: list[Evidence] = []
+    invariants: list[Invariant] = []
+    contracts: list[Contract] = []
+    pending_inv_cwes: Invariant | None = None
+
+    for ln in lines[1:]:
+        stripped = ln.strip()
+
+        ev_m = _SAGE_EVIDENCE_RE.match(stripped)
+        if ev_m:
+            evidence.append(Evidence(
+                type=ev_m.group(1),
+                file=ev_m.group(2).strip(),
+                line=int(ev_m.group(3)) if ev_m.group(3) else None,
+                observation=ev_m.group(5).strip(),
+                hash=ev_m.group(4),
+            ))
+            pending_inv_cwes = None
+            continue
+
+        inv_m = _SAGE_INVARIANT_RE.match(stripped)
+        if inv_m:
+            invariants.append(Invariant(
+                id=inv_m.group(1),
+                concept=concept_id,
+                statement=inv_m.group(2).strip(),
+                negation=inv_m.group(3).strip(),
+                confidence="traced",
+            ))
+            pending_inv_cwes = invariants[-1]
+            continue
+
+        cwe_m = _SAGE_CWE_RE.match(stripped)
+        if cwe_m and pending_inv_cwes is not None:
+            cwes = [c.strip() for c in cwe_m.group(1).split(",") if c.strip()]
+            pending_inv_cwes.relevant_cwes = cwes
+            continue
+
+        ct_m = _SAGE_CONTRACT_RE.match(stripped)
+        if ct_m:
+            ct_fn = ct_m.group(1)
+            when = ""
+            ownership = ""
+            rest = stripped[ct_m.end():]
+            if "when:" in rest:
+                when = rest.split("when:", 1)[1].split("ownership:", 1)[0].strip()
+            if "ownership:" in rest:
+                ownership = rest.split("ownership:", 1)[1].strip()
+            contracts.append(Contract(
+                function=ct_fn,
+                file=item.file,
+                when=when,
+                ownership_transfer=ownership,
+            ))
+            pending_inv_cwes = None
+            continue
+
+    if not evidence:
+        return None
+
+    concept = Concept(
+        id=concept_id,
+        description=description,
+        evidence=evidence,
+        confidence="traced",
+        state="proposed",
+    )
+
+    return [concept], invariants, contracts
 
 
 def _apply_sage_prior(
@@ -1978,35 +2098,53 @@ def _apply_sage_prior(
             remaining.append(item)
             continue
 
-        best_row = max(rows, key=lambda r: r.get("confidence", 0))
-        content = best_row.get("content", "")
-        stored_hash = _extract_source_hash(content)
+        hash_matches = False
+        content = ""
+        if source_root:
+            for row in rows:
+                rc = row.get("content", "")
+                if _extract_evidence_hashes(rc) and _verify_evidence_hashes(rc, source_root):
+                    content = rc
+                    hash_matches = True
+                    break
+        if not content:
+            best_row = max(rows, key=lambda r: r.get("confidence", 0))
+            content = best_row.get("content", "")
 
-        if stored_hash and source_root:
-            current_hash = _compute_item_source_hash(item, source_root)
-            hash_matches = current_hash and current_hash == stored_hash
-        else:
-            hash_matches = False
-
-        if hash_matches and local_model:
-            # Skip: hash matches + local model has the concept
-            concept = local_model.get_concept(item.name)
-            if concept is None:
-                # Try normalised lookup
-                norm = re.sub(r"[^a-z0-9]+", "_", item.name.lower()).strip("_")
-                for c in local_model.concepts:
-                    c_norm = re.sub(r"[^a-z0-9]+", "_", c.id.lower()).strip("_")
-                    if c_norm == norm or norm in c_norm:
-                        concept = c
-                        break
-            if concept is not None:
-                skipped_concepts.append(concept)
-                for inv in local_model.invariants:
-                    if inv.concept == concept.id:
-                        skipped_invariants.append(inv)
-                for ct in local_model.contracts:
-                    if ct.function == item.name or ct.file == item.file:
-                        skipped_contracts.append(ct)
+        if hash_matches:
+            skipped = False
+            # Fast path: local domain model has structured objects
+            if local_model:
+                concept = local_model.get_concept(item.name)
+                if concept is None:
+                    norm = re.sub(r"[^a-z0-9]+", "_", item.name.lower()).strip("_")
+                    for c in local_model.concepts:
+                        c_norm = re.sub(r"[^a-z0-9]+", "_", c.id.lower()).strip("_")
+                        if c_norm == norm or norm in c_norm:
+                            concept = c
+                            break
+                if concept is not None:
+                    skipped_concepts.append(concept)
+                    concept_fns = {item.name} | {
+                        ev.item for ev in concept.evidence if ev.item
+                    }
+                    for inv in local_model.invariants:
+                        if inv.concept == concept.id:
+                            skipped_invariants.append(inv)
+                    for ct in local_model.contracts:
+                        if ct.function in concept_fns:
+                            skipped_contracts.append(ct)
+                    skipped = True
+            # Slow path: reconstruct from SAGE text content
+            if not skipped:
+                reconstructed = _reconstruct_from_sage(item, content)
+                if reconstructed:
+                    r_concepts, r_invariants, r_contracts = reconstructed
+                    skipped_concepts.extend(r_concepts)
+                    skipped_invariants.extend(r_invariants)
+                    skipped_contracts.extend(r_contracts)
+                    skipped = True
+            if skipped:
                 skip_count += 1
                 continue
 

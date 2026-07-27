@@ -1080,6 +1080,97 @@ def store_study_concepts(
     return stored
 
 
+def store_teach_concepts(
+    repo_path: str,
+    teach_json: dict,
+) -> int:
+    """Store structured concepts from a teach session to SAGE.
+
+    Accepts the JSON blob emitted by TEACH-4 and builds a DomainModel
+    from it, stamps evidence hashes, then delegates to
+    ``store_study_concepts`` for SAGE storage.
+
+    Args:
+        repo_path: Target repository path.
+        teach_json: Dict with ``concepts``, ``invariants``, ``contracts``
+            lists, plus ``subject`` and ``source_root``.
+
+    Returns:
+        Number of concepts stored.
+    """
+    from core.concepts.model import (
+        Concept,
+        Contract,
+        DomainModel,
+        Evidence,
+        Invariant,
+    )
+    from core.concepts.study import _stamp_evidence_hashes
+
+    source_root = Path(teach_json.get("source_root", repo_path))
+    subject = teach_json.get("subject", "")
+
+    concepts = []
+    for c in teach_json.get("concepts", []):
+        evidence = [
+            Evidence(
+                type=e.get("type", "code_path"),
+                file=e.get("file", ""),
+                observation=e.get("observation", ""),
+                line=e.get("line"),
+                item=e.get("item"),
+            )
+            for e in c.get("evidence", [])
+        ]
+        concepts.append(Concept(
+            id=c.get("id", ""),
+            description=c.get("description", ""),
+            evidence=evidence,
+            confidence=c.get("confidence", "traced"),
+        ))
+
+    invariants = [
+        Invariant(
+            id=i.get("id", ""),
+            concept=i.get("concept", ""),
+            statement=i.get("statement", ""),
+            negation=i.get("negation", ""),
+            relevant_cwes=i.get("relevant_cwes", []),
+            mechanism_tags=i.get("mechanism_tags", []),
+        )
+        for i in teach_json.get("invariants", [])
+    ]
+
+    contracts = [
+        Contract(
+            function=ct.get("function", ""),
+            file=ct.get("file", ""),
+            when=ct.get("when", ""),
+            input_semantics=ct.get("input_semantics", ""),
+            output_semantics=ct.get("output_semantics", ""),
+            ownership_transfer=ct.get("ownership_transfer", ""),
+        )
+        for ct in teach_json.get("contracts", [])
+    ]
+
+    all_evidence = [e for c in concepts for e in c.evidence]
+    _stamp_evidence_hashes(all_evidence, source_root)
+
+    dm = DomainModel(
+        target=str(source_root),
+        source_root=str(source_root),
+        concepts=concepts,
+        invariants=invariants,
+        contracts=contracts,
+    )
+
+    return store_study_concepts(
+        repo_path,
+        dm,
+        study_scope=subject or Path(repo_path).name,
+    )
+
+
 def recall_concepts_for_teach(
     repo_path: str,
     subject: str,
@@ -1186,7 +1277,7 @@ def recall_concepts_for_study(
             rows = client.query(
                 text=f"Concept [{name}]: ownership, lifetime, contracts",
                 domain_tag=domain,
-                top_k=8,
+                top_k=3,
                 min_confidence=min_confidence,
             )
             return (name, rows)
