@@ -169,10 +169,9 @@ def cmd_context(args: argparse.Namespace) -> int:
         })
 
     from core.security.redaction import redact_secrets
-    if args.json:
-        print(redact_secrets(json.dumps(ctx, indent=2, default=str)))
-    else:
-        print(redact_secrets(format_context_for_prompt(ctx)))
+    raw = json.dumps(ctx, indent=2, default=str) if args.json else format_context_for_prompt(ctx)
+    sanitised = redact_secrets(raw)  # noqa: S101 — CodeQL FP: redact_secrets IS the sanitiser
+    print(sanitised)
 
     return 0
 
