@@ -41,6 +41,8 @@ class EvidenceSource(str, enum.Enum):
     DYNAMIC_SANITIZER = "dynamic:sanitizer"
     DYNAMIC_FRIDA = "dynamic:frida"
     DYNAMIC_CRASH = "dynamic:crash"
+    DARK_VERIFY = "mechanical:dark_verify"
+    COMPILATION = "mechanical:compilation"
 
 
 class Confidence(str, enum.Enum):
@@ -70,6 +72,8 @@ _SOURCE_CONFIDENCE: Dict[EvidenceSource, Confidence] = {
     EvidenceSource.DYNAMIC_SANITIZER: Confidence.HIGH,
     EvidenceSource.DYNAMIC_FRIDA: Confidence.HIGH,
     EvidenceSource.DYNAMIC_CRASH: Confidence.MEDIUM,
+    EvidenceSource.DARK_VERIFY: Confidence.HIGH,
+    EvidenceSource.COMPILATION: Confidence.MEDIUM,
 }
 
 VALID_EVIDENCE_TOOLS: frozenset = frozenset({
@@ -105,6 +109,30 @@ def is_tool_evidence(stamp: str) -> bool:
     return all(_is_single_tool_evidence(p) for p in parts)
 
 
+_LLM_ONLY_EVIDENCE = frozenset({
+    "manual", "manual code review", "manual review", "code review",
+    "llm", "llm review", "none", "n/a", "",
+})
+
+LLM_CLAIM_PREFIX = "llm-claimed:"
+
+
+def sanitize_llm_evidence_tool(raw: str) -> str:
+    """Normalise an evidence_tool value that came from the LLM.
+
+    Values meaning "no tool" collapse to empty string.  Everything else
+    is namespaced under ``llm-claimed:`` so it cannot satisfy
+    :func:`is_tool_evidence`.  A real receipt overwrites it later via
+    ``_stamp_evidence`` once a tool has actually run.
+    """
+    value = (raw or "").strip()
+    if not value or value.lower() in _LLM_ONLY_EVIDENCE:
+        return ""
+    if value.startswith(LLM_CLAIM_PREFIX):
+        return value
+    return f"{LLM_CLAIM_PREFIX}{value}"
+
+
 _RECEIPT_MAP: Dict[str, tuple] = {
     "dynamic:sanitizer": (EvidenceSource.DYNAMIC_SANITIZER, "confirmed by dynamic sanitizer"),
     "dynamic:crash": (EvidenceSource.DYNAMIC_CRASH, "non-zero exit without sanitizer confirmation"),
@@ -114,6 +142,10 @@ _RECEIPT_MAP: Dict[str, tuple] = {
     "codeql": (EvidenceSource.CODEQL, "confirmed by CodeQL analysis"),
     "coccinelle": (EvidenceSource.COCCINELLE, "confirmed by Coccinelle"),
     "smt": (EvidenceSource.SMT, "path feasibility confirmed by SMT solver"),
+    "dark_verify:confirmed": (EvidenceSource.DARK_VERIFY, "confirmed by executed dark witness"),
+    "dark_verify:refuted": (EvidenceSource.DARK_VERIFY, "refuted by executed dark witness"),
+    "dark_verify": (EvidenceSource.DARK_VERIFY, "dark verification witness"),
+    "compilation": (EvidenceSource.COMPILATION, "confirmed by compilation and execution"),
 }
 
 _CONFIDENCE_PRIORITY: Dict[Confidence, int] = {
@@ -367,15 +399,16 @@ def grade_review_result(
             confidence_override=Confidence.HIGH,
         ))
 
-    parts = evidence_tool.split("+") if "+" in evidence_tool else [evidence_tool]
-    seen: set = set()
-    for part in parts:
-        namespace = part.split(":")[0] if ":" in part else part
-        entry = _RECEIPT_MAP.get(part) or _RECEIPT_MAP.get(namespace)
-        if entry and entry[0] not in seen:
-            seen.add(entry[0])
-            source, description = entry
-            items.append(grade_evidence(source, description))
+    if evidence_tool and is_tool_evidence(evidence_tool):
+        parts = evidence_tool.split("+") if "+" in evidence_tool else [evidence_tool]
+        seen: set = set()
+        for part in parts:
+            namespace = part.split(":")[0] if ":" in part else part
+            entry = _RECEIPT_MAP.get(part) or _RECEIPT_MAP.get(namespace)
+            if entry and entry[0] not in seen:
+                seen.add(entry[0])
+                source, description = entry
+                items.append(grade_evidence(source, description))
 
     return items
 

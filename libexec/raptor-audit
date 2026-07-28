@@ -392,7 +392,10 @@ def cmd_record(args: argparse.Namespace) -> int:
 
     # Include gate metadata in the record
     if args.evidence_tool:
-        result["evidence_tool"] = args.evidence_tool
+        et = args.evidence_tool
+        if ":" not in et:
+            et = f"{et}:cli"
+        result["evidence_tool"] = et
     if args.hypothesis:
         result["hypothesis"] = args.hypothesis
     if args.vuln_type:
@@ -414,7 +417,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             title=f"{args.vuln_type or 'novel'}: {args.function}",
             description=args.body or "",
             cwe=args.cwe,
-            tool_evidence=[{"tool": args.evidence_tool}] if args.evidence_tool else None,
+            tool_evidence=[{"tool": et}] if args.evidence_tool else None,
             hypothesis=args.hypothesis,
         )
 

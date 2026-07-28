@@ -16,6 +16,7 @@ from core.audit.evidence_grade import (
     grade_evidence_record,
     grade_review_result,
     is_tool_evidence,
+    sanitize_llm_evidence_tool,
 )
 
 
@@ -42,6 +43,12 @@ class TestEvidenceSource:
 
     def test_dynamic_crash_is_medium(self):
         assert default_confidence(EvidenceSource.DYNAMIC_CRASH) == Confidence.MEDIUM
+
+    def test_dark_verify_is_high(self):
+        assert default_confidence(EvidenceSource.DARK_VERIFY) == Confidence.HIGH
+
+    def test_compilation_is_medium(self):
+        assert default_confidence(EvidenceSource.COMPILATION) == Confidence.MEDIUM
 
     def test_corroborated_llm_is_medium(self):
         assert default_confidence(EvidenceSource.LLM_CORROBORATED) == Confidence.MEDIUM
@@ -260,6 +267,20 @@ class TestGradeReviewResult:
         items = grade_review_result({}, evidence_tool="smt")
         assert any(e.source == EvidenceSource.SMT for e in items)
 
+    def test_evidence_tool_dark_verify_confirmed(self):
+        items = grade_review_result({}, evidence_tool="dark_verify:confirmed")
+        assert any(e.source == EvidenceSource.DARK_VERIFY for e in items)
+
+    def test_evidence_tool_dark_verify_refuted(self):
+        items = grade_review_result({}, evidence_tool="dark_verify:refuted")
+        dv = [e for e in items if e.source == EvidenceSource.DARK_VERIFY]
+        assert len(dv) == 1
+        assert "refuted" in dv[0].description
+
+    def test_evidence_tool_compilation(self):
+        items = grade_review_result({}, evidence_tool="compilation")
+        assert any(e.source == EvidenceSource.COMPILATION for e in items)
+
     def test_evidence_tool_plus_joined(self):
         items = grade_review_result({}, evidence_tool="semgrep+joern")
         sources = {e.source for e in items}
@@ -270,6 +291,23 @@ class TestGradeReviewResult:
         items = grade_review_result({}, evidence_tool="semgrep+semgrep")
         semgrep = [e for e in items if e.source == EvidenceSource.SEMGREP]
         assert len(semgrep) == 1
+
+    def test_malformed_plus_stamp_not_graded(self):
+        assert grade_review_result({}, evidence_tool="semgrep+") == []
+        assert grade_review_result({}, evidence_tool="+joern") == []
+        assert grade_review_result({}, evidence_tool="semgrep++joern") == []
+
+    def test_cli_namespaced_stamps_grade(self):
+        for bare in ("joern", "semgrep", "codeql", "coccinelle", "smt"):
+            cli = f"{bare}:cli"
+            assert is_tool_evidence(cli), cli
+            items = grade_review_result({}, evidence_tool=cli)
+            assert len(items) > 0, f"{cli} should grade"
+
+    def test_cli_namespaced_stamps_leave_namespaced_unchanged(self):
+        for ns in ("dynamic:sanitizer", "dark_verify:confirmed", "frida:runtime"):
+            assert ":" in ns
+            assert is_tool_evidence(ns)
 
 
 class TestFormatEvidenceChain:
@@ -328,3 +366,26 @@ class TestIsToolEvidence:
     def test_empty_and_none_rejected(self):
         assert not is_tool_evidence("")
         assert not is_tool_evidence("none")
+
+
+class TestSanitizeLlmEvidenceTool:
+    """LLM-supplied evidence_tool values must not pass is_tool_evidence."""
+
+    def test_exact_tool_names_namespaced(self):
+        for name in ("semgrep", "joern", "codeql", "smt"):
+            result = sanitize_llm_evidence_tool(name)
+            assert result.startswith("llm-claimed:"), name
+            assert not is_tool_evidence(result), name
+
+    def test_llm_self_descriptions_collapsed(self):
+        for val in ("llm", "manual review", "code review", "none", "n/a", ""):
+            assert sanitize_llm_evidence_tool(val) == ""
+
+    def test_already_prefixed_unchanged(self):
+        assert sanitize_llm_evidence_tool("llm-claimed:joern") == "llm-claimed:joern"
+
+    def test_none_input(self):
+        assert sanitize_llm_evidence_tool(None) == ""
+
+    def test_whitespace_stripped(self):
+        assert sanitize_llm_evidence_tool("  semgrep  ").startswith("llm-claimed:")

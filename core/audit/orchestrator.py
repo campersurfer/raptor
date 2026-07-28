@@ -3406,7 +3406,7 @@ def _multi_pass_review(
                 body=primary.get("body", ""),
                 hypothesis=primary.get("hypothesis", ""),
                 hypotheses=primary.get("hypotheses"),
-                evidence_tool=primary.get("evidence_tool", ""),
+                evidence_tool=_sanitize_llm_et(primary.get("evidence_tool", "")),
                 cost_usd=total_cost,
                 model=primary.get("model", model),
                 duration_s=total_duration,
@@ -3468,7 +3468,7 @@ def _multi_pass_review(
         body=best.body,
         hypothesis=best.hypothesis,
         hypotheses=merged_hypotheses or None,
-        evidence_tool=best.evidence_tool,
+        evidence_tool=_sanitize_llm_et(best.evidence_tool),
         cost_usd=total_cost,
         model=best.model,
         duration_s=total_duration,
@@ -4384,7 +4384,9 @@ def _sweep_validate(
     """
     review = outcome.review_result or {}
     hypothesis = review.get("hypothesis") or outcome.hypothesis or ""
-    evidence_tool = review.get("evidence_tool") or outcome.evidence_tool or ""
+    evidence_tool = _sanitize_llm_et(
+        review.get("evidence_tool") or outcome.evidence_tool or "",
+    )
 
     if _is_tool_confirmed(evidence_tool):
         return outcome
@@ -4548,7 +4550,9 @@ def _proactive_validate(
     except ImportError:
         return outcome
 
-    evidence_tool = review.get("evidence_tool") or outcome.evidence_tool or ""
+    evidence_tool = _sanitize_llm_et(
+        review.get("evidence_tool") or outcome.evidence_tool or "",
+    )
     if _is_tool_confirmed(evidence_tool):
         return outcome
 
@@ -6052,6 +6056,12 @@ def _is_tool_confirmed(evidence_tool: str) -> bool:
     """
     from .evidence_grade import is_tool_evidence
     return is_tool_evidence(evidence_tool)
+
+
+def _sanitize_llm_et(raw: str) -> str:
+    """Strip LLM-supplied evidence_tool so it cannot pass _is_tool_confirmed."""
+    from .evidence_grade import sanitize_llm_evidence_tool
+    return sanitize_llm_evidence_tool(raw)
 
 
 def _stamp_evidence(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
