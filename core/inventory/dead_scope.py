@@ -65,6 +65,8 @@ def detect_dead_scopes(language: str, content: str) -> List[DeadRange]:
             return _detect_python(content)
         if language in ("javascript", "typescript", "tsx"):
             return _detect_javascript(content)
+        if language in ("c", "cpp"):
+            return _detect_c(content)
         if language == "rust":
             return _detect_rust(content)
         if language == "php":
@@ -276,6 +278,147 @@ def _detect_rust(content: str) -> List[DeadRange]:
         start_line = content.count("\n", 0, m.start()) + 1
         end_line = content.count("\n", 0, close) + 1
         ranges.append((start_line, end_line))
+    return ranges
+
+
+# ---------------------------------------------------------------------------
+# C / C++ — ``static`` functions with zero callers in the translation unit.
+#
+# A ``static`` function has file scope: it can only be called from
+# within its translation unit. If the function name (as a whole-word
+# match) appears exactly once in the file after stripping comments and
+# string/char literals, the definition is the only occurrence — no
+# code in the file calls it, so it is provably dead. The compiler
+# would emit ``-Wunused-function`` and optimise it away.
+#
+# Conservative: names appearing in macros, initialiser designators,
+# or sizeof expressions all count as occurrences, so we under-detect
+# rather than over-detect. ``__attribute__((constructor))`` /
+# ``destructor`` functions are skipped (called by the runtime, not by
+# source-level call sites).
+# ---------------------------------------------------------------------------
+
+
+_C_NOT_FUNC_NAMES = frozenset({
+    "if", "while", "for", "switch", "sizeof", "typeof", "alignof",
+    "return", "goto", "case", "do",
+    "void", "int", "char", "short", "long", "float", "double",
+    "unsigned", "signed", "bool", "_Bool",
+    "const", "volatile", "restrict", "_Atomic",
+    "struct", "enum", "union", "typedef",
+    "inline", "__inline", "__inline__", "__forceinline",
+    "__attribute__", "__extension__", "__typeof__",
+})
+
+
+def _c_strip_comments_and_strings(content: str) -> str:
+    """Strip C comments and string/char literals, preserving newlines."""
+    out = list(content)
+    i = 0
+    n = len(out)
+    while i < n:
+        c = out[i]
+        if c == "/" and i + 1 < n:
+            if out[i + 1] == "/":
+                while i < n and out[i] != "\n":
+                    out[i] = " "
+                    i += 1
+                continue
+            if out[i + 1] == "*":
+                out[i] = " "
+                out[i + 1] = " "
+                i += 2
+                while i < n:
+                    if out[i] == "*" and i + 1 < n and out[i + 1] == "/":
+                        out[i] = " "
+                        out[i + 1] = " "
+                        i += 2
+                        break
+                    if out[i] != "\n":
+                        out[i] = " "
+                    i += 1
+                continue
+        if c in "\"'":
+            quote = c
+            out[i] = " "
+            i += 1
+            while i < n:
+                if out[i] == "\\" and i + 1 < n:
+                    out[i] = " "
+                    if out[i + 1] != "\n":
+                        out[i + 1] = " "
+                    i += 2
+                    continue
+                if out[i] == quote:
+                    out[i] = " "
+                    i += 1
+                    break
+                if out[i] != "\n":
+                    out[i] = " "
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _detect_c(content: str) -> List[DeadRange]:
+    stripped = _c_strip_comments_and_strings(content)
+    ranges: List[DeadRange] = []
+
+    for m in re.finditer(r"\bstatic\b", stripped):
+        paren_pos = None
+        for j in range(m.end(), min(m.end() + 500, len(stripped))):
+            c = stripped[j]
+            if c == "(":
+                paren_pos = j
+                break
+            if c in ";{}":
+                break
+        if paren_pos is None:
+            continue
+
+        between = stripped[m.end():paren_pos]
+        name_match = re.search(r"\b(\w+)\s*$", between)
+        if not name_match:
+            continue
+        name = name_match.group(1)
+
+        if name in _C_NOT_FUNC_NAMES:
+            continue
+        if re.search(r"constructor|destructor", between):
+            continue
+
+        depth = 1
+        j = paren_pos + 1
+        while j < len(stripped) and depth > 0:
+            if stripped[j] == "(":
+                depth += 1
+            elif stripped[j] == ")":
+                depth -= 1
+            j += 1
+        if depth != 0:
+            continue
+
+        brace_pos = None
+        for k in range(j, min(j + 200, len(stripped))):
+            if stripped[k] == "{":
+                brace_pos = k
+                break
+            if stripped[k] == ";":
+                break
+        if brace_pos is None:
+            continue
+
+        close = _match_brace(stripped, brace_pos)
+        if close is None:
+            continue
+
+        count = len(re.findall(r"\b" + re.escape(name) + r"\b", stripped))
+        if count <= 1:
+            start_line = stripped.count("\n", 0, m.start()) + 1
+            end_line = stripped.count("\n", 0, close) + 1
+            ranges.append((start_line, end_line))
+
     return ranges
 
 
