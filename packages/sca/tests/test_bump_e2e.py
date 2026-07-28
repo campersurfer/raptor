@@ -38,6 +38,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -120,6 +122,7 @@ def _run_bump(
 # Tier 3a: discovery surfaces — every bump surface walked
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_bump_whatif_emits_valid_json(tmp_path: Path) -> None:
     """``raptor-sca bump --json --whatif`` runs to completion, emits
     JSON parsing successfully."""

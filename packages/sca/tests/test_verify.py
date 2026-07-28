@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import List
 
+import pytest
+
 from packages.sca import verify
 from core.json import JsonCache
 from packages.sca.osv import OSV_QUERY_BATCH_URL, OSV_VULN_URL_TEMPLATE
@@ -107,6 +109,7 @@ def test_clean_verdict_when_proposed_clears_all_findings(tmp_path: Path) -> None
     assert "New: **0**" in delta_md
 
 
+@pytest.mark.slow
 def test_regression_verdict_when_proposed_does_not_clear(tmp_path: Path) -> None:
     target = _build_target(tmp_path)
     proposed = _build_proposed(tmp_path, "1.5.0")  # still vulnerable
@@ -207,6 +210,7 @@ def test_overlay_skips_vendored_dirs(tmp_path: Path) -> None:
     assert (out / "overlay" / "node_modules").exists() is False
 
 
+@pytest.mark.slow
 def test_overlay_preserves_non_overlaid_files(tmp_path: Path) -> None:
     target = _build_target(tmp_path)
     proposed = _build_proposed(tmp_path, "2.0.0")
