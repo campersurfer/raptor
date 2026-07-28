@@ -237,6 +237,8 @@ def _make_tier_counters() -> Dict[str, TierCounters]:
         "codeql": TierCounters(),
         "coccinelle": TierCounters(),
         "smt": TierCounters(),
+        "lifecycle": TierCounters(),
+        "triage_skip": TierCounters(),
     }
 
 
@@ -2547,7 +2549,14 @@ def _run_audit_body(
         logger.debug("error retry pass failed", exc_info=True)
 
     try:
-        _run_dark_verification(result, config)
+        from core.llm.client import LLMClient
+        _dark_client = LLMClient()
+        _run_dark_verification(
+            result, config,
+            llm_client=lambda p, s: _dark_client.generate(
+                p, system_prompt=s or None,
+            ).content,
+        )
     except Exception:
         logger.debug("dark verification pass failed", exc_info=True)
 

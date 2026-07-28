@@ -49,7 +49,7 @@ def _resolve_function_from_checklist(
             continue
         best_name = None
         best_dist = float("inf")
-        for func in fi.get("functions", []):
+        for func in fi.get("items") or fi.get("functions") or []:
             func_line = func.get("line", 0)
             if func_line and abs(func_line - line) < best_dist:
                 best_dist = abs(func_line - line)

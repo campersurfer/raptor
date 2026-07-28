@@ -281,7 +281,7 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
         if category == "write":
             # Write blocks need "Permission denied" alongside the pattern to
             # filter noise like "cannot create output file: No space left".
-            if "Permission denied" not in stderr:
+            if "Permission denied" not in stderr and "Read-only file system" not in stderr:
                 continue
             if not landlock_engaged:
                 continue

@@ -611,6 +611,15 @@ def _try_taint_summary_resolve(
 
     if hasattr(ts, "return_sanitizers_for_param"):
         sanitizers = ts.return_sanitizers_for_param(param_idx)
+        if sanitizers and constraint.cwe:
+            from core.dataflow.sanitizer_catalog import sanitizer_callables_for_cwe
+            from .prefilter import detect_language
+            lang = detect_language(constraint.file)
+            if lang:
+                relevant = sanitizer_callables_for_cwe(constraint.cwe, lang)
+                sanitizers = frozenset(
+                    (name, idx) for name, idx in sanitizers if name in relevant
+                )
         if sanitizers:
             return PropagationResult(
                 constraint=constraint,
