@@ -73,6 +73,7 @@ def rewrite_gha_uses(
         except OSError as e:
             return [RewriteResult(edit=r.edit, applied=False,
                                   reason=f"error: write failed: {e}")
+                    if r.applied else r
                     for r in results]
     return results
 

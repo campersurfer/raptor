@@ -430,7 +430,7 @@ def _escalate_pypi_not_reachable(
     difference (``not_reachable high → 0.335×`` vs ``not_evaluated
     → 0.85×``) makes the verdict materially affect ranking.
     """
-    seen: dict[str, Reachability] = {}
+    seen: dict[tuple, Reachability] = {}
     for d in deps:
         if d.ecosystem != "PyPI":
             continue
@@ -441,8 +441,8 @@ def _escalate_pypi_not_reachable(
         current = out.get(d.key())
         if current is None or current.verdict != "not_reachable":
             continue
-        if d.name in seen:
-            out[d.key()] = seen[d.name]
+        if (d.name, d.version) in seen:
+            out[d.key()] = seen[(d.name, d.version)]
             continue
         logger.info(
             "sca.reachability: tier-3 escalation for %s==%s "
@@ -466,7 +466,7 @@ def _escalate_pypi_not_reachable(
                 # find a module mapping that matches the scan.
                 # Downgrade verdict honestly.
                 new_verdict = _not_evaluated_after_tier3(d)
-        seen[d.name] = new_verdict
+        seen[(d.name, d.version)] = new_verdict
         out[d.key()] = new_verdict
 
 

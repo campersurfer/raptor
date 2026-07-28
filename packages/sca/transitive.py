@@ -37,6 +37,7 @@ whether transitive coverage was real / approximate / missing-and-why.
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -504,7 +505,7 @@ def _try_cascade_batch(
             _with_cascade_source(
                 d, host,
                 parents=parents_by_name.get(
-                    d.name.lower().replace("_", "-"), [],
+                    re.sub(r"[-_.]+", "-", d.name.lower()), [],
                 ),
             )
             for d in deps
@@ -654,7 +655,9 @@ def _try_cascade(
     tagged = [
         _with_cascade_source(
             d, host_manifest_path,
-            parents=parents_by_name.get(d.name.lower(), []),
+            parents=parents_by_name.get(
+                re.sub(r"[-_.]+", "-", d.name.lower()), [],
+            ),
         )
         for d in deps
     ]

@@ -175,7 +175,9 @@ def _add_nuspec_methods():
         ns = ""
         if root.tag.startswith("{"):
             ns = root.tag.split("}", 1)[0] + "}"
-        meta = root.find(f"{ns}metadata") or root
+        meta = root.find(f"{ns}metadata")
+        if meta is None:
+            meta = root
         deps_root = meta.find(f"{ns}dependencies") if meta is not None else None
         groups: List[dict] = []
         if deps_root is not None:

@@ -82,7 +82,8 @@ _PIP_OPTION_PREFIXES = (
     "--python-version",
     "--implementation",
     "--abi",
-    "--editable=",    # only the bare-flag form; --editable <spec> is handled below
+    # --editable is NOT listed here; --editable=<spec> is handled
+    # alongside -e / --editable <spec> in the parse loop below.
 )
 
 # Lines that begin with this hash form are pure comments — anywhere else
@@ -198,6 +199,9 @@ def _parse_file(path: Path, depth: int, visited: Set[Path]) -> List[Dependency]:
         if line.startswith(("-e ", "--editable ")):
             editable = True
             line = line.split(maxsplit=1)[1].strip()
+        elif line.startswith("--editable="):
+            editable = True
+            line = line.split("=", 1)[1].strip()
 
         # Strip trailing inline directives that pip permits on a
         # requirement line (currently just ``--hash=...``). Anything

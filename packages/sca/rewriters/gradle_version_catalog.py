@@ -181,7 +181,8 @@ def rewrite_libs_versions_toml(
             return [RewriteResult(
                 edit=r.edit, applied=False,
                 reason=f"error: write failed: {e}",
-            ) for r in results]
+            ) if r.applied else r
+            for r in results]
     return results
 
 
