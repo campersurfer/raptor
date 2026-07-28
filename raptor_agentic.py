@@ -2574,7 +2574,7 @@ Examples:
         )
     suppression_file = out_dir / "suppressions.jsonl"
     if suppression_file.exists():
-        with suppression_file.open() as _fh:
+        with suppression_file.open(encoding="utf-8") as _fh:
             suppressed = sum(1 for _ in _fh)
         if suppressed > 0:
             _enrichment_lines.append(
