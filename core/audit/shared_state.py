@@ -167,6 +167,11 @@ class SharedState:
     # JIT study enrichment pass can re-review only affected functions.
     reading_list_functions: set[str] = field(default_factory=set)
 
+    # Accumulated reading-list items from review outcomes; flushed once
+    # post-loop to avoid file-level races across concurrent workers.
+    _reading_list_items: list[dict[str, Any]] = field(default_factory=list)
+    _reading_list_lock: threading.Lock = field(default_factory=threading.Lock)
+
     # Live-discovered sinks, sanitizers, and entry points accumulated
     # from LLM review outcomes during the loop.
     live_classifications: LiveClassifications | None = None  # type: ignore[type-arg]

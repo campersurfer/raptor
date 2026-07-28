@@ -1088,6 +1088,17 @@ def review_one_function(
     review_result = getattr(outcome, "review_result", None)
     if review_result and review_result.get("reading_list"):
         shared.reading_list_functions.add(f"{gap['file']}:{gap['name']}")
+        with shared._reading_list_lock:
+            for rl_item in review_result["reading_list"]:
+                if isinstance(rl_item, dict) and rl_item.get("question"):
+                    shared._reading_list_items.append({
+                        "question": rl_item["question"],
+                        "source_file": gap["file"],
+                        "source_function": gap["name"],
+                        "priority": rl_item.get("priority", "normal"),
+                        "resolution": rl_item.get("resolution", "identifier"),
+                        "context": rl_item.get("context", ""),
+                    })
 
     if live_classifications is not None and outcome.review_result:
         try:
@@ -1958,6 +1969,7 @@ def _run_audit_body(
     discovered_evidence = shared.discovered_evidence
     reviewed_before_joern = shared.reviewed_before_joern
     reading_list_functions = shared.reading_list_functions
+    reading_list_items = shared._reading_list_items
 
     if collector is not None:
         collector.flush()
@@ -2178,26 +2190,38 @@ def _run_audit_body(
         sarif_cache=sarif_cache,
     )
 
-    # --- Study loop: enrich domain model from reading-list items ---
+    # --- Study loop: enrich domain model, then re-review affected functions ---
     if reading_list_functions and config.out_dir:
+        study_succeeded = False
+
+        # Flush accumulated reading-list items to disk (single-writer,
+        # no file race — the concurrent review loop only appended to the
+        # in-memory list under a lock).
+        if reading_list_items:
+            try:
+                from core.concepts.audit_bridge import queue_reading_list_item
+                for rl_item in reading_list_items:
+                    queue_reading_list_item(
+                        config.out_dir,
+                        question=rl_item["question"],
+                        source_file=rl_item.get("source_file", ""),
+                        source_function=rl_item.get("source_function", ""),
+                        priority=rl_item.get("priority", "normal"),
+                        resolution=rl_item.get("resolution", "identifier"),
+                        context=rl_item.get("context", ""),
+                    )
+                logger.info(
+                    "study-loop: flushed %d reading-list items from %d functions",
+                    len(reading_list_items), len(reading_list_functions),
+                )
+            except Exception:
+                logger.warning(
+                    "study-loop: failed to flush reading-list items",
+                    exc_info=True,
+                )
+
         try:
             rl_path = config.out_dir / "reading-list.json"
-            if not rl_path.exists():
-                import json as _rl_json
-                rl_items: list[dict[str, str]] = []
-                for out in result.outcomes:
-                    rr = getattr(out, "review_result", None)
-                    if rr and rr.get("reading_list"):
-                        for item in rr["reading_list"]:
-                            if isinstance(item, dict):
-                                rl_items.append(item)
-                if rl_items:
-                    rl_path.write_text(_rl_json.dumps(rl_items, indent=2))
-                    logger.info(
-                        "study-loop: wrote %d reading-list items from %d functions",
-                        len(rl_items), len(reading_list_functions),
-                    )
-
             if rl_path.exists():
                 study_cmd = [
                     sys.executable, str(Path(__file__).resolve().parents[2] / "libexec" / "raptor-study-loop"),
@@ -2215,7 +2239,6 @@ def _run_audit_body(
                 )
                 if study_result.returncode == 0:
                     logger.info("study-loop: completed successfully")
-                    # Reload domain model after study enrichment
                     try:
                         from .journal import load_domain_model
                         domain_model = load_domain_model(config.out_dir)
@@ -2226,6 +2249,7 @@ def _run_audit_body(
                                 "domain model reloaded: %d concepts, %d invariants",
                                 n_con, n_inv,
                             )
+                            study_succeeded = True
                         if collector is not None:
                             collector.invalidate_domain_model_cache()
                     except Exception:
@@ -2240,6 +2264,17 @@ def _run_audit_body(
             logger.warning("study-loop: timed out after 300s")
         except Exception:
             logger.debug("study-loop dispatch failed", exc_info=True)
+
+        if study_succeeded:
+            result = _re_review_study_enriched(
+                result, config, review_fn, checklist, context_map,
+                evidence_index, sarif_cache, entry_points,
+                reading_list_functions, start_time, on_progress,
+                audit_log=audit_log,
+                session_observations=session_observations,
+                discovered_evidence=discovered_evidence,
+                joern_server=joern_server,
+            )
 
     if result.findings > 0:
         logger.info("entering _persist_findings")
@@ -6284,6 +6319,136 @@ def _re_review_joern_enriched(
             logger.info(
                 "joern re-review %s:%s: clean -> %s",
                 gap["file"], gap["name"], outcome.status,
+            )
+
+    return result
+
+
+def _re_review_study_enriched(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+    review_fn: Callable,
+    checklist: Dict[str, Any],
+    context_map: Optional[Dict[str, Any]],
+    evidence_index: Dict[str, EvidenceRecord],
+    sarif_cache: Optional[SarifCache],
+    entry_points: set,
+    reading_list_functions: set,
+    start_time: float,
+    on_progress: Optional[Callable],
+    audit_log: Optional[List[Dict[str, Any]]] = None,
+    session_observations: Optional[List[Dict[str, str]]] = None,
+    discovered_evidence: Optional[Dict[str, Any]] = None,
+    joern_server=None,
+) -> OrchestratorResult:
+    """Re-review functions that queued reading-list items, now with enriched domain knowledge.
+
+    After the study loop resolves reading-list questions into domain-model
+    concepts/invariants, the functions that originally needed that knowledge
+    are re-reviewed with the enriched context injected via domain_model_context().
+    """
+    candidates = []
+    for key in reading_list_functions:
+        parts = key.split(":", 1)
+        if len(parts) != 2:
+            continue
+        file_path, func_name = parts
+
+        prior = next(
+            (o for o in result.outcomes
+             if o.file == file_path and o.function == func_name),
+            None,
+        )
+        if prior is None:
+            continue
+
+        gap = {
+            "file": file_path,
+            "name": func_name,
+            "line_start": getattr(prior, "line", 0),
+        }
+        candidates.append((gap, prior))
+
+    if not candidates:
+        return result
+
+    logger.info(
+        "re-reviewing %d functions with enriched domain knowledge",
+        len(candidates),
+    )
+
+    for gap, prior_outcome in candidates:
+        if _check_budget(config, start_time, result):
+            break
+
+        ctx = _build_context(config, gap, checklist, context_map, evidence_index,
+                             discovered_evidence=discovered_evidence)
+        ctx["study_re_review"] = True
+        ctx["prior_verdict"] = {
+            "status": prior_outcome.status,
+            "body": prior_outcome.body[:300] if prior_outcome.body else "",
+            "hypothesis": (
+                prior_outcome.review_result.get("hypothesis", "")[:200]
+                if prior_outcome.review_result else ""
+            ),
+        }
+
+        try:
+            outcome = review_fn(ctx, config)
+        except Exception as exc:
+            logger.warning(
+                "study re-review failed for %s:%s: %s",
+                gap["file"], gap["name"], exc,
+            )
+            continue
+
+        outcome.line = gap.get("line_start", 0)
+
+        if outcome.status in ("finding", "suspicious"):
+            if outcome.status == "finding" and config.sweep_validate_findings:
+                outcome = _sweep_validate(
+                    outcome, config, sarif_cache,
+                    tier_counters=result.tier_counters,
+                    evidence_index=evidence_index,
+                    joern_server=joern_server,
+                )
+            if outcome.status == "finding":
+                outcome = _apply_reachability_gate(
+                    outcome, ctx, entry_points, config,
+                )
+            if outcome.status == "finding":
+                gate_violations = _check_finding_gates(
+                    outcome, audit_log=audit_log,
+                )
+                if gate_violations:
+                    outcome = _demote_outcome(
+                        outcome,
+                        f"[gate violation: {'; '.join(gate_violations)}]",
+                    )
+
+        if outcome.status != prior_outcome.status:
+            _untally_outcome(result, prior_outcome)
+            idx = result.outcomes.index(prior_outcome)
+            result.outcomes[idx] = outcome
+            _tally_outcome(result, outcome, append=False)
+
+            try:
+                _commit_outcome(config, outcome, gap)
+            except Exception:
+                logger.warning(
+                    "commit failed for %s:%s",
+                    gap["file"], gap["name"], exc_info=True,
+                )
+
+            if config.enable_session_context and session_observations is not None and outcome.review_result:
+                _accumulate_observations(
+                    session_observations, outcome, gap,
+                    sweep_pre_status=prior_outcome.status,
+                )
+
+            logger.info(
+                "study re-review %s:%s: %s -> %s",
+                gap["file"], gap["name"], prior_outcome.status, outcome.status,
             )
 
     return result

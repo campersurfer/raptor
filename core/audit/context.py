@@ -229,6 +229,20 @@ def assemble_context(
         file_path, ctx.get("source", ""),
     )
 
+    if out_dir:
+        try:
+            from core.concepts.audit_bridge import domain_model_context
+            dm_block = domain_model_context(
+                out_dir, file_path, function_name, ctx.get("source", ""),
+            )
+            if dm_block:
+                ctx["domain_model"] = dm_block
+        except Exception:
+            logger.debug(
+                "domain model context failed for %s:%s",
+                file_path, function_name, exc_info=True,
+            )
+
     try:
         from .prompt_defence import sanitise_for_prompt, scan_for_injection
         source = ctx.get("source", "")
@@ -672,6 +686,9 @@ def format_context_for_prompt(
                 + (f" ({cwes} mitigated)" if cwes else "")
             )
         sections.append(PromptSection("framework_guarantees", "\n".join(fp), 1))
+
+    if ctx.get("domain_model"):
+        sections.append(PromptSection("domain_model", "\n" + ctx["domain_model"], 1))
 
     if ctx.get("fp_warnings"):
         sections.append(PromptSection("fp_warnings",
