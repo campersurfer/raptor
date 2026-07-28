@@ -167,12 +167,12 @@ def _run_understand_prepass_unsafe(
     target = Path(target).resolve()
     agentic_out_dir = Path(agentic_out_dir).resolve()
 
-    t0 = time.time()
+    t0 = time.monotonic()
 
     understand_dir = _start_lifecycle("understand", target)
     if understand_dir is None:
         return PrepassResult(ran=False, skipped_reason="lifecycle start failed",
-                             duration_s=time.time() - t0)
+                             duration_s=time.monotonic() - t0)
 
     # Track whether the run reached a definitive end-state. If we exit via
     # KeyboardInterrupt or another BaseException (which Exception doesn't
@@ -195,7 +195,7 @@ def _run_understand_prepass_unsafe(
             _fail_lifecycle(understand_dir, "checklist build failed")
             return PrepassResult(ran=False, skipped_reason="checklist build failed",
                                  understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
+                                 duration_s=time.monotonic() - t0)
 
         prompt = _build_understand_prompt(target, understand_dir)
         try:
@@ -233,14 +233,14 @@ def _run_understand_prepass_unsafe(
             logger.warning("understand pre-pass timed out after %ds", _PREPASS_TIMEOUT_S)
             return PrepassResult(ran=False, skipped_reason=f"timeout after {_PREPASS_TIMEOUT_S}s",
                                  understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
+                                 duration_s=time.monotonic() - t0)
         except OSError as e:
             lifecycle_settled = True
             _fail_lifecycle(understand_dir, f"launch failed: {e}")
             logger.warning("understand pre-pass failed to launch: %s", e)
             return PrepassResult(ran=False, skipped_reason=f"launch failed: {e}",
                                  understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
+                                 duration_s=time.monotonic() - t0)
 
         if proc.returncode != 0:
             lifecycle_settled = True
@@ -248,7 +248,7 @@ def _run_understand_prepass_unsafe(
             logger.warning("understand pre-pass returned %d", proc.returncode)
             return PrepassResult(ran=False, skipped_reason=f"subprocess returned {proc.returncode}",
                                  understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
+                                 duration_s=time.monotonic() - t0)
 
         context_map = understand_dir / "context-map.json"
         if not context_map.exists():
@@ -257,7 +257,7 @@ def _run_understand_prepass_unsafe(
             logger.warning("understand pre-pass completed but context-map.json was not written")
             return PrepassResult(ran=False, skipped_reason="context-map.json missing after run",
                                  understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
+                                 duration_s=time.monotonic() - t0)
 
         # claude -p might have crashed mid-write or produced structurally
         # invalid output. Existence isn't enough — the bridge silently returns
@@ -274,7 +274,7 @@ def _run_understand_prepass_unsafe(
                            shape_error)
             return PrepassResult(ran=False, skipped_reason=f"context-map.json invalid: {shape_error}",
                                  understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
+                                 duration_s=time.monotonic() - t0)
 
         _complete_lifecycle(understand_dir)
         lifecycle_settled = True
@@ -299,7 +299,7 @@ def _run_understand_prepass_unsafe(
             understand_dir=understand_dir,
             context_map_path=context_map,
             checklist_enriched=enriched,
-            duration_s=time.time() - t0,
+            duration_s=time.monotonic() - t0,
         )
 
     except Exception:
@@ -417,13 +417,13 @@ def _run_validate_postpass_unsafe(
     agentic_out_dir = Path(agentic_out_dir).resolve()
     analysis_report = analysis_report.resolve()
 
-    t0 = time.time()
+    t0 = time.monotonic()
 
     validate_dir = _start_lifecycle("validate", target)
     if validate_dir is None:
         return PostpassResult(ran=False, selected_count=len(selected),
                               skipped_reason="lifecycle start failed",
-                              duration_s=time.time() - t0)
+                              duration_s=time.monotonic() - t0)
 
     # Same KeyboardInterrupt-aware cleanup pattern as the pre-pass — see
     # _run_understand_prepass_unsafe for the rationale.
@@ -523,7 +523,7 @@ def _run_validate_postpass_unsafe(
             return PostpassResult(ran=False, selected_count=len(selected),
                                   validate_dir=validate_dir,
                                   skipped_reason=f"timeout after {_POSTPASS_TIMEOUT_S}s",
-                                  duration_s=time.time() - t0)
+                                  duration_s=time.monotonic() - t0)
         except OSError as e:
             lifecycle_settled = True
             _fail_lifecycle(validate_dir, f"launch failed: {e}")
@@ -531,7 +531,7 @@ def _run_validate_postpass_unsafe(
             return PostpassResult(ran=False, selected_count=len(selected),
                                   validate_dir=validate_dir,
                                   skipped_reason=f"launch failed: {e}",
-                                  duration_s=time.time() - t0)
+                                  duration_s=time.monotonic() - t0)
 
         if proc.returncode != 0:
             lifecycle_settled = True
@@ -540,7 +540,7 @@ def _run_validate_postpass_unsafe(
             return PostpassResult(ran=False, selected_count=len(selected),
                                   validate_dir=validate_dir,
                                   skipped_reason=f"subprocess returned {proc.returncode}",
-                                  duration_s=time.time() - t0)
+                                  duration_s=time.monotonic() - t0)
 
         _complete_lifecycle(validate_dir)
         lifecycle_settled = True
@@ -549,7 +549,7 @@ def _run_validate_postpass_unsafe(
         return PostpassResult(ran=True, selected_count=len(selected),
                               validate_dir=validate_dir,
                               report_path=report_path if report_path.exists() else None,
-                              duration_s=time.time() - t0)
+                              duration_s=time.monotonic() - t0)
 
     except Exception:
         lifecycle_settled = True
@@ -1007,13 +1007,13 @@ def run_reachability_prepass(
     returned ``ReachabilityPrepassResult.ran`` is False with a
     non-None ``skipped_reason``.
     """
-    t0 = time.time()
+    t0 = time.monotonic()
     checklist_path = agentic_out_dir / "checklist.json"
     if not checklist_path.exists():
         return ReachabilityPrepassResult(
             ran=False,
             skipped_reason="agentic checklist not yet built",
-            duration_s=time.time() - t0,
+            duration_s=time.monotonic() - t0,
         )
 
     if inventory is None:
@@ -1029,7 +1029,7 @@ def run_reachability_prepass(
             return ReachabilityPrepassResult(
                 ran=False,
                 skipped_reason="inventory build failed",
-                duration_s=time.time() - t0,
+                duration_s=time.monotonic() - t0,
             )
 
     try:
@@ -1047,7 +1047,7 @@ def run_reachability_prepass(
                 ran=False,
                 skipped_reason="checklist not a JSON object",
                 inventory=inventory,
-                duration_s=time.time() - t0,
+                duration_s=time.monotonic() - t0,
             )
         marked = mark_unreachable_low_priority(
             checklist, target, inventory=inventory,
@@ -1078,7 +1078,7 @@ def run_reachability_prepass(
         ran=True,
         marked_count=marked,
         inventory=inventory,
-        duration_s=time.time() - t0,
+        duration_s=time.monotonic() - t0,
     )
 
 

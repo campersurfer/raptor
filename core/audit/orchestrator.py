@@ -1746,7 +1746,7 @@ def _run_audit_body(
     session_observations: List[Dict[str, str]] = []
     discovered_evidence: Dict[str, Any] = {}
     reviewed_before_joern: List[Dict[str, Any]] = []
-    joern_submit_time = time.time() if joern_future is not None else None
+    joern_submit_time = time.monotonic() if joern_future is not None else None
 
     from .project_context import load_project_context
     project_ctx = load_project_context(config.out_dir)
@@ -1906,7 +1906,7 @@ def _run_audit_body(
             shared.evidence_index = evidence_index
             joern_state["future"] = None
         elif jf is not None:
-            joern_elapsed = time.time() - (joern_state["submit_time"] or start_time)
+            joern_elapsed = time.monotonic() - (joern_state["submit_time"] or start_time)
             if joern_elapsed > joern_timeout_s:
                 logger.warning(
                     "Joern CPG build stalled after %.0fs — cancelling",

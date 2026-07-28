@@ -11,6 +11,7 @@ JSON-in-prompt fallback for providers that lack native structured support.
 import json
 import os
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
@@ -464,12 +465,14 @@ class LLMProvider(ABC):
     # provider instances per request (a common pattern in the agentic
     # dispatch path).
     _warned_unknown_models: set = set()
+    _warned_unknown_models_lock = threading.Lock()
 
     @classmethod
     def _warn_unknown_model_once(cls, model_name: str) -> None:
-        if model_name in cls._warned_unknown_models:
-            return
-        cls._warned_unknown_models.add(model_name)
+        with cls._warned_unknown_models_lock:
+            if model_name in cls._warned_unknown_models:
+                return
+            cls._warned_unknown_models.add(model_name)
         logger.warning(
             f"cost tracking: model {model_name!r} not in MODEL_COSTS "
             f"and no cost_per_1k_tokens set — every call records $0. "
