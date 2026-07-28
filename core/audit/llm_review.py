@@ -354,6 +354,63 @@ REVIEW_SCHEMA = {
                 },
             },
         },
+        "reading_list": {
+            "type": "array",
+            "description": (
+                "Types, macros, domain-specific constructs, or API "
+                "contracts you encountered while reviewing this function "
+                "that you do not understand well enough to audit "
+                "confidently. Each item is a question the study loop "
+                "will resolve — e.g. 'What does IPC_NOID flag control "
+                "in ipc_addid?' or 'What are the locking semantics of "
+                "rcu_read_lock in this context?'. Emit items only when "
+                "missing knowledge genuinely weakened your review — not "
+                "for general curiosity. Omit if you had sufficient "
+                "context to review confidently."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "The specific knowledge gap, phrased as a "
+                            "question. Be precise: name the type, macro, "
+                            "function, or contract you need explained."
+                        ),
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["critical", "high", "normal", "low"],
+                        "description": (
+                            "critical = blocks the review verdict entirely. "
+                            "high = likely changes the verdict. "
+                            "normal = would improve confidence. "
+                            "low = nice to know."
+                        ),
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "enum": ["identifier", "concept"],
+                        "description": (
+                            "identifier = a specific type, macro, or "
+                            "function that can be looked up in the source. "
+                            "concept = a broader domain concept or API "
+                            "contract that requires explanation."
+                        ),
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Why you need this answered — what part of "
+                            "your review was blocked or weakened by this "
+                            "knowledge gap."
+                        ),
+                    },
+                },
+                "required": ["question"],
+            },
+        },
     },
     "required": ["status", "body", "hypotheses"],
 }
@@ -369,6 +426,7 @@ REVIEW_SCHEMA_BLIND = {
         "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
         "observations": REVIEW_SCHEMA["properties"]["observations"],
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
+        "reading_list": REVIEW_SCHEMA["properties"]["reading_list"],
     },
     "required": ["status", "body", "hypotheses"],
 }

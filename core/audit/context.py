@@ -803,6 +803,17 @@ def format_context_for_prompt(
                 "in OTHER functions — only cite evidence from THIS "
                 "function's own code and its direct call graph."
             )
+        elif ctx.get("study_re_review"):
+            pp.append(
+                "The study loop resolved domain knowledge gaps since "
+                "your prior review. The DOMAIN MODEL section below "
+                "contains concepts, invariants, and API contracts that "
+                "were not available before. Re-evaluate your verdict "
+                "using this new knowledge — a type you could not verify, "
+                "a locking contract you had to assume, or an invariant "
+                "you missed may now be concrete. Focus on what the new "
+                "knowledge changes; don't repeat prior analysis."
+            )
         else:
             pp.append(
                 "New information has emerged (see below). Re-evaluate "
