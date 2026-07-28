@@ -2700,36 +2700,62 @@ class GeminiProvider(LLMProvider):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         if not GENAI_SDK_AVAILABLE:
-            raise RuntimeError("google-genai SDK not installed: pip install google-genai")
+            raise RuntimeError(
+                "google-genai SDK not installed: pip install google-genai"
+            )
 
         import threading
-        self._local = threading.local()
-        logger.debug(f"Initialized GeminiProvider: {config.model_name}")
+        self._clients_lock = threading.Lock()
+        # {thread_id: Client} — bounded by live-thread reaping.
+        self._clients: Dict[int, Any] = {}
+        logger.debug(
+            f"Initialized GeminiProvider: {config.model_name}"
+        )
 
     @property
     def client(self):
-        """Per-thread client — google-genai is not guaranteed thread-safe."""
-        if not hasattr(self._local, 'client'):
-            # Phase B: dispatcher-route when ``RAPTOR_LLM_SOCKET`` set.
-            # google-genai 1.70+ accepts a custom ``base_url`` and
-            # ``httpx_client`` via ``HttpOptions`` — :func:`make_gemini_base_url`
-            # returns the (base_url, http_client) pair the SDK needs.
-            if os.environ.get("RAPTOR_LLM_SOCKET"):
-                from core.llm.dispatcher.client import make_gemini_base_url
-                from google.genai.types import HttpOptions
-                base_url, http_client = make_gemini_base_url()
-                self._local.client = _genai_module.Client(
-                    api_key="dummy-not-used",
-                    http_options=HttpOptions(
-                        base_url=base_url,
-                        httpx_client=http_client,
-                    ),
-                )
-                logger.debug("GeminiProvider: routing via credential-isolation dispatcher")
-            else:
-                self._local.client = _genai_module.Client(api_key=self.config.api_key)
-                logger.debug("GeminiProvider: direct SDK (no dispatcher)")
-        return self._local.client
+        """Per-thread client -- google-genai is not thread-safe."""
+        import threading
+        tid = threading.get_ident()
+        with self._clients_lock:
+            c = self._clients.get(tid)
+            if c is not None:
+                return c
+            # Reap clients for dead threads to prevent leaks.
+            alive = {t.ident for t in threading.enumerate()}
+            dead = [k for k in self._clients if k not in alive]
+            for k in dead:
+                self._clients.pop(k, None)
+        # Build client outside the lock (may do I/O).
+        if os.environ.get("RAPTOR_LLM_SOCKET"):
+            from core.llm.dispatcher.client import (
+                make_gemini_base_url,
+            )
+            from google.genai.types import HttpOptions
+            base_url, http_client = make_gemini_base_url()
+            new_client = _genai_module.Client(
+                api_key="dummy-not-used",
+                http_options=HttpOptions(
+                    base_url=base_url,
+                    httpx_client=http_client,
+                ),
+            )
+            logger.debug(
+                "GeminiProvider: routing via "
+                "credential-isolation dispatcher"
+            )
+        else:
+            new_client = _genai_module.Client(
+                api_key=self.config.api_key,
+            )
+            logger.debug(
+                "GeminiProvider: direct SDK (no dispatcher)"
+            )
+        with self._clients_lock:
+            # Another thread may have raced us for same tid (not
+            # possible in CPython, but harmless to check).
+            self._clients.setdefault(tid, new_client)
+            return self._clients[tid]
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None,
                  **kwargs) -> LLMResponse:
