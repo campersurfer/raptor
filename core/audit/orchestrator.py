@@ -1060,28 +1060,6 @@ def review_one_function(
                         seed_function=outcome.function,
                         source="audit",
                     )
-                    try:
-                        import hashlib
-                        from core.sage.hooks import store_proven_rule_metadata
-                        store_proven_rule_metadata(
-                            engine=synth.tool,
-                            cwe=synth.cwe or "",
-                            rule_id=synth.rule_id,
-                            rule_body_hash=hashlib.sha256(
-                                (synth.content or synth.rule_id).encode(),
-                            ).hexdigest()[:16],
-                            rule_path=synth.rule_id,
-                            tp_count=len(synth.hits),
-                            fp_count=0,
-                            total_matches=len(synth.hits),
-                            dual_control_passed=False,
-                            targets_tested=1,
-                        )
-                    except Exception:
-                        logger.debug(
-                            "SAGE rule store failed for %s",
-                            synth.rule_id, exc_info=True,
-                        )
                 logger.info(
                     "mid-loop synthesis: %d new targets from %s:%s",
                     len(synth.hits), outcome.file, outcome.function,
