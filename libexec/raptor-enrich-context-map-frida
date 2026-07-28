@@ -69,7 +69,8 @@ def main() -> int:
     if checklist_path.is_file():
         try:
             cl = json.loads(checklist_path.read_text(encoding="utf-8"))
-            target_path = cl.get("target_path")
+            if isinstance(cl, dict):
+                target_path = cl.get("target_path")
         except (json.JSONDecodeError, OSError):
             pass
 
