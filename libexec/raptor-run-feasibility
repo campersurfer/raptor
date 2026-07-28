@@ -96,12 +96,13 @@ def main():
     # serialises stage transitions, so this script's lock is
     # the only contended writer.
     import fcntl
-    findings_lock_fh = open(findings_path, "rb")
+    lock_path = findings_path.with_suffix(".lock")
+    findings_lock_fh = open(lock_path, "a+b")
     try:
         try:
             fcntl.flock(findings_lock_fh.fileno(), fcntl.LOCK_EX)
         except OSError as e:
-            print(f"WARNING: could not acquire flock on {findings_path}: {e} — proceeding without lock", file=sys.stderr)
+            print(f"WARNING: could not acquire flock on {lock_path}: {e} — proceeding without lock", file=sys.stderr)
 
         findings_data = load_json(findings_path)
         if findings_data is None:

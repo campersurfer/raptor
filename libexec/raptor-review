@@ -54,8 +54,17 @@ import core.startup.process_init  # noqa: E402,F401
 
 # ── Layer loaders ────────────────────────────────────────────────────
 
-def _resolve_project_dir() -> Path | None:
-    """Find the active project directory from the .active symlink."""
+def _resolve_project_dir(explicit: str | None = None) -> Path | None:
+    """Find the active project directory.
+
+    When *explicit* is given (from ``--project``), use it directly.
+    Otherwise fall back to the ``.active`` symlink.
+    """
+    if explicit:
+        p = Path(explicit)
+        if p.is_dir():
+            return p
+        return None
     raptor_dir = Path(__file__).resolve().parents[1]
     active = raptor_dir / ".active"
     if active.is_symlink() or active.exists():
@@ -69,7 +78,7 @@ def _resolve_out_dir(args) -> Path | None:
     """Resolve output directory: explicit --out, or latest in project."""
     if getattr(args, "out", None):
         return Path(args.out)
-    project = _resolve_project_dir()
+    project = _resolve_project_dir(getattr(args, "project", None))
     if not project:
         return None
     runs = sorted(
@@ -174,7 +183,7 @@ def _context_map_role(cm: dict | None, file: str, function: str) -> str | None:
 def cmd_show(args):
     """Show unified view for a file or function."""
     out_dir = _resolve_out_dir(args)
-    project_dir = _resolve_project_dir()
+    project_dir = _resolve_project_dir(getattr(args, "project", None))
     cm = _load_context_map(out_dir)
     ann_dir = _annotations_dir(out_dir)
 
@@ -298,7 +307,7 @@ def _show_file(file, cm, entries, index, ann_dir, args):
 def cmd_findings(args):
     """List all findings across runs."""
     out_dir = _resolve_out_dir(args)
-    project_dir = _resolve_project_dir()
+    project_dir = _resolve_project_dir(getattr(args, "project", None))
 
     entries = _load_journal_entries(out_dir)
     index = _load_journal_index(project_dir)
@@ -370,7 +379,7 @@ def cmd_gaps(args):
 def cmd_history(args):
     """Show all reviews of a function over time."""
     out_dir = _resolve_out_dir(args)
-    project_dir = _resolve_project_dir()
+    project_dir = _resolve_project_dir(getattr(args, "project", None))
     key = f"{args.file}:{args.function}"
 
     entries = [e for e in _load_journal_entries(out_dir) if e.key == key]
@@ -498,7 +507,7 @@ def cmd_stale(args):
 
 def cmd_compact(args):
     """Compact the project journal index."""
-    project_dir = _resolve_project_dir()
+    project_dir = _resolve_project_dir(getattr(args, "project", None))
     if not project_dir:
         print("  No active project.", file=sys.stderr)
         sys.exit(1)

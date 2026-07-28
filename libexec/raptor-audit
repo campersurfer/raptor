@@ -413,7 +413,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             line=line_start,
             title=f"{args.vuln_type or 'novel'}: {args.function}",
             description=args.body or "",
-            cwe=args.vuln_type,
+            cwe=args.cwe,
             tool_evidence=[{"tool": args.evidence_tool}] if args.evidence_tool else None,
             hypothesis=args.hypothesis,
         )

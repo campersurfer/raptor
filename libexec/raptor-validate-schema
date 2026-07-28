@@ -181,6 +181,10 @@ def main():
         print(f"✗ file not found: {filepath}", file=sys.stderr)
         sys.exit(2)
 
+    if is_already_validated(filepath):
+        print(f"OK: {filepath.name} (cached)")
+        return
+
     data = load_json(filepath)
     if data is None:
         print(f"✗ cannot parse JSON: {filepath}", file=sys.stderr)
