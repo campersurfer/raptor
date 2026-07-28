@@ -83,6 +83,9 @@ class SharedState:
     # Sibling peer groups for semantic-consistency and paired-operation checks.
     peer_groups: list[Any] = field(default_factory=list)
 
+    # Semantic consistency outlier findings across peer groups.
+    semantic_findings: list[Any] = field(default_factory=list)
+
     # Contract pair index: function name → list of ContractPairGroup objects.
     contract_pair_index: dict[str, list[Any]] = field(default_factory=dict)
 
@@ -204,6 +207,7 @@ class SharedState:
         sibling_ns_findings: list[Any],
         sibling_postcond_violations: list[Any],
         peer_groups: list[Any],
+        semantic_findings: list[Any],
         mechanical_findings: dict[str, list[Any]],
         fuzz_coverage: dict[str, Any],
         discovered_tests: dict[str, Any] | None,
@@ -251,6 +255,7 @@ class SharedState:
             sibling_ns_findings=sibling_ns_findings,
             sibling_postcond_violations=sibling_postcond_violations,
             peer_groups=peer_groups,
+            semantic_findings=semantic_findings,
             mechanical_findings=mechanical_findings,
             fuzz_coverage=fuzz_coverage,
             discovered_tests=discovered_tests,

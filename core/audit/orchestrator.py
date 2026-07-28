@@ -1600,19 +1600,17 @@ def _run_audit_body(
             len(sibling_ns_findings),
         )
 
-    from .sibling_analysis import (
-        identify_peer_groups,
-        identify_parallel_loops,
-        identify_paired_operations,
-    )
+    from core.analysis.peer_groups import resolve_peer_groups
     gap_func_dicts = [
         {"name": g.get("name", ""), "file": g.get("file", ""),
          "line": g.get("line", 0), "source": g.get("source", "")}
         for g in gaps if g.get("name")
     ]
-    peer_groups = identify_peer_groups(gap_func_dicts)
-    peer_groups.extend(identify_parallel_loops(gap_func_dicts))
-    peer_groups.extend(identify_paired_operations(gap_func_dicts))
+    peer_groups = resolve_peer_groups(
+        gap_func_dicts,
+        joern_server=joern_server,
+        checklist=checklist,
+    )
 
     from .postcondition_verify import (
         check_sibling_ordering,
@@ -1634,6 +1632,7 @@ def _run_audit_body(
             len(sibling_postcond_violations),
         )
 
+    semantic_findings: List[Dict[str, Any]] = []
     try:
         from .sibling_analysis import check_semantic_consistency
         source_map = {
@@ -1884,6 +1883,7 @@ def _run_audit_body(
         sibling_ns_findings=sibling_ns_findings,
         sibling_postcond_violations=sibling_postcond_violations,
         peer_groups=peer_groups,
+        semantic_findings=semantic_findings,
         mechanical_findings=mechanical_findings,
         fuzz_coverage=fuzz_coverage,
         discovered_tests=discovered_tests,

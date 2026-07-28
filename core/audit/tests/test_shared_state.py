@@ -25,6 +25,7 @@ def _prep_kwargs():
         sibling_ns_findings=[],
         sibling_postcond_violations=[],
         peer_groups=[],
+        semantic_findings=[],
         mechanical_findings={},
         fuzz_coverage={},
         discovered_tests=None,
