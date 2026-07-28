@@ -662,8 +662,11 @@ def cmd_stale(args: argparse.Namespace) -> int:
             stale_count += 1
             continue
 
-        line_start = int(ann.metadata.get("line_start", "0") or "0")
-        line_end = int(ann.metadata.get("line_end", "0") or "0")
+        try:
+            line_start = int(ann.metadata.get("line_start", "0") or "0")
+            line_end = int(ann.metadata.get("line_end", "0") or "0")
+        except (ValueError, TypeError):
+            line_start, line_end = 0, 0
         if line_start and line_end:
             new_hash = compute_function_hash(full_path, line_start, line_end)
             if new_hash and new_hash != old_hash:
