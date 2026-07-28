@@ -484,7 +484,14 @@ def _specs_from_list(items: list[dict[str, Any]]) -> list[TaintSpec]:
         tc = item.get("taint_classes", [])
         taint_classes = [tc] if isinstance(tc, str) else tc
         pa = item.get("params_affected", [])
-        params_affected = [pa] if isinstance(pa, (int, str)) else (pa or [])
+        if isinstance(pa, (int, float)):
+            params_affected = [int(pa)]
+        elif isinstance(pa, str) and pa.isdigit():
+            params_affected = [int(pa)]
+        elif isinstance(pa, list):
+            params_affected = pa
+        else:
+            params_affected = []
         specs.append(TaintSpec(
             function=function,
             file=item.get("file", "") if isinstance(item.get("file"), str) else "",

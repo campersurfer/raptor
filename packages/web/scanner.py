@@ -109,6 +109,21 @@ class WebScanner:
                         vulnerability_types=['sqli', 'xss', 'command_injection']
                     )
                     fuzzing_findings.extend(findings)
+
+            for form in self.crawler.discovered_forms:
+                method = form.get("method", "GET").upper()
+                action = form.get("action", "")
+                if not action:
+                    continue
+                for param_name, param_info in form.get("inputs", {}).items():
+                    findings = self.fuzzer.fuzz_parameter(
+                        action,
+                        param_name,
+                        param_type=param_info.get("type", "text"),
+                        vulnerability_types=['sqli', 'xss', 'command_injection'],
+                        method=method,
+                    )
+                    fuzzing_findings.extend(findings)
         else:
             logger.warning("Phase 2: Skipping fuzzing (no LLM available)")
 

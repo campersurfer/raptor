@@ -734,6 +734,15 @@ def mode_sca(args: list) -> int:
             repo_seen = True
             skip_next = True
             continue
+        if arg.startswith("--repo="):
+            val = arg[len("--repo="):]
+            if repo_seen:
+                print("raptor.py sca: --repo specified more than once; "
+                      f"using the last value ({val!r})",
+                      file=sys.stderr)
+            target_from_repo = val
+            repo_seen = True
+            continue
         forwarded.append(arg)
     if target_from_repo is not None:
         # Insert after the subcommand if one is present, else at front.
