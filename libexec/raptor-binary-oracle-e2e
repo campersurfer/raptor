@@ -114,7 +114,7 @@ def _build_target() -> None:
         "-Wl,--gc-sections",
         str(src / "main.c"), str(src / "api.c"), str(src / "util.c"),
         "-o", str(BINARY),
-    ], check=True)
+    ], check=True, timeout=120)
 
 
 _build_target()
@@ -365,7 +365,7 @@ hostile_src.write_text(
 )
 hostile = TARGET / "build" / "planted"
 subprocess.run(["gcc", "-O0", "-g", str(hostile_src),
-                "-o", str(hostile)], check=True)
+                "-o", str(hostile)], check=True, timeout=60)
 inv2 = {"files": [
     {"path": "src/api.c", "language": "c", "items": [
         {"name": f"api_func_{i}", "kind": "function", "line_start": i + 1}
@@ -392,7 +392,7 @@ alt_src.write_text(
 )
 alt_bin = TARGET / "build" / "alt"
 subprocess.run(["gcc", "-O0", "-g", str(alt_src), "-o", str(alt_bin)],
-               check=True)
+               check=True, timeout=60)
 inv3 = {"files": [
     {"path": "src/api.c", "language": "c", "items": [
         {"name": "api_dead_function", "kind": "function", "line_start": 1},
@@ -434,7 +434,7 @@ print("\n=== 11. Stripped-binary tier fallback ===")
 stripped = TARGET / "build" / "app_stripped"
 import shutil
 shutil.copy(BINARY, stripped)
-subprocess.run(["strip", "--strip-debug", str(stripped)], check=True)
+subprocess.run(["strip", "--strip-debug", str(stripped)], check=True, timeout=30)
 v_stripped = classify_binary_evidence(["api_open", "api_dead_function"],
                                       stripped)
 check("stripped binary verdicts present", len(v_stripped) > 0)
