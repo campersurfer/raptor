@@ -227,7 +227,7 @@ def load_checklist(out_dir: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
         logger.error("malformed JSON in %s", path)
@@ -360,7 +360,7 @@ def load_context_map(out_dir: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
         logger.error("malformed JSON in %s", path)
@@ -372,7 +372,7 @@ def write_gaps(gaps: List[Dict[str, Any]], out_dir: Path) -> Path:
     path = out_dir / "gaps.json"
     fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"gaps": gaps, "count": len(gaps)}, f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:

@@ -26,7 +26,7 @@ def load_variants(out_dir: Path) -> Set[str]:
     if not path.exists():
         return set()
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         targets: Set[str] = set()
         for variant in data if isinstance(data, list) else data.get("variants", []):
@@ -48,7 +48,7 @@ def load_coverage_records(out_dir: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             return data
@@ -77,7 +77,7 @@ def load_fuzz_coverage(out_dir: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None

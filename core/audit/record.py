@@ -61,7 +61,7 @@ def load_audit_log(out_dir: Path) -> List[Dict[str, Any]]:
     if not log_path.exists():
         return []
     records = []
-    with open(log_path) as f:
+    with open(log_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -75,7 +75,7 @@ def load_audit_log(out_dir: Path) -> List[Dict[str, Any]]:
 def append_audit_log(out_dir: Path, entry: Dict[str, Any]) -> None:
     """Append an entry to the audit event log."""
     log_path = out_dir / ".audit-log.jsonl"
-    with open(log_path, "a") as f:
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 

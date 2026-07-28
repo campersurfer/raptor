@@ -44,7 +44,7 @@ def aggregate_strategy_stats(
         if not log_path.exists():
             continue
         try:
-            with open(log_path) as f:
+            with open(log_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -141,7 +141,7 @@ def find_project_log_dirs(
                 manifest = child / ".raptor-run.json"
                 if manifest.exists():
                     try:
-                        with open(manifest) as f:
+                        with open(manifest, encoding="utf-8") as f:
                             m = json.load(f)
                         sibling_target = m.get("target_path") or m.get("target", "")
                         if sibling_target and Path(sibling_target).resolve() != target_path.resolve():
