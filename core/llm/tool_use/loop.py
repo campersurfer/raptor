@@ -698,7 +698,7 @@ class ToolUseLoop:
                     except ToolHandlerTimeout as exc:
                         if self._terminate_on_handler_error:
                             self._emit(LoopTerminated(
-                                reason="tool_error",
+                                reason="tool_timeout",
                                 iterations=iteration + 1,
                                 total_cost_usd=total_cost_usd,
                             ))

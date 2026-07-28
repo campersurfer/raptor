@@ -2807,22 +2807,6 @@ class GeminiProvider(LLMProvider):
             response = self.client.models.generate_content(**generate_kwargs)
             duration = time.monotonic() - t_start
 
-            content = (response.text or "").strip()
-            if content.startswith("```") and content.endswith("```"):
-                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-                content = content.rsplit("```", 1)[0].strip()
-            elif content.startswith("```"):
-                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-                content = content.strip()
-            parsed = json.loads(content)
-            if not parsed:
-                # Gemini sometimes returns {} in structured mode — fall back to text
-                raise ValueError("Gemini returned empty object in structured mode")
-            parsed = _coerce_to_schema(parsed, normalized)
-            validated = pydantic_model.model_validate(parsed)
-            result_dict = validated.model_dump()
-            full_response = json.dumps(result_dict, indent=2)
-
             input_tokens = 0
             output_tokens = 0
             thinking_tokens = 0
@@ -2837,6 +2821,21 @@ class GeminiProvider(LLMProvider):
 
             logger.debug(f"[Gemini] structured model={self.config.model_name}, tokens={tokens_used}, "
                          f"cost=${cost:.4f}, duration={duration:.2f}s, thinking={thinking_tokens}")
+
+            content = (response.text or "").strip()
+            if content.startswith("```") and content.endswith("```"):
+                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                content = content.rsplit("```", 1)[0].strip()
+            elif content.startswith("```"):
+                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                content = content.strip()
+            parsed = json.loads(content)
+            if not parsed:
+                raise ValueError("Gemini returned empty object in structured mode")
+            parsed = _coerce_to_schema(parsed, normalized)
+            validated = pydantic_model.model_validate(parsed)
+            result_dict = validated.model_dump()
+            full_response = json.dumps(result_dict, indent=2)
 
             return StructuredResponse(
                 result=result_dict,
