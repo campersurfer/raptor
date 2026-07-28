@@ -235,7 +235,7 @@ class TestSynthesizeAndSweepDelegation:
 
         o = _StubOutcome()
         c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
-        seen = {"src/already_seen.c:check_pw"}
+        seen = {"src/already_seen.c:5"}
 
         with patch(
             "core.audit.checker_synthesis._build_llm_callable",
