@@ -437,7 +437,10 @@ def run_smt_sweep(
         if isinstance(value, bool):
             if value:
                 cmd.append(flag)
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list):
+            for item in value:
+                cmd.extend([flag, str(item)])
+        elif isinstance(value, dict):
             cmd.extend([flag, _json.dumps(value)])
         else:
             cmd.extend([flag, str(value)])

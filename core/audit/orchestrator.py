@@ -172,6 +172,7 @@ class OrchestratorConfig:
     batch_sloc_threshold: int = 5
     propagate_constraints: bool = True
     binary_verdicts: Optional[Dict[str, str]] = None
+    no_binary_oracle: bool = False
     inventory: Optional[Dict[str, Any]] = None
     codeql_db_path: Optional[str] = None
     threat_model: Optional[Dict[str, Any]] = None
@@ -1266,7 +1267,12 @@ def _run_audit_body(
     )
 
     from .binary_bridge import load_binary_bridge
-    binary_bridge_early = load_binary_bridge(config.out_dir)
+    if config.no_binary_oracle:
+        binary_bridge_early = None
+    else:
+        binary_bridge_early = load_binary_bridge(
+            config.out_dir, target_path=config.target_path,
+        )
 
     evidence_index = build_evidence_index(
         checklist=checklist,
@@ -1278,6 +1284,7 @@ def _run_audit_body(
         sarif_cache=sarif_cache,
         context_map_sinks=cm_sinks or None,
         binary_bridge=binary_bridge_early,
+        scope=config.scope,
     )
 
     try:
@@ -3229,12 +3236,6 @@ def _commit_outcome(
             )
 
 
-_LLM_ONLY_EVIDENCE = frozenset({
-    "manual", "manual code review", "manual review", "code review",
-    "llm", "llm review", "none", "n/a", "",
-})
-
-
 def _match_domain_model_invariants(
     hypothesis: str,
     file_path: str,
@@ -3280,19 +3281,22 @@ def _check_finding_gates(
     domain_model: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Check G1-G5 gates on a finding. Returns list of violations."""
+    from .evidence_grade import is_tool_evidence
     violations = []
     hypothesis = outcome.hypothesis or ""
     if outcome.review_result:
         hypothesis = outcome.review_result.get("hypothesis", hypothesis)
 
     evidence = outcome.evidence_tool or ""
-    if outcome.review_result:
-        evidence = outcome.review_result.get("evidence_tool", evidence)
+    if not evidence and outcome.review_result:
+        evidence = _sanitize_llm_et(
+            outcome.review_result.get("evidence_tool", ""),
+        )
 
     if not hypothesis or hypothesis.strip() == "":
         violations.append("G1: finding emitted without testable hypothesis")
 
-    if not evidence or evidence.lower().strip() in _LLM_ONLY_EVIDENCE:
+    if not is_tool_evidence(evidence):
         matched_invariants = _match_domain_model_invariants(
             hypothesis, outcome.file, domain_model,
         )

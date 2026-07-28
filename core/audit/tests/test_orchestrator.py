@@ -1279,6 +1279,24 @@ class TestCheckFindingGates:
         v = _check_finding_gates(self._outcome(evidence_tool="joern"))
         assert not any("G2" in x for x in v)
 
+    def test_g2_review_result_joern_without_stamp_rejected(self):
+        """LLM writes 'joern' into review_result but no tool actually ran."""
+        o = self._outcome(evidence_tool="")
+        o.review_result = {"evidence_tool": "joern"}
+        v = _check_finding_gates(o)
+        assert any("G2" in x for x in v)
+
+    def test_g2_review_result_with_stamp_passes(self):
+        """review_result has raw LLM value but outcome.evidence_tool was stamped."""
+        o = self._outcome(evidence_tool="joern")
+        o.review_result = {"evidence_tool": "joern"}
+        v = _check_finding_gates(o)
+        assert not any("G2" in x for x in v)
+
+    def test_g2_llm_claimed_prefix_rejected(self):
+        v = _check_finding_gates(self._outcome(evidence_tool="llm-claimed:joern"))
+        assert any("G2" in x for x in v)
+
     def test_g5_memory_cwe_in_python_file(self):
         o = ReviewOutcome(
             file="app/views.py", function="handle",

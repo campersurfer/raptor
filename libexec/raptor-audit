@@ -444,13 +444,25 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     tool = args.tool
     func_key = f"{args.file}:{args.function}"
 
-    # Auto-run mode: --rule-file triggers actual tool execution
-    if args.rule_file and tool in ("semgrep", "coccinelle", "codeql"):
+    # Auto-run mode: --rule or --rule-file triggers actual tool execution
+    rule_file = args.rule_file
+    if not rule_file and args.rule and tool in ("semgrep", "coccinelle"):
+        import tempfile
+        suffix = ".yaml" if tool == "semgrep" else ".cocci"
+        _tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=suffix, dir=str(out_dir),
+            prefix=".sweep-rule-", delete=False,
+        )
+        _tmp.write(args.rule)
+        _tmp.close()
+        rule_file = _tmp.name
+
+    if rule_file and tool in ("semgrep", "coccinelle", "codeql"):
         from core.audit.sweep import (
             run_semgrep_sweep, run_coccinelle_sweep, run_codeql_sweep,
         )
 
-        rule_path = Path(args.rule_file)
+        rule_path = Path(rule_file)
         if not rule_path.exists():
             print(f"error: rule file {rule_path} not found", file=sys.stderr)
             return 1
@@ -479,8 +491,16 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             )
 
         entry = result.to_log_entry()
-        entry["rule_file"] = str(rule_path)
+        entry["rule_source"] = str(rule_path)
+        if args.rule and not args.rule_file:
+            entry["rule_inline"] = args.rule
         append_audit_log(out_dir, entry)
+
+        if not args.rule_file and rule_path.name.startswith(".sweep-rule-"):
+            try:
+                rule_path.unlink()
+            except OSError:
+                pass
 
         match_info = ""
         if result.matches:
@@ -1020,6 +1040,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         adversarial=args.adversarial,
         max_propagation_depth=args.max_propagation_depth,
         binary_verdicts=binary_verdicts,
+        no_binary_oracle=getattr(args, "no_binary_oracle", False),
     )
 
     # --- progress callback ---
