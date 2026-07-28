@@ -389,7 +389,14 @@ class FuzzingMemory:
                 "SIGILL": 0.4, 4: 0.4,
                 "SIGFPE": 0.2, 8: 0.2,
             }
-            return signal_probs.get(signal, 0.3)
+            # Callers may pass signal as a string-encoded int ("11")
+            # which misses the int key (11).  Normalise first.
+            lookup_key: Any = signal
+            try:
+                lookup_key = int(signal)
+            except (TypeError, ValueError):
+                pass
+            return signal_probs.get(lookup_key, 0.3)
 
         # Use historical data
         value = knowledge.value
