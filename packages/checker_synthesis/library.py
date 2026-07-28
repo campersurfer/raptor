@@ -102,6 +102,7 @@ class LibraryEntry:
     tp_rate: float
     fp_rate: float
     total_variants: int
+    total_matches: int = 0
     targets: List[TargetRecord] = field(default_factory=list)
     archived: bool = False
     source: str = ""
@@ -121,6 +122,7 @@ class LibraryEntry:
             "tp_rate": self.tp_rate,
             "fp_rate": self.fp_rate,
             "total_variants": self.total_variants,
+            "total_matches": self.total_matches,
             "targets": [t.to_dict() for t in self.targets],
             "archived": self.archived,
         }
@@ -144,6 +146,7 @@ class LibraryEntry:
             tp_rate=d.get("tp_rate", 0.0),
             fp_rate=d.get("fp_rate", 0.0),
             total_variants=d.get("total_variants", 0),
+            total_matches=d.get("total_matches") or d.get("total_variants", 0),
             targets=[TargetRecord.from_dict(t) for t in d.get("targets", [])],
             archived=d.get("archived", False),
             source=d.get("source", ""),
@@ -459,8 +462,11 @@ class RuleLibrary:
         entry = next((e for e in entries if e.rule_id == rule_id), None)
         if entry is None:
             return
+        entry.total_matches += 1
         if is_tp:
             entry.total_variants += 1
+        entry.tp_rate = entry.total_variants / entry.total_matches
+        entry.fp_rate = 1.0 - entry.tp_rate
         self._save()
 
     def retire_low_precision(

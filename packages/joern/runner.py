@@ -145,8 +145,8 @@ class _StallMonitor:
             self._threshold = _STALL_FLOOR_S
             return
         sorted_times = sorted(self._file_times)
-        p90_idx = int(len(sorted_times) * 0.9)
-        p90 = sorted_times[min(p90_idx, len(sorted_times) - 1)]
+        p90_idx = int(len(sorted_times) * 0.9) - 1
+        p90 = sorted_times[max(0, min(p90_idx, len(sorted_times) - 1))]
         self._threshold = max(p90 * _STALL_MULTIPLIER, _STALL_FLOOR_S)
         logger.debug(
             "Joern stall threshold calibrated: p90=%.2fs, threshold=%.1fs",
