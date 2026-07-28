@@ -9,8 +9,8 @@ enrichment, chokepoint accessor (incl. tier guard + name-collision
 disambiguation), reach_audit verdict chain, verdict→witness→suppression
 mapping, shared chokepoint helper, suppressions.jsonl audit trail,
 auto-detect, hostile-ELF defense, multi-binary combine, stripped-binary
-tier fallback, corpus driver registry, annotation_synth binary_oracle
-tags, /project schema persistence, full build_inventory pipeline.
+tier fallback, corpus driver registry, /project schema persistence,
+full build_inventory pipeline.
 
 Usage::
 
@@ -460,42 +460,9 @@ for name in ("synthetic", "zlib", "libsodium", "snappy", "leveldb",
 
 
 # ---------------------------------------------------------------------------
-# 13. annotation_synth — binary_oracle tag emission
+# 13. /project binaries persistence round-trip
 # ---------------------------------------------------------------------------
-print("\n=== 13. annotation_synth binary_oracle tag ===")
-from packages.code_understanding.annotation_synth import (
-    _binary_oracle_tag, _binary_oracle_body_line,
-)
-
-func_full = {"metadata": {"binary_oracle": {
-    "classification": "absent",
-    "binaries": [{"path": "/b", "classification": "absent",
-                  "tier": "full"}],
-}}}
-tag = _binary_oracle_tag(func_full)
-check("full-tier tag has classification + tier=full",
-      tag.get("binary_oracle") == "absent"
-      and tag.get("binary_oracle_tier") == "full")
-body = _binary_oracle_body_line(func_full)
-check("full-tier body line says 'in deployed binary surface'",
-      "deployed binary surface" in body, body)
-func_symonly = {"metadata": {"binary_oracle": {
-    "classification": "absent",
-    "binaries": [{"path": "/b", "classification": "absent",
-                  "tier": "symbol_only"}],
-}}}
-tag2 = _binary_oracle_tag(func_symonly)
-check("symbol_only tag has tier=symbol_only",
-      tag2.get("binary_oracle_tier") == "symbol_only")
-body2 = _binary_oracle_body_line(func_symonly)
-check("symbol_only body line says 'does NOT license suppression'",
-      "does NOT license suppression" in body2, body2)
-
-
-# ---------------------------------------------------------------------------
-# 14. /project binaries persistence round-trip
-# ---------------------------------------------------------------------------
-print("\n=== 14. /project persistence ===")
+print("\n=== 13. /project persistence ===")
 from core.project.project import Project
 
 p = Project(name="e2e", target=str(TARGET),
@@ -516,9 +483,9 @@ check("v1 back-compat: empty binaries default",
 
 
 # ---------------------------------------------------------------------------
-# 15. Inventory builder honours BINARY_ORACLE_PATHS
+# 14. Inventory builder honours BINARY_ORACLE_PATHS
 # ---------------------------------------------------------------------------
-print("\n=== 15. build_inventory + BINARY_ORACLE_PATHS ===")
+print("\n=== 14. build_inventory + BINARY_ORACLE_PATHS ===")
 from core.config import RaptorConfig
 from core.inventory.builder import build_inventory
 

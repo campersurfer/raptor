@@ -1,9 +1,7 @@
-"""Annotation writing + coverage-audit record emission.
+"""Coverage-audit record emission.
 
-Wraps ``core.annotations.storage`` for the audit workflow:
-- Writes annotation markdown per reviewed function
-- Computes and embeds source hash for staleness detection
-- Updates ``coverage-audit.json`` via ``core.coverage.record``
+Updates ``coverage-audit.json`` via ``core.coverage.record`` when
+the audit workflow reviews a function.
 """
 
 from __future__ import annotations
@@ -11,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -53,12 +50,10 @@ def record_review(
     cwe: Optional[str] = None,
     strategies: Optional[List[str]] = None,
     checked_by: Optional[List[str]] = None,
-    annotations_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Record a single function review.
 
-    Writes the annotation markdown and updates the coverage-audit
-    tracking data. Returns the record dict.
+    Updates the coverage-audit tracking data. Returns the record dict.
 
     Args:
         out_dir: Run output directory.
@@ -78,25 +73,6 @@ def record_review(
         )
 
     source_hash = _compute_hash(target_path, file_path, line_start, line_end)
-
-    metadata = {"status": status, "source": "llm"}
-    if source_hash:
-        metadata["hash"] = source_hash
-    if cwe:
-        metadata["cwe"] = cwe
-    if line_start:
-        metadata["line_start"] = str(line_start)
-    if line_end:
-        metadata["line_end"] = str(line_end)
-
-    resolved_ann_dir = annotations_dir or _resolve_annotations_dir(out_dir)
-    _write_annotation(
-        annotations_dir=resolved_ann_dir,
-        file_path=file_path,
-        function_name=function_name,
-        body=body,
-        metadata=metadata,
-    )
 
     record = {
         "file": file_path,
@@ -158,80 +134,6 @@ def _compute_hash(
         logger.debug("hash computation failed for %s:%d", file_path, line_start)
         return None
 
-
-def _write_annotation(
-    *,
-    annotations_dir: Path,
-    file_path: str,
-    function_name: str,
-    body: str,
-    metadata: Dict[str, str],
-) -> None:
-    """Write an annotation via the annotations storage layer."""
-    annotations_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        from core.annotations.models import Annotation
-        from core.annotations.storage import write_annotation
-
-        ann = Annotation(
-            file=file_path,
-            function=function_name,
-            body=body,
-            metadata=metadata,
-        )
-        write_annotation(annotations_dir, ann, overwrite="respect-manual")
-    except Exception:
-        logger.warning(
-            "Failed to write annotation for %s:%s via storage layer, "
-            "falling back to direct write",
-            file_path, function_name,
-        )
-        _write_annotation_direct(annotations_dir, file_path, function_name, body, metadata)
-
-
-def _write_annotation_direct(
-    annotations_dir: Path,
-    file_path: str,
-    function_name: str,
-    body: str,
-    metadata: Dict[str, str],
-) -> None:
-    """Direct-write fallback when the storage layer isn't available."""
-    if ".." in file_path.split("/"):
-        raise ValueError(f"path traversal rejected: {file_path!r}")
-    if "\n" in function_name or "<!--" in function_name:
-        raise ValueError(f"unsafe function name rejected: {function_name!r}")
-    ann_path = annotations_dir / f"{file_path}.md"
-    resolved = ann_path.resolve()
-    ann_root = annotations_dir.resolve()
-    if not (resolved == ann_root or str(resolved).startswith(str(ann_root) + os.sep)):
-        raise ValueError(f"path traversal rejected: {file_path!r}")
-    ann_path.parent.mkdir(parents=True, exist_ok=True)
-
-    meta_parts = " ".join(f"{k}={v}" for k, v in sorted(metadata.items()))
-    section = f"\n## {function_name}\n<!-- meta: {meta_parts} -->\n\n{body}\n"
-
-    if ann_path.exists():
-        existing = ann_path.read_text()
-        heading_pat = r'^## ' + re.escape(function_name) + r'$'
-        if not re.search(heading_pat, existing, re.MULTILINE):
-            with open(ann_path, "a") as f:
-                f.write(section)
-        else:
-            match = re.search(heading_pat, existing, re.MULTILINE)
-            if match:
-                after_heading = existing[match.end():]
-                if re.match(r'\s*<!-- meta:.*?source=human', after_heading):
-                    logger.debug(
-                        "Preserving human annotation for %s:%s",
-                        file_path, function_name,
-                    )
-                    return
-            logger.debug("Annotation already exists for %s:%s", file_path, function_name)
-    else:
-        with open(ann_path, "w") as f:
-            f.write(f"# {file_path}\n{section}")
 
 
 def _update_coverage_audit(

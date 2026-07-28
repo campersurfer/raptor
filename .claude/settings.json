@@ -33,7 +33,6 @@
       "Bash(libexec/raptor-threat-model)",
       "Bash(libexec/raptor-threat-model *)",
       "Bash(libexec/raptor-understand *)",
-      "Bash(libexec/raptor-understand-annotate *)",
       "Bash(libexec/raptor-validate-schema *)",
       "Bash(libexec/raptor-validation-helper *)",
       "Edit(/out/**)"

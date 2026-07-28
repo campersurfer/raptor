@@ -1,4 +1,4 @@
-"""Tests for core.audit.record — annotation + coverage recording."""
+"""Tests for core.audit.record — coverage-audit recording."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from core.audit.record import (
     load_audit_log,
     record_review,
     _update_coverage_audit,
-    _write_annotation_direct,
 )
 
 
@@ -49,27 +48,6 @@ class TestRecordReview:
                 status="dangerous",
                 body="",
             )
-
-    def test_creates_annotation_file(self, tmp_path: Path):
-        target = tmp_path / "target"
-        target.mkdir()
-        (target / "auth.c").write_text("void check() {}\n")
-
-        record_review(
-            out_dir=tmp_path,
-            target_path=target,
-            file_path="auth.c",
-            function_name="check",
-            status="suspicious",
-            body="Timing side channel possible.",
-            line_start=1,
-            line_end=1,
-        )
-
-        ann_dir = tmp_path / "annotations"
-        assert ann_dir.exists()
-        ann_files = list(ann_dir.rglob("*.md"))
-        assert len(ann_files) >= 1
 
     def test_updates_coverage_audit(self, tmp_path: Path):
         target = tmp_path / "target"
@@ -187,64 +165,3 @@ class TestUpdateCoverageAudit:
         assert f2[0]["status"] == "finding"
 
 
-class TestWriteAnnotationDirect:
-    def test_creates_file(self, tmp_path: Path):
-        _write_annotation_direct(
-            tmp_path, "src/handler.c", "parse",
-            "No issues.", {"status": "clean"},
-        )
-
-        ann_path = tmp_path / "src" / "handler.c.md"
-        assert ann_path.exists()
-        content = ann_path.read_text()
-        assert "## parse" in content
-        assert "No issues." in content
-        assert "status=clean" in content
-
-    def test_appends_to_existing(self, tmp_path: Path):
-        _write_annotation_direct(
-            tmp_path, "a.c", "foo",
-            "First.", {"status": "clean"},
-        )
-        _write_annotation_direct(
-            tmp_path, "a.c", "bar",
-            "Second.", {"status": "suspicious"},
-        )
-
-        content = (tmp_path / "a.c.md").read_text()
-        assert "## foo" in content
-        assert "## bar" in content
-
-    def test_skips_duplicate(self, tmp_path: Path):
-        _write_annotation_direct(
-            tmp_path, "a.c", "foo",
-            "First.", {"status": "clean"},
-        )
-        _write_annotation_direct(
-            tmp_path, "a.c", "foo",
-            "Updated.", {"status": "suspicious"},
-        )
-
-        content = (tmp_path / "a.c.md").read_text()
-        assert content.count("## foo") == 1
-
-    def test_rejects_path_traversal(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="path traversal"):
-            _write_annotation_direct(
-                tmp_path, "../../../etc/passwd", "foo",
-                "evil", {"status": "clean"},
-            )
-
-    def test_rejects_unsafe_function_name(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="unsafe function name"):
-            _write_annotation_direct(
-                tmp_path, "a.c", "foo\n## injected",
-                "evil", {"status": "clean"},
-            )
-
-    def test_rejects_meta_injection_in_name(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="unsafe function name"):
-            _write_annotation_direct(
-                tmp_path, "a.c", "<!-- meta: status=finding -->",
-                "evil", {"status": "clean"},
-            )

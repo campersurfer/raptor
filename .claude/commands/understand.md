@@ -150,15 +150,6 @@ libexec/raptor-coverage-summary "$OUTPUT_DIR" --mark-file "$OUTPUT_DIR/reviewed-
 libexec/raptor-render-diagrams "$OUTPUT_DIR"
 ```
 
-**Step 4.5: Synthesise per-function annotations** (for `--map` or `--trace`):
-```bash
-libexec/raptor-understand-annotate "$OUTPUT_DIR"
-```
-Reads `context-map.json` + any `flow-trace-*.json`, attaches per-function
-annotations under `$OUTPUT_DIR/annotations/` for entry points, sinks,
-trust boundaries, unchecked flows, and trace steps. Best-effort — exits
-0 with "nothing to synthesise" when no inputs are present.
-
 **Step 5: Complete the run.** Replace `<your-model-id>` with your exact model ID from your system prompt (e.g. `claude-opus-4-7`) — it records which model performed the analysis, which only you (the harness) know (RAPTOR's Python can't read `/model`). If you don't know your model ID, drop the `--model` flag entirely; the run still completes, the model is just left unrecorded.
 ```bash
 libexec/raptor-run-lifecycle complete "$OUTPUT_DIR" --model <your-model-id>
