@@ -431,9 +431,9 @@ class AutonomousCodeQLAnalyzer:
         # Extract location
         locations = result.get("locations", [])
         location = locations[0] if locations else {}
-        physical_loc = location.get("physicalLocation", {})
-        region = physical_loc.get("region", {})
-        artifact = physical_loc.get("artifactLocation", {})
+        physical_loc = location.get("physicalLocation") or {}
+        region = physical_loc.get("region") or {}
+        artifact = physical_loc.get("artifactLocation") or {}
 
         # Extract CWE. Pre-fix `for tag in tags: if tag.startswith(...)`
         # raised AttributeError when SARIF emitters produced
