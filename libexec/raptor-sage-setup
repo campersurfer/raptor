@@ -608,6 +608,84 @@ generate_mcp_entry() {
     echo "Generated stdio MCP entry in $MCP."
 }
 
+discover_mcp_tools() {
+    # Query the SAGE MCP wrapper for its tool list via the MCP protocol.
+    # Returns one tool name per line (e.g. "mcp__sage__sage_turn").
+    #
+    # The wrapper emits newline-delimited JSON (one object per line) per
+    # the JSONRPC-over-stdio convention.  We collect the full output then
+    # use jq to find the tools/list response by id, which is robust even
+    # if a future wrapper pretty-prints or reorders responses.
+    local timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd="timeout 10"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        timeout_cmd="gtimeout 10"
+    fi
+    local response
+    response=$(printf '%s\n%s\n%s\n' \
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"raptor-setup","version":"1.0.0"}}}' \
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+        | CLAUDECODE=1 $timeout_cmd "$MCP_WRAPPER" 2>/dev/null || true)
+    if [ -z "$response" ]; then
+        return 0
+    fi
+    # Parse all JSON objects from the response stream, select the one
+    # with id==2 (tools/list), and extract tool names.
+    printf '%s\n' "$response" \
+        | jq -r 'select(.id == 2) | .result.tools[]?.name // empty' 2>/dev/null \
+        | sed 's/^/mcp__sage__/' \
+        | grep '^mcp__sage__sage_[a-z_]*$' \
+        | sort
+}
+
+grant_mcp_permissions() {
+    # Discover SAGE MCP tools and add them to settings.local.json permissions.
+    local tools
+    tools=$(discover_mcp_tools)
+    if [ -z "$tools" ]; then
+        echo "Warning: could not discover SAGE MCP tools — permissions not updated." >&2
+        return 0
+    fi
+    local tool_count
+    tool_count=$(printf '%s\n' "$tools" | wc -l | tr -d ' ')
+    if [ ! -f "$SETTINGS_LOCAL" ]; then
+        echo "Warning: $SETTINGS_LOCAL not found — permissions not updated." >&2
+        return 0
+    fi
+    local tmp
+    tmp=$(mktemp "$(dirname "$SETTINGS_LOCAL")/.tmp.settings.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
+    local tools_json
+    tools_json=$(printf '%s\n' "$tools" | jq -R . | jq -s .)
+    if ! jq --argjson sage_tools "$tools_json" '
+        .permissions.allow = (
+            [.permissions.allow[]? | select(startswith("mcp__sage__") | not)]
+            + $sage_tools
+        )
+    ' "$SETTINGS_LOCAL" > "$tmp"; then
+        echo "Warning: failed to update $SETTINGS_LOCAL — file may be malformed." >&2
+        rm -f "$tmp"
+        return 0
+    fi
+    mv "$tmp" "$SETTINGS_LOCAL"
+    echo "Granted $tool_count SAGE MCP tool permissions in $SETTINGS_LOCAL."
+}
+
+revoke_mcp_permissions() {
+    # Remove all mcp__sage__ entries from settings.local.json permissions.
+    [ -f "$SETTINGS_LOCAL" ] || return 0
+    local before
+    before=$(jq '[.permissions.allow[]? | select(startswith("mcp__sage__"))] | length' "$SETTINGS_LOCAL")
+    [ "$before" = "0" ] && return 0
+    local tmp
+    tmp=$(mktemp "$(dirname "$SETTINGS_LOCAL")/.tmp.settings.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
+    jq '.permissions.allow = [.permissions.allow[]? | select(startswith("mcp__sage__") | not)]' \
+        "$SETTINGS_LOCAL" > "$tmp"
+    mv "$tmp" "$SETTINGS_LOCAL"
+    echo "Revoked $before SAGE MCP tool permissions from $SETTINGS_LOCAL."
+}
+
 smoke_test_mcp() {
     # Send an MCP initialize + notifications/initialized sequence and check for
     # a valid response. The MCP protocol requires notifications/initialized after
@@ -900,6 +978,7 @@ install_sage() {
     generate_mcp_entry
     enable_sage_env
     smoke_test_mcp
+    grant_mcp_permissions
     echo
     echo "SAGE is up. Restart Claude Code so it picks up the MCP registration."
 }
@@ -921,6 +1000,7 @@ uninstall_sage() {
     docker compose -f "$COMPOSE_FILE" down --remove-orphans
     remove_mcp_entry
     disable_sage_env
+    revoke_mcp_permissions
     echo "SAGE sidecar stopped. Data volumes preserved."
     echo "To wipe volumes: docker compose -f $COMPOSE_FILE down -v --remove-orphans"
 }
