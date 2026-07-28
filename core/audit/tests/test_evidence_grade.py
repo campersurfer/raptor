@@ -260,6 +260,17 @@ class TestGradeReviewResult:
         items = grade_review_result({}, evidence_tool="smt")
         assert any(e.source == EvidenceSource.SMT for e in items)
 
+    def test_evidence_tool_plus_joined(self):
+        items = grade_review_result({}, evidence_tool="semgrep+joern")
+        sources = {e.source for e in items}
+        assert EvidenceSource.SEMGREP in sources
+        assert EvidenceSource.JOERN in sources
+
+    def test_evidence_tool_plus_joined_no_duplicates(self):
+        items = grade_review_result({}, evidence_tool="semgrep+semgrep")
+        semgrep = [e for e in items if e.source == EvidenceSource.SEMGREP]
+        assert len(semgrep) == 1
+
 
 class TestFormatEvidenceChain:
     def test_empty_chain(self):
@@ -304,6 +315,15 @@ class TestIsToolEvidence:
         assert not is_tool_evidence("CodeQL")
         assert not is_tool_evidence("llm")
         assert not is_tool_evidence("llm-claimed:codeql")
+
+    def test_plus_joined_multi_tool_accepted(self):
+        assert is_tool_evidence("semgrep+joern")
+        assert is_tool_evidence("semgrep+joern+codeql")
+        assert is_tool_evidence("semgrep:rule-123+joern")
+
+    def test_plus_joined_with_hallucination_rejected(self):
+        assert not is_tool_evidence("semgrep+llm")
+        assert not is_tool_evidence("Semgrep+joern")
 
     def test_empty_and_none_rejected(self):
         assert not is_tool_evidence("")

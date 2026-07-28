@@ -84,16 +84,25 @@ _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
 })
 
 
+def _is_single_tool_evidence(part: str) -> bool:
+    """Check one atomic stamp (no ``+`` separator)."""
+    if not part or part == "none":
+        return False
+    root = part.split(":")[0] if ":" in part else part
+    return root in _TOOL_NAMESPACES or part in _TOOL_NAMESPACES
+
+
 def is_tool_evidence(stamp: str) -> bool:
     """Return True if *stamp* was set by an actual tool run, not an LLM claim.
 
-    Matches canonical stamps (``"dynamic:sanitizer"``, ``"semgrep"``, etc.)
-    and namespaced composites (``"semgrep:rule-123"``, ``"critique:prefilter:id"``).
+    Matches canonical stamps (``"dynamic:sanitizer"``, ``"semgrep"``, etc.),
+    namespaced composites (``"semgrep:rule-123"``, ``"critique:prefilter:id"``),
+    and ``+``-joined multi-tool stamps (``"semgrep+joern"``).
     """
     if not stamp or stamp == "none":
         return False
-    root = stamp.split(":")[0] if ":" in stamp else stamp
-    return root in _TOOL_NAMESPACES or stamp in _TOOL_NAMESPACES
+    parts = stamp.split("+") if "+" in stamp else [stamp]
+    return all(_is_single_tool_evidence(p) for p in parts)
 
 
 _RECEIPT_MAP: Dict[str, tuple] = {
@@ -358,11 +367,15 @@ def grade_review_result(
             confidence_override=Confidence.HIGH,
         ))
 
-    namespace = evidence_tool.split(":")[0] if ":" in evidence_tool else evidence_tool
-    entry = _RECEIPT_MAP.get(evidence_tool) or _RECEIPT_MAP.get(namespace)
-    if entry:
-        source, description = entry
-        items.append(grade_evidence(source, description))
+    parts = evidence_tool.split("+") if "+" in evidence_tool else [evidence_tool]
+    seen: set = set()
+    for part in parts:
+        namespace = part.split(":")[0] if ":" in part else part
+        entry = _RECEIPT_MAP.get(part) or _RECEIPT_MAP.get(namespace)
+        if entry and entry[0] not in seen:
+            seen.add(entry[0])
+            source, description = entry
+            items.append(grade_evidence(source, description))
 
     return items
 
