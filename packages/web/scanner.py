@@ -153,6 +153,16 @@ class WebScanner:
 
         return report
 
+    def close(self) -> None:
+        """Release the underlying HTTP client resources."""
+        self.client.close()
+
+    def __enter__(self) -> "WebScanner":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
 
 def build_arg_parser():
     """Build the CLI parser for the web scanner."""
@@ -350,6 +360,8 @@ def main():
         print(f"\n✗ Scan failed: {e}", file=sys.stderr)
         logger.error(f"Scan failed: {e}", exc_info=True)
         return 1
+    finally:
+        scanner.close()
 
 
 if __name__ == "__main__":
