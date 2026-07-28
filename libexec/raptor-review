@@ -373,7 +373,10 @@ def cmd_gaps(args):
     print(f"  {'─' * 9:<10} {'─' * 29:<30} {'─' * 24:<25} {'─' * 20}")
     for g in gaps[:50]:
         strats = ", ".join(g.get("strategies", [])[:3])
-        print(f"  {g.get('priority', 0):<10} {g['file']:<30} {g['name']:<25} {strats}")
+        pri = g.get('priority', 0)
+        fn = g.get('file', '')
+        nm = g.get('name', '')
+        print(f"  {pri:<10} {fn:<30} {nm:<25} {strats}")
 
 
 def cmd_history(args):
