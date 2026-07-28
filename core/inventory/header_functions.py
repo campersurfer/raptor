@@ -11,6 +11,7 @@ Cached per target path.
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -35,8 +36,9 @@ _SKIP_NAMES = frozenset({
 })
 
 _MAX_BODY_LINES = 30
+_MAX_CACHE_ENTRIES = 16
 
-_cache: Dict[str, Dict[str, Tuple[str, str]]] = {}
+_cache: OrderedDict[str, Dict[str, Tuple[str, str]]] = OrderedDict()
 
 
 def _extract_function_body(lines: List[str], open_brace_line: int) -> Optional[str]:
@@ -67,6 +69,7 @@ def build_header_function_index(
     """
     key = str(target_path)
     if key in _cache:
+        _cache.move_to_end(key)
         return _cache[key]
 
     index: Dict[str, Tuple[str, str]] = {}
@@ -93,6 +96,8 @@ def build_header_function_index(
         pass
 
     _cache[key] = index
+    while len(_cache) > _MAX_CACHE_ENTRIES:
+        _cache.popitem(last=False)
     return index
 
 
