@@ -272,7 +272,7 @@ def expand_missing_transitives(
         if (eco, project_dir) in typosquat_dirs:
             continue                        # already statused above
 
-        added: List[Dependency] = []
+        added: Optional[List[Dependency]] = None
         method = "skipped_no_method_succeeded"
         reason: Optional[str] = None
         failures = 0
@@ -288,7 +288,10 @@ def expand_missing_transitives(
                 reason = None
 
         # Registry-metadata walk — opt-in fallback, approximate.
-        if not added and enable_metadata_fallback and http is not None:
+        # Use ``added is None`` (sentinel) to distinguish "cascade
+        # didn't run / failed" from "cascade ran, found nothing"
+        # (legitimate empty list).
+        if added is None and enable_metadata_fallback and http is not None:
             walk_deps, c_failures = _try_metadata_walk(
                 eco, [d for d in direct_deps
                       if d.ecosystem == eco
@@ -308,10 +311,14 @@ def expand_missing_transitives(
         # When nothing succeeded, surface the most-informative reason
         # we have — cascade's specific failure beats the generic
         # "no method succeeded" message.
-        if not added and method == "skipped_no_method_succeeded":
+        if added is None and method == "skipped_no_method_succeeded":
             reason = cascade_reason or (
                 "no transitive-expansion method succeeded"
             )
+
+        # Normalise sentinel: downstream code expects a list.
+        if added is None:
+            added = []
 
         # Dedup against direct_deps — emit only NEW deps the project
         # didn't already declare directly.

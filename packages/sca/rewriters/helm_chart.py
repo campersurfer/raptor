@@ -82,7 +82,7 @@ def _apply_one_chart(
     #
     # Shape A: name-then-version
     pat_name_first = re.compile(
-        rf"^(?P<indent>\s+)- name:\s*{locator}\s*(?:#[^\n]*)?\n"   # locator line
+        rf"^(?P<indent>\s+)- name:\s*{locator}\s*(?P<namecomment>#[^\n]*)?\n"
         rf"(?P<between>(?:\s*(?!-).+\n)*?)"             # optional intermediate lines
         rf"(?P<prefix>(?P=indent)\s+version:\s*[\"']?)"
         rf"(?P<ver>[^\s\"'#]+)"
@@ -121,14 +121,16 @@ def _apply_one_chart(
             ),
         )
     if shape == "name_first":
-        new_text = pat_name_first.sub(
-            (
-                rf"\g<indent>- name: {edit.locator}\n"
-                rf"\g<between>"
-                rf"\g<prefix>{edit.new_value}\g<suffix>"
-            ),
-            text, count=1,
-        )
+        def _name_first_repl(m: re.Match) -> str:
+            comment = m.group("namecomment")
+            comment_part = f" {comment}" if comment else ""
+            return (
+                f"{m.group('indent')}- name: {edit.locator}{comment_part}\n"
+                f"{m.group('between')}"
+                f"{m.group('prefix')}{edit.new_value}{m.group('suffix')}"
+            )
+
+        new_text = pat_name_first.sub(_name_first_repl, text, count=1)
     else:
         new_text = pat_version_first.sub(
             (
