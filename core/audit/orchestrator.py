@@ -6735,21 +6735,27 @@ def _run_dark_verification(
             outcome.evidence_tool = "dark_verify:confirmed"
             if prior != "finding":
                 result.findings += 1
-                if prior == "dark":
+                if prior in ("dark", "dormant"):
                     result.dormant -= 1
                 elif prior == "suspicious":
                     result.suspicious -= 1
+                elif prior == "clean":
+                    result.clean -= 1
+                elif prior == "error":
+                    result.errors -= 1
         elif verify_result.verdict == "refuted":
             outcome.status = "clean"
             outcome.evidence_tool = "dark_verify:refuted"
             if prior != "clean":
                 result.clean += 1
-                if prior == "dark":
+                if prior in ("dark", "dormant"):
                     result.dormant -= 1
                 elif prior == "suspicious":
                     result.suspicious -= 1
                 elif prior == "finding":
                     result.findings -= 1
+                elif prior == "error":
+                    result.errors -= 1
 
         records.append({
             "file": outcome.file,
