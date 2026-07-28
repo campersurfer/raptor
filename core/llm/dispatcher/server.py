@@ -590,13 +590,17 @@ class LLMDispatcher:
             if rec is None:
                 return None, "unknown token"
             if rec.status in ("revoked", "exhausted", "expired"):
+                # Evict terminal-state records to prevent unbounded growth.
+                self._tokens.pop(raw, None)
                 return None, f"token {rec.status}"
             now = time.time()
             if now >= rec.expires_at:
                 rec.status = "expired"
+                self._tokens.pop(raw, None)
                 return None, "token expired"
             if rec.requests_made >= rec.request_budget:
                 rec.status = "exhausted"
+                self._tokens.pop(raw, None)
                 return None, "token budget exhausted"
             rec.status = "active"
             rec.requests_made += 1
