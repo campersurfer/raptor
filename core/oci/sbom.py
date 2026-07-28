@@ -219,13 +219,13 @@ def parse_rpm_sqlite(content: bytes) -> List[InstalledPackage]:
     tempfile is auto-cleaned on context exit.
     """
     out: List[InstalledPackage] = []
-
-    with tempfile.NamedTemporaryFile(
-        prefix="raptor-rpm-", suffix=".sqlite", delete=False,
-    ) as fp:
-        fp.write(content)
-        tmp_path = Path(fp.name)
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(
+            prefix="raptor-rpm-", suffix=".sqlite", delete=False,
+        ) as fp:
+            tmp_path = Path(fp.name)
+            fp.write(content)
         # ``mode=ro`` URI open guards against any accidental writes.
         conn = sqlite3.connect(
             f"file:{tmp_path}?mode=ro", uri=True,
@@ -249,10 +249,11 @@ def parse_rpm_sqlite(content: bytes) -> List[InstalledPackage]:
         finally:
             conn.close()
     finally:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
     return out
 
 
