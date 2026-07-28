@@ -811,8 +811,12 @@ class BinaryUnderstand:
 
     def _extract_strings(self, r2, ctx: BinaryContextMap, limit: int) -> None:
         try:
-            strings_raw = json.loads(self._cmd_t(r2, "izj", self._T_QUERY) or "[]")
+            strings_raw = json.loads(
+                self._cmd_t(r2, "izj", self._T_QUERY) or "[]",
+            )
         except Exception:
+            strings_raw = []
+        if not isinstance(strings_raw, list):
             strings_raw = []
         strings = []
         for s in strings_raw[:limit * 2]:
