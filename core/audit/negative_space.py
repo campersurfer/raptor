@@ -512,15 +512,15 @@ def check_sibling_negative_space(
         SiblingPath,
         SiblingType,
         find_asymmetries,
-        identify_peer_groups,
     )
+    from core.analysis.peer_groups import resolve_peer_groups
 
     func_dicts = [
         {"name": g.get("name", ""), "file": g.get("file", ""), "line": g.get("line", 0)}
         for g in gaps
         if g.get("name")
     ]
-    peer_groups = identify_peer_groups(func_dicts)
+    peer_groups = resolve_peer_groups(func_dicts)
     if not peer_groups:
         return []
 
