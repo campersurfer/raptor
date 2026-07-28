@@ -631,6 +631,24 @@ def main() -> int:
     if args.map and args.model:
         parser.error("--model is not used for binary --map")
 
+    # ``_do_hunt`` / ``_do_trace`` pin the operator's --model via
+    # ``set_operator_primary_override`` so every downstream
+    # ``LLMConfig()`` no-arg construction honours it. Snapshot the
+    # prior value and restore on exit so in-process callers (e.g.
+    # code_understanding's ``test_libexec_trajectory_e2e``, which
+    # imports this shim and runs ``main()``) don't leak the pinned
+    # model into subsequent pytest tests. In the CLI-as-subprocess
+    # path this is a no-op — the process exits after main() returns.
+    import core.llm.config as _cfg_mod
+    from core.llm.config import set_operator_primary_override
+    _saved_override = _cfg_mod._operator_primary_override
+    try:
+        return _main_body(args)
+    finally:
+        set_operator_primary_override(_saved_override)
+
+
+def _main_body(args) -> int:
     try:
         # Path resolution can raise ValueError on NUL bytes in the
         # operator-supplied path. Keep inside try so all errors get
