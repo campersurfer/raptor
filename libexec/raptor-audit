@@ -334,7 +334,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         try:
             inventory_path = out_dir / "inventory.json"
             if inventory_path.exists():
-                with open(inventory_path) as inv_f:
+                with open(inventory_path, encoding="utf-8") as inv_f:
                     inventory = json.load(inv_f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -1314,7 +1314,7 @@ def _guess_target(out_dir: Path) -> Path | None:
     checklist_path = out_dir / "checklist.json"
     if checklist_path.exists():
         try:
-            with open(checklist_path) as f:
+            with open(checklist_path, encoding="utf-8") as f:
                 data = json.load(f)
             tp = data.get("target_path")
             if tp:
