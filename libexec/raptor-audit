@@ -98,6 +98,7 @@ def cmd_gaps(args: argparse.Namespace) -> int:
         budget=args.budget if not args.prioritize else None,
         scope=args.scope,
         annotations_dir=annotations_dir,
+        out_dir=out_dir,
     )
 
     if args.prioritize:

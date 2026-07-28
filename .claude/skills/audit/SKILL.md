@@ -4,7 +4,9 @@ description: "Hypothesis-driven, tool-grounded security review of coverage gaps"
 user-invocable: false
 ---
 
-# /audit Skill — Systematic Code Review
+# /audit Skill — In-Session Code Review
+
+This skill is the in-session execution path for `/audit`, where Claude Code is the LLM. It is used when `--local` is passed, or when no external model is configured. For the orchestrator path (`libexec/raptor-audit run` with an external LLM), see `.claude/commands/audit.md`.
 
 ## [CONFIG]
 
@@ -23,7 +25,7 @@ user-invocable: false
 
 Before the review loop, run study then map against the target. Follow the execution steps in each skill file — do not guess CLI commands:
 
-1. **Study** (mandatory): load and follow `.claude/skills/code-understanding/study.md` — produces `domain-model.json` (ownership, locking, refcounting, lifetime contracts, paired operations)
+1. **Study** (mandatory): try `raptor-study-loop` first — it uses the configured LLM model and handles multi-pass iteration automatically. If it fails (no model configured), fall back to the in-session path in `.claude/skills/code-understanding/study.md`. Produces `domain-model.json`.
 2. **Map** (mandatory): load and follow `.claude/skills/code-understanding/map.md` — produces `context-map.json` (entry points, trust boundaries, sinks)
 
 Both write output to `$OUTPUT_DIR` so the audit context slice picks them up automatically. Do not start the per-function review loop until both files exist.
@@ -39,14 +41,6 @@ Three study entry modes:
 | **Multi-identifier** | `/understand <target> --study "sem_lock + sem_unlock"` | Study how specific identifiers relate — contracts, paired operations, invariants |
 
 The `+` separator in multi-identifier mode triggers correlation — the LLM examines how the identifiers relate to each other (e.g. lock/unlock pairing, get/put refcount symmetry), not just what each one does individually.
-
-Examples for a kernel IPC audit:
-```
-/understand /data/linux_kernel/linux-6.18.2/ --study ipc/
-/understand /data/linux_kernel/linux-6.18.2/ --study "sem_lock + sem_unlock" --scope ipc/
-/understand /data/linux_kernel/linux-6.18.2/ --study "page ownership" --scope mm/
-```
-
 ## [EXEC] Execution Rules
 
 0. **No env-var prefixes on commands.** NEVER write `OUTPUT_DIR=... libexec/raptor-audit ...` or `VAR=val command`. It breaks permission patterns. Capture `OUTPUT_DIR` from `raptor-run-lifecycle start` output and pass it via `--out` flags on every subsequent command.
@@ -154,8 +148,8 @@ When running in-session (Claude Code as the LLM), large targets will exhaust con
 For large codebases, don't audit everything at once. Use `--scope` to restrict to one subsystem per audit pass:
 
 ```
-/audit /data/linux_kernel/linux-6.18.2/ --scope ipc/
-/audit /data/linux_kernel/linux-6.18.2/ --scope net/ipv4/
+/audit /data/linux_kernel/linux-6.18.2/ --scope ipc/ --local
+/audit /data/linux_kernel/linux-6.18.2/ --scope net/ipv4/ --local
 ```
 
 Coverage records accumulate across scoped runs into the same project-level output directory. Each scoped pass is a manageable unit that fits within context and subagent limits.
@@ -172,11 +166,16 @@ If gaps exist and `domain-model.json` + `context-map.json` are already present, 
 
 ### 3. Agent delegation
 
-Within a session, delegate function reviews to agents to keep the main context slim. Each function review is independent — the context slice packages everything the agent needs.
+For targets with many files, delegate function reviews to the `audit-reviewer` agent type to keep the main context slim. Each function review is independent — the context slice packages everything the agent needs.
 
 Group gaps by file (not one agent per function — subagent limits apply). For each file with remaining gaps:
-1. Run `libexec/raptor-audit context --out "$OUTPUT_DIR" --file <path> --function <name>` for each function in the file
-2. Spawn one agent per file with the collected context slices and the instructions: read the source, form hypotheses per function, run `libexec/raptor-audit sweep` to test them, then call `libexec/raptor-audit record` for each reviewed function
-3. The agent uses the same CLI tools as the main session — no special API needed
+
+1. Run `libexec/raptor-audit context --target "$TARGET" --file <path> --function <name> --out "$OUTPUT_DIR" --json` for each function in the file to collect context slices
+2. Spawn one `audit-reviewer` agent per file (via `subagent_type: "audit-reviewer"`). The prompt must include:
+   - `OUTPUT_DIR` and `TARGET` paths
+   - The file path and list of function names to review
+   - Key domain-model context (invariants, contracts relevant to the file)
+   - The context slices from step 1
+3. The agent has baked-in methodology, CLI syntax, and gates — no need to repeat sweep/record instructions in the prompt
 
 The main loop stays slim: read gaps, group by file, dispatch agents, collect results. Agents can run in parallel for independent files. After each batch completes, run `critique` to catch weak reviews before continuing.
