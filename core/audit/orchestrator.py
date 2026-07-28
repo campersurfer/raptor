@@ -1153,19 +1153,20 @@ def review_one_function(
             outcome.function, outcome.file, outcome.review_result,
         )
         if llm_summary:
-            key = f"{outcome.file}:{outcome.function}"
-            if key not in taint_summary_results:
-                taint_summary_results[key] = llm_summary
+            with shared._taint_lock:
+                key = f"{outcome.file}:{outcome.function}"
+                if key not in taint_summary_results:
+                    taint_summary_results[key] = llm_summary
 
-            for edge in (call_edges or []):
-                callee_name = edge.get("callee", "")
-                if callee_name != outcome.function:
-                    continue
-                caller_key = f"{edge['caller_file']}:{edge['caller']}"
-                caller_sum = taint_summary_results.get(caller_key)
-                if caller_sum:
-                    call_args = edge.get("args", [])
-                    propagate_taint_upward(llm_summary, caller_sum, call_args)
+                for edge in (call_edges or []):
+                    callee_name = edge.get("callee", "")
+                    if callee_name != outcome.function:
+                        continue
+                    caller_key = f"{edge['caller_file']}:{edge['caller']}"
+                    caller_sum = taint_summary_results.get(caller_key)
+                    if caller_sum:
+                        call_args = edge.get("args", [])
+                        propagate_taint_upward(llm_summary, caller_sum, call_args)
 
     _tally_outcome(result, outcome)
 

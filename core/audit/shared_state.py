@@ -140,6 +140,7 @@ class SharedState:
     # Callee taint summaries; new entries are added after each function
     # review so that callers later in the topological order can use them.
     taint_summary_results: dict[str, Any] = field(default_factory=dict)
+    _taint_lock: threading.Lock = field(default_factory=threading.Lock)
 
     # Running list of per-review observations used to build session context
     # for subsequent reviews.
