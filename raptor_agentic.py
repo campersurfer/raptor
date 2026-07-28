@@ -2155,8 +2155,8 @@ Examples:
                     out_dir / ".semgrep_timeout",
                     {"timed_out_at_seconds": 1800, "stage": "semgrep"},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("failed to write semgrep timeout marker: %s", e)
             if not run_codeql:
                 sys.exit(1)
 
@@ -2330,8 +2330,8 @@ Examples:
                     if line.startswith("{"):
                         try:
                             sca_metrics = _json.loads(line)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("failed to parse SCA metrics from %s: %s", sca_out, e)
                         break
                 sca_findings_count = sca_metrics.get("vuln_findings", 0) + \
                                      sca_metrics.get("supply_chain_findings", 0)
@@ -3489,7 +3489,7 @@ Examples:
         if diagrams_path.stat().st_size > 200:
             print(f"   Diagrams: {diagrams_path}")
     except Exception:
-        pass
+        logger.debug("diagram rendering failed", exc_info=True)
 
     # Mark run as completed
     try:
