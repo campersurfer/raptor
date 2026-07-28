@@ -88,6 +88,26 @@ class Collector:
             entry["batch"] = True
         self._log_entries.append(entry)
 
+        # ── SAGE: store hypothesis verdict ───────────────────────────────
+        src_hash = gap.get("_sage_source_hash", "")
+        if src_hash and outcome.status != "error" and outcome.hypothesis:
+            try:
+                from core.sage.hooks import store_audit_hypothesis_verdict
+                store_audit_hypothesis_verdict(
+                    repo_path=str(self.target_path),
+                    file_path=outcome.file,
+                    function=outcome.function,
+                    hypothesis=outcome.hypothesis,
+                    status=outcome.status,
+                    evidence_tool=outcome.evidence_tool or "",
+                    source_hash=src_hash,
+                )
+            except Exception:
+                logger.debug(
+                    "SAGE hypothesis store failed for %s:%s",
+                    outcome.file, outcome.function, exc_info=True,
+                )
+
     def _append_journal_entry(
         self,
         outcome: Any,

@@ -783,6 +783,187 @@ def should_replay_rule(meta: Dict[str, Any]) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Audit — hypothesis verdict recall + observation transfer
+# ─────────────────────────────────────────────────────────────────────────────
+
+_AUDIT_DOMAIN = "raptor-audit"
+
+_AUDIT_SKIP_STATUSES = frozenset({"clean", "dormant"})
+
+
+def _audit_domain(repo_path: str) -> str:
+    return f"{_AUDIT_DOMAIN}-{_repo_key(repo_path)}"
+
+
+def store_audit_hypothesis_verdict(
+    repo_path: str,
+    file_path: str,
+    function: str,
+    hypothesis: str,
+    status: str,
+    evidence_tool: str,
+    source_hash: str,
+) -> bool:
+    """Store an audit hypothesis verdict to SAGE.
+
+    Keyed on file + function + hypothesis hash + source hash so the
+    same hypothesis on unchanged source is recalled and skipped on
+    re-audit.
+    """
+    if not source_hash or not hypothesis:
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        hyp_hash = sha256_string(hypothesis)[:16]
+        _s = _sanitise_delim
+        confidence = 0.90 if evidence_tool else 0.75
+        return _propose_redacted(
+            client=client,
+            content=(
+                f"Audit hypothesis verdict: "
+                f"||file={_s(file_path)}|| ||fn={_s(function)}|| "
+                f"||hyp={_s(hyp_hash)}|| ||src={_s(source_hash)}|| "
+                f"||status={_s(status)}|| ||tool={_s(evidence_tool)}|| "
+                f"hypothesis: {hypothesis[:300]}"
+            ),
+            memory_type="fact",
+            domain_tag=_audit_domain(repo_path),
+            confidence=confidence,
+            tags=["audit", "hypothesis", status],
+        )
+    except Exception as e:
+        logger.debug("SAGE audit hypothesis store failed: %s", e)
+        return False
+
+
+def recall_audit_hypothesis_verdict(
+    repo_path: str,
+    file_path: str,
+    function: str,
+    hypothesis: str = "",
+    source_hash: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Recall a prior audit hypothesis verdict from SAGE.
+
+    Returns ``{status, tool, source_hash}`` if a prior verdict exists
+    with matching source hash.  Returns ``None`` otherwise.
+    Only ``clean`` and ``dormant`` verdicts trigger skip on recall —
+    findings and suspicious results are always re-tested.
+
+    When *hypothesis* is empty the query matches by file+function only
+    and skips the hypothesis-hash check — used for pre-review skip
+    where the LLM hypothesis is not yet known.
+    """
+    if not source_hash:
+        return None
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        hyp_hash = sha256_string(hypothesis)[:16] if hypothesis else ""
+        _sage_metrics["recall_attempted"] += 1
+        query_text = (
+            f"Audit hypothesis verdict: "
+            f"file={file_path} fn={function}"
+        )
+        if hyp_hash:
+            query_text += f" hyp={hyp_hash}"
+        results = client.query(
+            text=query_text,
+            domain_tag=_audit_domain(repo_path),
+            top_k=3,
+            min_confidence=0.7,
+        )
+        for row in results:
+            content = str(row.get("content") or "")
+            if f"||src={source_hash}||" not in content:
+                continue
+            if hyp_hash and f"||hyp={hyp_hash}||" not in content:
+                continue
+            for s in _AUDIT_SKIP_STATUSES:
+                if f"||status={s}||" in content:
+                    tool = ""
+                    tool_match = re.search(r"\|\|tool=([^|]*)\|\|", content)
+                    if tool_match:
+                        tool = tool_match.group(1)
+                    _sage_metrics["recall_hits"] += 1
+                    return {
+                        "status": s,
+                        "tool": tool,
+                        "source_hash": source_hash,
+                    }
+        return None
+    except Exception as e:
+        logger.debug("SAGE audit hypothesis recall failed: %s", e)
+        return None
+
+
+def store_audit_observation(
+    repo_path: str,
+    observation: str,
+    kind: str,
+    source_function: str,
+) -> bool:
+    """Store a tool-confirmed audit observation to SAGE for cross-target transfer.
+
+    Only stores ``tool_confirmation`` and ``tool_refutation`` kinds —
+    these are mechanical verdicts, not LLM opinions.
+    """
+    if kind not in ("tool_confirmation", "tool_refutation"):
+        return False
+    if not observation or len(observation) < 20:
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        return _propose_redacted(
+            client=client,
+            content=(
+                f"Audit observation ({kind}): {observation}\n"
+                f"  Source: {source_function}"
+            ),
+            memory_type="observation",
+            domain_tag="raptor-methodology",
+            confidence=0.85 if kind == "tool_confirmation" else 0.75,
+            tags=["audit", "observation", kind],
+        )
+    except Exception as e:
+        logger.debug("SAGE audit observation store failed: %s", e)
+        return False
+
+
+def recall_audit_observations(
+    subject: str,
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Recall prior audit observations from the methodology domain.
+
+    Returns tool-confirmed patterns and refutations relevant to a
+    subject (e.g. "unchecked return value", "integer overflow").
+    """
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        _sage_metrics["recall_attempted"] += 1
+        results = client.query(
+            text=f"Audit observation: {subject}",
+            domain_tag="raptor-methodology",
+            top_k=top_k,
+            min_confidence=0.7,
+        )
+        out = [r for r in results if "Audit observation" in str(r.get("content", ""))]
+        _sage_metrics["recall_hits"] += len(out)
+        return out
+    except Exception as e:
+        logger.debug("SAGE audit observation recall failed: %s", e)
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SCA (Software Composition Analysis) — mechanical short-circuit
 # ─────────────────────────────────────────────────────────────────────────────
 

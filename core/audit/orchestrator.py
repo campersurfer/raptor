@@ -126,6 +126,9 @@ logger = logging.getLogger(__name__)
 _shutdown_event = _threading.Event()
 
 
+_active_target_path: Optional[Path] = None
+
+
 def is_shutdown_requested() -> bool:
     return _shutdown_event.is_set()
 
@@ -435,6 +438,61 @@ def review_one_function(
         if on_progress:
             on_progress(review_idx, total, outcome)
         return outcome
+
+    # ── SAGE: pre-compute source hash for hypothesis recall/store ────
+    try:
+        from core.sage.hooks import compute_finding_source_hash
+        line_start = gap.get("line_start", 0)
+        if line_start:
+            src_hash = compute_finding_source_hash(
+                config.target_path / gap["file"], line_start,
+            )
+            if src_hash:
+                gap["_sage_source_hash"] = src_hash
+    except Exception:
+        pass
+
+    # ── SAGE: recall prior hypothesis verdict → skip if clean/dormant ─
+    if not config.force and gap.get("_sage_source_hash"):
+        try:
+            from core.sage.hooks import recall_audit_hypothesis_verdict
+            prior = recall_audit_hypothesis_verdict(
+                repo_path=str(config.target_path),
+                file_path=gap["file"],
+                function=gap["name"],
+                source_hash=gap["_sage_source_hash"],
+            )
+        except Exception:
+            prior = None
+        if prior and prior.get("status") in ("clean", "dormant"):
+            prior_status = prior["status"]
+            prior_tool = prior.get("tool", "")
+            outcome = ReviewOutcome(
+                file=gap["file"],
+                function=gap["name"],
+                status=prior_status,
+                body=(
+                    f"[SAGE recall: prior {prior_status} verdict with "
+                    f"matching source hash] Skipped LLM review."
+                ),
+                evidence_tool=f"sage:recall:{prior_tool}" if prior_tool else "sage:recall",
+            )
+            outcome.line = gap.get("line_start", 0)
+            result.prefilter_skipped += 1
+            try:
+                if collector is not None:
+                    collector.submit(outcome, gap)
+                else:
+                    _commit_outcome(config, outcome, gap)
+            except Exception as exc:
+                logger.warning(
+                    "commit failed for %s:%s: %s",
+                    gap["file"], gap["name"], exc,
+                )
+            _tally_outcome(result, outcome)
+            if on_progress:
+                on_progress(review_idx, total, outcome)
+            return outcome
 
     # ── Build context ─────────────────────────────────────────────────
     ctx = _build_context(
@@ -1002,6 +1060,28 @@ def review_one_function(
                         seed_function=outcome.function,
                         source="audit",
                     )
+                    try:
+                        import hashlib
+                        from core.sage.hooks import store_proven_rule_metadata
+                        store_proven_rule_metadata(
+                            engine=synth.tool,
+                            cwe=synth.cwe or "",
+                            rule_id=synth.rule_id,
+                            rule_body_hash=hashlib.sha256(
+                                (synth.content or synth.rule_id).encode(),
+                            ).hexdigest()[:16],
+                            rule_path=synth.rule_id,
+                            tp_count=len(synth.hits),
+                            fp_count=0,
+                            total_matches=len(synth.hits),
+                            dual_control_passed=False,
+                            targets_tested=1,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SAGE rule store failed for %s",
+                            synth.rule_id, exc_info=True,
+                        )
                 logger.info(
                     "mid-loop synthesis: %d new targets from %s:%s",
                     len(synth.hits), outcome.file, outcome.function,
@@ -1110,6 +1190,9 @@ def _run_audit_body(
     joern_timeout_s,
 ):
     """Inner orchestrator body, always wrapped in try/finally for server cleanup."""
+    global _active_target_path
+    _active_target_path = config.target_path
+
     if joern_server is not None:
         from core.analysis.reach_audit import set_joern_server
         set_joern_server(joern_server)
@@ -3043,6 +3126,26 @@ def _commit_outcome(
         entry["batch"] = True
     append_audit_log(config.out_dir, entry)
 
+    # ── SAGE: store hypothesis verdict ───────────────────────────────
+    src_hash = gap.get("_sage_source_hash", "")
+    if src_hash and outcome.status != "error" and outcome.hypothesis:
+        try:
+            from core.sage.hooks import store_audit_hypothesis_verdict
+            store_audit_hypothesis_verdict(
+                repo_path=str(config.target_path),
+                file_path=outcome.file,
+                function=outcome.function,
+                hypothesis=outcome.hypothesis,
+                status=outcome.status,
+                evidence_tool=outcome.evidence_tool or "",
+                source_hash=src_hash,
+            )
+        except Exception:
+            logger.debug(
+                "SAGE hypothesis store failed for %s:%s",
+                outcome.file, outcome.function, exc_info=True,
+            )
+
 
 _LLM_ONLY_EVIDENCE = frozenset({
     "manual", "manual code review", "manual review", "code review",
@@ -3464,6 +3567,20 @@ def _tally_outcome(
                 )
 
 
+def _sage_store_observation(text: str, kind: str, source: str) -> None:
+    """Best-effort store of a tool-confirmed observation to SAGE."""
+    try:
+        from core.sage.hooks import store_audit_observation
+        store_audit_observation(
+            repo_path=str(_active_target_path or ""),
+            observation=text,
+            kind=kind,
+            source_function=source,
+        )
+    except Exception:
+        pass
+
+
 def _accumulate_observations(
     session_observations: List[Dict[str, str]],
     outcome: ReviewOutcome,
@@ -3474,29 +3591,35 @@ def _accumulate_observations(
     """Extract LLM observations and add to session context.
 
     Also injects tool confirmation/refutation observations when
-    sweep validation changed the outcome status.
+    sweep validation changed the outcome status. Tool-confirmed and
+    tool-refuted observations are also stored to SAGE for cross-target
+    transfer via the methodology domain.
     """
     source = f"{gap['file']}:{gap['name']}"
 
     if sweep_pre_status is not None:
         if outcome.status == "finding" and _is_tool_confirmed(outcome.evidence_tool or ""):
+            obs_text = (
+                f"[tool-confirmed] {outcome.evidence_tool} confirmed: "
+                f"{outcome.hypothesis}"
+            )
             session_observations.append({
                 "source": source,
-                "text": (
-                    f"[tool-confirmed] {outcome.evidence_tool} confirmed: "
-                    f"{outcome.hypothesis}"
-                ),
+                "text": obs_text,
                 "kind": "tool_confirmation",
             })
+            _sage_store_observation(obs_text, "tool_confirmation", source)
         elif sweep_pre_status == "finding" and outcome.status == "suspicious":
+            obs_text = (
+                f"[tool-refuted] hypothesis '{outcome.hypothesis}' "
+                f"was not confirmed by any mechanical tool — demoted"
+            )
             session_observations.append({
                 "source": source,
-                "text": (
-                    f"[tool-refuted] hypothesis '{outcome.hypothesis}' "
-                    f"was not confirmed by any mechanical tool — demoted"
-                ),
+                "text": obs_text,
                 "kind": "tool_refutation",
             })
+            _sage_store_observation(obs_text, "tool_refutation", source)
 
     raw = (outcome.review_result or {}).get("observations")
     if not raw or not isinstance(raw, list):

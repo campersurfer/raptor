@@ -1097,5 +1097,416 @@ class TestApplyRelevanceGate(unittest.TestCase):
         self.assertGreater(scored[0]["relevance_score"], 0.3)
 
 
+class TestAuditHypothesisVerdict(unittest.TestCase):
+    """Tests for store/recall audit hypothesis verdicts."""
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_store_returns_false_when_unavailable(self, _):
+        from core.sage.hooks import store_audit_hypothesis_verdict
+        self.assertFalse(store_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="ipc/msg.c", function="do_msgsnd",
+            hypothesis="unchecked copy_from_user return",
+            status="clean", evidence_tool="semgrep", source_hash="abc123",
+        ))
+
+    def test_store_rejects_empty_hash(self):
+        from core.sage.hooks import store_audit_hypothesis_verdict
+        self.assertFalse(store_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="ipc/msg.c", function="do_msgsnd",
+            hypothesis="test", status="clean", evidence_tool="",
+            source_hash="",
+        ))
+
+    def test_store_rejects_empty_hypothesis(self):
+        from core.sage.hooks import store_audit_hypothesis_verdict
+        self.assertFalse(store_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="ipc/msg.c", function="do_msgsnd",
+            hypothesis="", status="clean", evidence_tool="",
+            source_hash="abc123",
+        ))
+
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_store_succeeds(self, mock_gc, mock_pr):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_audit_hypothesis_verdict
+        ok = store_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="ipc/msg.c", function="do_msgsnd",
+            hypothesis="unchecked copy_from_user return",
+            status="finding", evidence_tool="semgrep",
+            source_hash="abc123def456",
+        )
+        self.assertTrue(ok)
+        content = mock_pr.call_args[1]["content"]
+        self.assertIn("||src=abc123def456||", content)
+        self.assertIn("||status=finding||", content)
+        self.assertIn("||tool=semgrep||", content)
+        self.assertIn("unchecked copy_from_user", content)
+
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_tool_confirmed_gets_high_confidence(self, mock_gc, mock_pr):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_audit_hypothesis_verdict
+        store_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            hypothesis="test", status="clean", evidence_tool="semgrep",
+            source_hash="h",
+        )
+        self.assertEqual(mock_pr.call_args[1]["confidence"], 0.90)
+
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_no_tool_gets_lower_confidence(self, mock_gc, mock_pr):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_audit_hypothesis_verdict
+        store_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            hypothesis="test", status="suspicious", evidence_tool="",
+            source_hash="h",
+        )
+        self.assertEqual(mock_pr.call_args[1]["confidence"], 0.75)
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_recall_returns_none_when_unavailable(self, _):
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        self.assertIsNone(recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            hypothesis="test", source_hash="h",
+        ))
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_matches_clean_verdict(self, mock_gc):
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        from core.hash import sha256_string
+        hyp = "unchecked return value"
+        hyp_hash = sha256_string(hyp)[:16]
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{
+            "content": (
+                f"Audit hypothesis verdict: "
+                f"||file=ipc/msg.c|| ||fn=do_msgsnd|| "
+                f"||hyp={hyp_hash}|| ||src=abc123|| "
+                f"||status=clean|| ||tool=semgrep||"
+            ),
+            "confidence": 0.90,
+        }]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="ipc/msg.c", function="do_msgsnd",
+            hypothesis=hyp, source_hash="abc123",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(result["tool"], "semgrep")
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_finding_verdict(self, mock_gc):
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        from core.hash import sha256_string
+        hyp = "test hypothesis"
+        hyp_hash = sha256_string(hyp)[:16]
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{
+            "content": (
+                f"Audit hypothesis verdict: "
+                f"||hyp={hyp_hash}|| ||src=abc123|| "
+                f"||status=finding|| ||tool=semgrep||"
+            ),
+            "confidence": 0.90,
+        }]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            hypothesis=hyp, source_hash="abc123",
+        )
+        self.assertIsNone(result)
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_stale_hash(self, mock_gc):
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        from core.hash import sha256_string
+        hyp = "test"
+        hyp_hash = sha256_string(hyp)[:16]
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{
+            "content": (
+                f"Audit hypothesis verdict: "
+                f"||hyp={hyp_hash}|| ||src=old_hash|| "
+                f"||status=clean|| ||tool=semgrep||"
+            ),
+            "confidence": 0.90,
+        }]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            hypothesis=hyp, source_hash="new_hash",
+        )
+        self.assertIsNone(result)
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_matches_dormant_verdict(self, mock_gc):
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        from core.hash import sha256_string
+        hyp = "dead code path"
+        hyp_hash = sha256_string(hyp)[:16]
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{
+            "content": (
+                f"Audit hypothesis verdict: "
+                f"||hyp={hyp_hash}|| ||src=h1|| "
+                f"||status=dormant|| ||tool=||"
+            ),
+            "confidence": 0.85,
+        }]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            hypothesis=hyp, source_hash="h1",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "dormant")
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_without_hypothesis_matches(self, mock_gc):
+        """Pre-review recall (no hypothesis) matches on src hash alone."""
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{
+            "content": (
+                "Audit hypothesis verdict: "
+                "||file=f.c|| ||fn=fn|| "
+                "||hyp=abcd1234|| ||src=h1|| "
+                "||status=clean|| ||tool=semgrep:test||"
+            ),
+            "confidence": 0.90,
+        }]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            source_hash="h1",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "clean")
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_without_hypothesis_rejects_stale(self, mock_gc):
+        """Pre-review recall (no hypothesis) rejects stale hash."""
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{
+            "content": (
+                "Audit hypothesis verdict: "
+                "||hyp=abcd|| ||src=old|| "
+                "||status=clean|| ||tool=||"
+            ),
+            "confidence": 0.90,
+        }]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            source_hash="new",
+        )
+        self.assertIsNone(result)
+
+
+class TestAuditObservation(unittest.TestCase):
+    """Tests for store/recall audit observations."""
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_store_returns_false_when_unavailable(self, _):
+        from core.sage.hooks import store_audit_observation
+        self.assertFalse(store_audit_observation(
+            repo_path="/repo",
+            observation="semgrep confirmed unchecked return",
+            kind="tool_confirmation",
+            source_function="ipc/msg.c:do_msgsnd",
+        ))
+
+    def test_store_rejects_llm_observation(self):
+        from core.sage.hooks import store_audit_observation
+        self.assertFalse(store_audit_observation(
+            repo_path="/repo",
+            observation="this looks suspicious because of the pattern",
+            kind="llm_observation",
+            source_function="f.c:fn",
+        ))
+
+    def test_store_rejects_short_text(self):
+        from core.sage.hooks import store_audit_observation
+        self.assertFalse(store_audit_observation(
+            repo_path="/repo", observation="short",
+            kind="tool_confirmation", source_function="f.c:fn",
+        ))
+
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_store_confirmation(self, mock_gc, mock_pr):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_audit_observation
+        ok = store_audit_observation(
+            repo_path="/repo",
+            observation="[tool-confirmed] semgrep confirmed: unchecked copy_from_user return",
+            kind="tool_confirmation",
+            source_function="ipc/msg.c:do_msgsnd",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(mock_pr.call_args[1]["domain_tag"], "raptor-methodology")
+        self.assertEqual(mock_pr.call_args[1]["confidence"], 0.85)
+
+    @patch("core.sage.hooks._propose_redacted", return_value=True)
+    @patch("core.sage.hooks._get_client")
+    def test_store_refutation(self, mock_gc, mock_pr):
+        mock_gc.return_value = MagicMock()
+        from core.sage.hooks import store_audit_observation
+        ok = store_audit_observation(
+            repo_path="/repo",
+            observation="[tool-refuted] hypothesis 'buffer overflow' was not confirmed",
+            kind="tool_refutation",
+            source_function="f.c:fn",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(mock_pr.call_args[1]["confidence"], 0.75)
+
+    @patch("core.sage.hooks._get_client", return_value=None)
+    def test_recall_returns_empty_when_unavailable(self, _):
+        from core.sage.hooks import recall_audit_observations
+        self.assertEqual(recall_audit_observations("unchecked return"), [])
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_filters_to_audit_observations(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"content": "Audit observation (tool_confirmation): semgrep confirmed X",
+             "confidence": 0.85},
+            {"content": "Unrelated SAGE memory about something else",
+             "confidence": 0.80},
+        ]
+        mock_gc.return_value = mock_client
+        from core.sage.hooks import recall_audit_observations
+        results = recall_audit_observations("unchecked return")
+        self.assertEqual(len(results), 1)
+        self.assertIn("Audit observation", results[0]["content"])
+
+
+class TestAuditSageIntegration(unittest.TestCase):
+    """Combined tests: store then recall in the same flow."""
+
+    @patch("core.sage.hooks._get_client")
+    def test_roundtrip_hypothesis_clean(self, mock_gc):
+        """Store clean verdict, recall it with same hash — should match."""
+        from core.sage.hooks import (
+            store_audit_hypothesis_verdict,
+            recall_audit_hypothesis_verdict,
+        )
+        from core.hash import sha256_string
+
+        stored_content = {}
+
+        def fake_propose(**kwargs):
+            stored_content["content"] = kwargs["content"]
+            return True
+
+        hyp = "return value not checked after ioctl"
+        hyp_hash = sha256_string(hyp)[:16]
+
+        mock_client = MagicMock()
+        mock_gc.return_value = mock_client
+
+        with patch("core.sage.hooks._propose_redacted", side_effect=fake_propose):
+            store_audit_hypothesis_verdict(
+                repo_path="/repo", file_path="drivers/net/foo.c",
+                function="foo_ioctl", hypothesis=hyp,
+                status="clean", evidence_tool="semgrep",
+                source_hash="hashA",
+            )
+
+        self.assertIn("||status=clean||", stored_content["content"])
+        self.assertIn(f"||hyp={hyp_hash}||", stored_content["content"])
+
+        mock_client.query.return_value = [{
+            "content": stored_content["content"],
+            "confidence": 0.90,
+        }]
+
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="drivers/net/foo.c",
+            function="foo_ioctl", hypothesis=hyp,
+            source_hash="hashA",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "clean")
+
+    @patch("core.sage.hooks._get_client")
+    def test_roundtrip_hypothesis_stale_after_edit(self, mock_gc):
+        """Store clean verdict, recall with different hash — should not match."""
+        from core.sage.hooks import (
+            store_audit_hypothesis_verdict,
+            recall_audit_hypothesis_verdict,
+        )
+        stored_content = {}
+
+        def fake_propose(**kwargs):
+            stored_content["content"] = kwargs["content"]
+            return True
+
+        hyp = "integer overflow in size calculation"
+        mock_client = MagicMock()
+        mock_gc.return_value = mock_client
+
+        with patch("core.sage.hooks._propose_redacted", side_effect=fake_propose):
+            store_audit_hypothesis_verdict(
+                repo_path="/repo", file_path="mm/slab.c",
+                function="kmalloc", hypothesis=hyp,
+                status="clean", evidence_tool="smt",
+                source_hash="original_hash",
+            )
+
+        mock_client.query.return_value = [{
+            "content": stored_content["content"],
+            "confidence": 0.90,
+        }]
+
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="mm/slab.c",
+            function="kmalloc", hypothesis=hyp,
+            source_hash="edited_hash",
+        )
+        self.assertIsNone(result)
+
+    @patch("core.sage.hooks._get_client")
+    def test_observation_and_hypothesis_different_domains(self, mock_gc):
+        """Observations go to methodology, hypotheses to audit-{key}."""
+        from core.sage.hooks import (
+            store_audit_hypothesis_verdict,
+            store_audit_observation,
+        )
+
+        domains_seen = []
+
+        def capture_propose(**kwargs):
+            domains_seen.append(kwargs["domain_tag"])
+            return True
+
+        mock_gc.return_value = MagicMock()
+
+        with patch("core.sage.hooks._propose_redacted", side_effect=capture_propose):
+            store_audit_hypothesis_verdict(
+                repo_path="/repo", file_path="f.c", function="fn",
+                hypothesis="test hyp", status="clean",
+                evidence_tool="", source_hash="h",
+            )
+            store_audit_observation(
+                repo_path="/repo",
+                observation="[tool-confirmed] semgrep confirmed: unchecked return value pattern",
+                kind="tool_confirmation",
+                source_function="f.c:fn",
+            )
+
+        self.assertEqual(len(domains_seen), 2)
+        self.assertTrue(domains_seen[0].startswith("raptor-audit-"))
+        self.assertEqual(domains_seen[1], "raptor-methodology")
+
+
 if __name__ == "__main__":
     unittest.main()

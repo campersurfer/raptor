@@ -2911,3 +2911,681 @@ class TestEnrichSummariesFromJoern:
             taint_summary,
         )
         assert taint_summary == {}
+
+
+# ------------------------------------------------------------------
+# SAGE audit pathway tests
+# ------------------------------------------------------------------
+
+class TestSageHypothesisPathway:
+    """Test the SAGE hypothesis verdict store/recall pathway through _commit_outcome."""
+
+    def test_commit_outcome_calls_sage_store(self, tmp_path: Path):
+        """_commit_outcome stores hypothesis verdict when source hash present."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _commit_outcome
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+        )
+
+        outcome = ReviewOutcome(
+            file="src/auth.c", function="check_pw",
+            status="clean", body="no issues",
+            hypothesis="strcpy overflow from user input",
+            evidence_tool="semgrep:unbounded-strcpy",
+        )
+        gap = {
+            "file": "src/auth.c", "name": "check_pw",
+            "line_start": 1, "line_end": 3,
+            "_sage_source_hash": "abcdef123456",
+        }
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock_store:
+            mock_store.return_value = True
+            _commit_outcome(config, outcome, gap)
+
+            mock_store.assert_called_once()
+            kw = mock_store.call_args
+            assert kw[1]["file_path"] == "src/auth.c"
+            assert kw[1]["function"] == "check_pw"
+            assert kw[1]["hypothesis"] == "strcpy overflow from user input"
+            assert kw[1]["status"] == "clean"
+            assert kw[1]["evidence_tool"] == "semgrep:unbounded-strcpy"
+            assert kw[1]["source_hash"] == "abcdef123456"
+
+    def test_commit_outcome_skips_without_source_hash(self, tmp_path: Path):
+        """_commit_outcome does NOT call sage store when no source hash."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _commit_outcome
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+        )
+
+        outcome = ReviewOutcome(
+            file="src/auth.c", function="check_pw",
+            status="clean", body="no issues",
+            hypothesis="test hyp",
+        )
+        gap = {"file": "src/auth.c", "name": "check_pw", "line_start": 1}
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock_store:
+            _commit_outcome(config, outcome, gap)
+            mock_store.assert_not_called()
+
+    def test_commit_outcome_skips_error_status(self, tmp_path: Path):
+        """_commit_outcome does NOT store verdicts for error outcomes."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _commit_outcome
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+        )
+
+        outcome = ReviewOutcome(
+            file="src/auth.c", function="check_pw",
+            status="error", body="failed to review",
+            hypothesis="test hyp",
+        )
+        gap = {
+            "file": "src/auth.c", "name": "check_pw",
+            "line_start": 1, "_sage_source_hash": "h123",
+        }
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock_store:
+            _commit_outcome(config, outcome, gap)
+            mock_store.assert_not_called()
+
+    def test_commit_outcome_skips_empty_hypothesis(self, tmp_path: Path):
+        """_commit_outcome does NOT store when hypothesis is empty."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _commit_outcome
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+        )
+
+        outcome = ReviewOutcome(
+            file="src/auth.c", function="check_pw",
+            status="clean", body="ok", hypothesis="",
+        )
+        gap = {
+            "file": "src/auth.c", "name": "check_pw",
+            "line_start": 1, "_sage_source_hash": "h123",
+        }
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock_store:
+            _commit_outcome(config, outcome, gap)
+            mock_store.assert_not_called()
+
+    def test_source_hash_precompute_via_orchestrator(self, tmp_path: Path):
+        """run_orchestrator pre-computes _sage_source_hash on gaps with line_start."""
+        from unittest.mock import patch as _patch
+
+        hash_calls: list = []
+
+        orig_hash = None
+
+        def track_hash(file_path, line, window=10):
+            h = orig_hash(file_path, line, window)
+            hash_calls.append({"file": str(file_path), "line": line, "hash": h})
+            return h
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="clean", body="ok",
+                hypothesis="test hypothesis",
+                evidence_tool="semgrep:test",
+            )
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        from core.sage.hooks import compute_finding_source_hash
+        orig_hash = compute_finding_source_hash
+
+        with _patch("core.sage.hooks.compute_finding_source_hash", side_effect=track_hash):
+            run_orchestrator(config, review_fn)
+
+        assert len(hash_calls) >= 1, "Source hash should be computed for functions with line_start"
+        assert all(h["hash"] for h in hash_calls), "All hashes should be non-empty"
+
+
+class TestSageObservationPathway:
+    """Test the SAGE observation store pathway through _accumulate_observations."""
+
+    def test_tool_confirmation_stores_to_sage(self):
+        """_accumulate_observations stores tool confirmations to SAGE."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _accumulate_observations
+
+        obs_list: list = []
+        outcome = ReviewOutcome(
+            file="a.c", function="vuln", status="finding",
+            body="buffer overflow",
+            hypothesis="strcpy overflow via attacker input",
+            evidence_tool="semgrep:unbounded-strcpy",
+            review_result={"status": "finding", "body": "bof"},
+        )
+        gap = {"file": "a.c", "name": "vuln"}
+
+        with _patch("core.audit.orchestrator._sage_store_observation") as mock_store:
+            _accumulate_observations(
+                obs_list, outcome, gap, sweep_pre_status="finding",
+            )
+            mock_store.assert_called_once()
+            args = mock_store.call_args[0]
+            assert "[tool-confirmed]" in args[0]
+            assert args[1] == "tool_confirmation"
+            assert args[2] == "a.c:vuln"
+
+    def test_tool_refutation_stores_to_sage(self):
+        """_accumulate_observations stores tool refutations to SAGE."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _accumulate_observations
+
+        obs_list: list = []
+        outcome = ReviewOutcome(
+            file="a.c", function="vuln", status="suspicious",
+            body="maybe bof", hypothesis="strcpy overflow",
+            review_result={"status": "suspicious", "body": "maybe"},
+        )
+        gap = {"file": "a.c", "name": "vuln"}
+
+        with _patch("core.audit.orchestrator._sage_store_observation") as mock_store:
+            _accumulate_observations(
+                obs_list, outcome, gap, sweep_pre_status="finding",
+            )
+            mock_store.assert_called_once()
+            args = mock_store.call_args[0]
+            assert args[1] == "tool_refutation"
+
+    def test_llm_observation_not_stored_to_sage(self):
+        """_accumulate_observations does NOT store plain LLM observations to SAGE."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _accumulate_observations
+
+        obs_list: list = []
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="clean", body="ok",
+            review_result={
+                "status": "clean", "body": "ok",
+                "observations": ["This function owns its buffer throughout"],
+            },
+        )
+        gap = {"file": "a.c", "name": "f"}
+
+        with _patch("core.audit.orchestrator._sage_store_observation") as mock_store:
+            _accumulate_observations(obs_list, outcome, gap)
+            mock_store.assert_not_called()
+
+    def test_sage_store_observation_delegates_to_hook(self):
+        """_sage_store_observation calls store_audit_observation with correct args."""
+        from unittest.mock import patch as _patch
+
+        import core.audit.orchestrator as _omod
+        _omod._active_target_path = Path("/data/kernel")
+
+        with _patch("core.sage.hooks.store_audit_observation") as mock_hook:
+            mock_hook.return_value = True
+            _omod._sage_store_observation(
+                "semgrep confirmed: overflow in memcpy",
+                "tool_confirmation",
+                "net/tcp.c:tcp_recv",
+            )
+            mock_hook.assert_called_once_with(
+                repo_path="/data/kernel",
+                observation="semgrep confirmed: overflow in memcpy",
+                kind="tool_confirmation",
+                source_function="net/tcp.c:tcp_recv",
+            )
+
+        _omod._active_target_path = None
+
+    def test_sage_store_observation_silent_on_import_error(self):
+        """_sage_store_observation swallows ImportError when SAGE unavailable."""
+        from unittest.mock import patch as _patch
+
+        import core.audit.orchestrator as _omod
+
+        with _patch("core.sage.hooks.store_audit_observation", side_effect=ImportError):
+            _omod._sage_store_observation("test text long enough", "tool_confirmation", "f.c:fn")
+
+
+class TestSageCombinedPathway:
+    """Test the full SAGE pathway through the production Collector path.
+
+    The Collector's ``submit()`` method stores hypothesis verdicts to
+    SAGE (same logic as ``_commit_outcome``).  These tests run the
+    real pipeline with the collector active.
+    """
+
+    def test_full_pipeline_stores_verdict(self, tmp_path: Path):
+        """run_orchestrator → Collector.submit → SAGE hypothesis store."""
+        from unittest.mock import patch as _patch
+
+        stored_calls: list = []
+
+        def capture_store(**kwargs):
+            stored_calls.append(kwargs)
+            return True
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="clean", body="no issues found",
+                hypothesis="unchecked return from strcmp",
+                evidence_tool="semgrep:return-check",
+            )
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict", side_effect=capture_store):
+            run_orchestrator(config, review_fn)
+
+        assert len(stored_calls) >= 1
+        call = stored_calls[0]
+        assert call["file_path"] in ("src/auth.c",)
+        assert call["function"] in ("check_pw", "validate")
+        assert call["hypothesis"] == "unchecked return from strcmp"
+        assert call["status"] == "clean"
+        assert call["source_hash"], "Source hash must be non-empty"
+
+    def test_full_pipeline_finding_and_observation(self, tmp_path: Path):
+        """Tool-confirmed finding stores both hypothesis verdict AND observation."""
+        from unittest.mock import patch as _patch
+
+        hypothesis_calls: list = []
+        observation_calls: list = []
+
+        def capture_hyp(**kwargs):
+            hypothesis_calls.append(kwargs)
+            return True
+
+        def capture_obs(**kwargs):
+            observation_calls.append(kwargs)
+            return True
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="finding", body="buffer overflow",
+                hypothesis="strcpy overflow via user input",
+                evidence_tool="semgrep:unbounded-strcpy",
+                review_result={"status": "finding", "body": "bof"},
+            )
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict", side_effect=capture_hyp):
+            with _patch("core.sage.hooks.store_audit_observation", side_effect=capture_obs):
+                run_orchestrator(config, review_fn)
+
+        assert len(hypothesis_calls) >= 1
+        # Gate enforcement may demote to suspicious, but hypothesis
+        # still gets stored with whatever status the commit path sees.
+        assert hypothesis_calls[0]["status"] in ("finding", "suspicious")
+
+        # The pipeline may trigger a mechanical sweep that fires
+        # tool_confirmation observations — verify the observation content
+        # when it fires.
+        tool_obs = [o for o in observation_calls if o.get("kind") == "tool_confirmation"]
+        for obs in tool_obs:
+            assert "semgrep" in obs["observation"]
+            assert obs["kind"] == "tool_confirmation"
+
+
+def _setup_synth_target(tmp_path: Path):
+    """Target with 3 functions — the third is a synthesis hit target."""
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "src").mkdir()
+    (target / "src" / "auth.c").write_text(
+        "int check_pw(char *pw) {\n"
+        "  return strcmp(pw, stored);\n"
+        "}\n"
+        "\n"
+        "int validate(char *input) {\n"
+        "  return strlen(input) > 0;\n"
+        "}\n"
+    )
+    (target / "src" / "copy.c").write_text(
+        "void copy_input(char *dst, const char *src) {\n"
+        "  strcpy(dst, src);\n"
+        "}\n"
+    )
+
+    out = tmp_path / "out"
+    out.mkdir()
+
+    checklist = {
+        "files": [
+            {
+                "path": "src/auth.c",
+                "items": [
+                    {"name": "check_pw", "line_start": 1, "line_end": 3},
+                    {"name": "validate", "line_start": 5, "line_end": 7},
+                ],
+            },
+            {
+                "path": "src/copy.c",
+                "items": [
+                    {"name": "copy_input", "line_start": 1, "line_end": 3},
+                ],
+            },
+        ],
+    }
+    (out / "checklist.json").write_text(json.dumps(checklist))
+
+    context_map = {
+        "entry_points": [
+            {"file": "src/auth.c", "name": "check_pw"},
+            {"file": "src/auth.c", "name": "validate"},
+        ],
+        "sinks": [],
+        "trust_boundaries": [],
+        "unchecked_flows": [],
+    }
+    (out / "context-map.json").write_text(json.dumps(context_map))
+
+    return target, out
+
+
+class TestSageProvenRulePathway:
+    """Test site 5: store_proven_rule_metadata via mid-loop synthesis.
+
+    The path fires when a tool-confirmed finding triggers checker
+    synthesis that produces a rule with hits, and checker_library
+    accepts the rule.  Mock synthesize_and_sweep to return a
+    successful SynthesisResult so the proven-rule SAGE store fires
+    without needing a real LLM synthesis round.
+    """
+
+    def test_proven_rule_stored_on_successful_synthesis(self, tmp_path: Path):
+        """Mid-loop synthesis with hits triggers store_proven_rule_metadata."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.checker_synthesis import SynthesisResult
+
+        synth_result = SynthesisResult(
+            rule_id="semgrep:unbounded-strcpy-v1",
+            tool="semgrep",
+            content="rules:\n- id: unbounded-strcpy-v1\n  pattern: strcpy($DST, $SRC)",
+            cwe="CWE-120",
+            origin_file="src/auth.c",
+            origin_function="check_pw",
+            hits=[
+                {"file": "src/copy.c", "name": "copy_input", "line": 1},
+            ],
+        )
+
+        rule_store_calls: list = []
+
+        def capture_rule_store(**kwargs):
+            rule_store_calls.append(kwargs)
+            return True
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="finding", body="buffer overflow via strcpy",
+                hypothesis="strcpy overflow from user input",
+                evidence_tool="semgrep:unbounded-strcpy",
+                review_result={"status": "finding", "body": "bof", "cwe": "CWE-120"},
+            )
+
+        target, out = _setup_synth_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch(
+            "core.audit.checker_synthesis.synthesize_and_sweep",
+            return_value=synth_result,
+        ), _patch(
+            "core.sage.hooks.store_proven_rule_metadata",
+            side_effect=capture_rule_store,
+        ), _patch(
+            "core.sage.hooks.store_audit_hypothesis_verdict",
+            return_value=True,
+        ), _patch(
+            "core.sage.hooks.store_audit_observation",
+            return_value=True,
+        ):
+            run_orchestrator(config, review_fn)
+
+        assert len(rule_store_calls) >= 1, (
+            "store_proven_rule_metadata must be called when synthesis produces hits"
+        )
+        call = rule_store_calls[0]
+        assert call["engine"] == "semgrep"
+        assert call["cwe"] == "CWE-120"
+        assert call["rule_id"] == "semgrep:unbounded-strcpy-v1"
+        assert call["tp_count"] == 1
+        assert call["fp_count"] == 0
+        assert call["total_matches"] == 1
+        assert call["dual_control_passed"] is False
+        assert call["targets_tested"] == 1
+        assert len(call["rule_body_hash"]) == 16
+
+    def test_proven_rule_not_stored_without_hits(self, tmp_path: Path):
+        """Synthesis returning zero hits does NOT trigger rule store."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.checker_synthesis import SynthesisResult
+
+        synth_result = SynthesisResult(
+            rule_id="semgrep:test-rule",
+            tool="semgrep",
+            content="rules:\n- id: test-rule\n  pattern: test()",
+            cwe="CWE-120",
+            origin_file="src/auth.c",
+            origin_function="check_pw",
+            hits=[],
+        )
+
+        rule_store_calls: list = []
+
+        def capture_rule_store(**kwargs):
+            rule_store_calls.append(kwargs)
+            return True
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="finding", body="buffer overflow",
+                hypothesis="test hypothesis",
+                evidence_tool="semgrep:test",
+                review_result={"status": "finding", "body": "bof"},
+            )
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch(
+            "core.audit.checker_synthesis.synthesize_and_sweep",
+            return_value=synth_result,
+        ), _patch(
+            "core.sage.hooks.store_proven_rule_metadata",
+            side_effect=capture_rule_store,
+        ), _patch(
+            "core.sage.hooks.store_audit_hypothesis_verdict",
+            return_value=True,
+        ):
+            run_orchestrator(config, review_fn)
+
+        assert len(rule_store_calls) == 0, (
+            "store_proven_rule_metadata must NOT fire when synthesis has no hits"
+        )
+
+    def test_proven_rule_not_stored_without_rule_id(self, tmp_path: Path):
+        """Synthesis returning empty rule_id does NOT trigger rule store."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.checker_synthesis import SynthesisResult
+
+        synth_result = SynthesisResult(
+            rule_id="",
+            tool="semgrep",
+            content="",
+            cwe="CWE-120",
+            origin_file="src/auth.c",
+            origin_function="check_pw",
+            hits=[{"file": "src/copy.c", "name": "copy_input", "line": 1}],
+        )
+
+        rule_store_calls: list = []
+
+        def capture_rule_store(**kwargs):
+            rule_store_calls.append(kwargs)
+            return True
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="finding", body="buffer overflow",
+                hypothesis="test hyp",
+                evidence_tool="semgrep:test",
+                review_result={"status": "finding", "body": "bof"},
+            )
+
+        target, out = _setup_synth_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch(
+            "core.audit.checker_synthesis.synthesize_and_sweep",
+            return_value=synth_result,
+        ), _patch(
+            "core.sage.hooks.store_proven_rule_metadata",
+            side_effect=capture_rule_store,
+        ), _patch(
+            "core.sage.hooks.store_audit_hypothesis_verdict",
+            return_value=True,
+        ):
+            run_orchestrator(config, review_fn)
+
+        assert len(rule_store_calls) == 0, (
+            "store_proven_rule_metadata must NOT fire without a rule_id"
+        )
+
+    def test_proven_rule_swallows_sage_error(self, tmp_path: Path):
+        """SAGE error in store_proven_rule_metadata does not crash the pipeline."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.checker_synthesis import SynthesisResult
+
+        synth_result = SynthesisResult(
+            rule_id="semgrep:test-rule",
+            tool="semgrep",
+            content="rules:\n- id: test-rule\n  pattern: test()",
+            cwe="CWE-120",
+            origin_file="src/auth.c",
+            origin_function="check_pw",
+            hits=[{"file": "src/copy.c", "name": "copy_input", "line": 1}],
+        )
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="finding", body="buffer overflow",
+                hypothesis="test hyp",
+                evidence_tool="semgrep:test",
+                review_result={"status": "finding", "body": "bof"},
+            )
+
+        target, out = _setup_synth_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch(
+            "core.audit.checker_synthesis.synthesize_and_sweep",
+            return_value=synth_result,
+        ), _patch(
+            "core.sage.hooks.store_proven_rule_metadata",
+            side_effect=RuntimeError("SAGE down"),
+        ), _patch(
+            "core.sage.hooks.store_audit_hypothesis_verdict",
+            return_value=True,
+        ):
+            result = run_orchestrator(config, review_fn)
+
+        assert result.errors == 0, "SAGE failure must not cause an error outcome"
+
+    def test_proven_rule_not_stored_for_non_finding(self, tmp_path: Path):
+        """Mid-loop synthesis only fires for finding status, not clean/suspicious."""
+        from unittest.mock import patch as _patch
+
+        rule_store_calls: list = []
+
+        def capture_rule_store(**kwargs):
+            rule_store_calls.append(kwargs)
+            return True
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="clean", body="no issues",
+                hypothesis="test hyp",
+                evidence_tool="semgrep:test",
+            )
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            sweep_validate_findings=False,
+            batch_sloc_threshold=0,
+        )
+
+        with _patch(
+            "core.audit.checker_synthesis.synthesize_and_sweep",
+        ) as mock_synth, _patch(
+            "core.sage.hooks.store_proven_rule_metadata",
+            side_effect=capture_rule_store,
+        ), _patch(
+            "core.sage.hooks.store_audit_hypothesis_verdict",
+            return_value=True,
+        ):
+            run_orchestrator(config, review_fn)
+
+        assert len(rule_store_calls) == 0
+        mock_synth.assert_not_called()

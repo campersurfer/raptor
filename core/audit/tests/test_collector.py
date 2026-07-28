@@ -221,3 +221,82 @@ class TestCollectorJournalDualWrite:
         entries = load_entries(tmp_path)
         assert len(entries) == 1
         assert entries[0].verdict == "error"
+
+
+class TestCollectorSageHypothesis:
+    """Test SAGE hypothesis store wiring in Collector.submit()."""
+
+    def test_stores_verdict_when_hash_present(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        calls: list = []
+
+        def capture(**kwargs):
+            calls.append(kwargs)
+            return True
+
+        c = Collector(out_dir=tmp_path, target_path=tmp_path)
+        outcome = _FakeOutcome(
+            status="clean", hypothesis="unchecked return",
+            evidence_tool="semgrep:ret-check",
+        )
+        gap = _make_gap()
+        gap["_sage_source_hash"] = "abc123"
+
+        with patch("core.sage.hooks.store_audit_hypothesis_verdict", side_effect=capture):
+            c.submit(outcome, gap)
+
+        assert len(calls) == 1
+        assert calls[0]["file_path"] == "src/auth.py"
+        assert calls[0]["function"] == "check_pw"
+        assert calls[0]["hypothesis"] == "unchecked return"
+        assert calls[0]["status"] == "clean"
+        assert calls[0]["source_hash"] == "abc123"
+
+    def test_skips_without_source_hash(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        c = Collector(out_dir=tmp_path, target_path=tmp_path)
+        outcome = _FakeOutcome(status="clean", hypothesis="test")
+        gap = _make_gap()
+
+        with patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock:
+            c.submit(outcome, gap)
+            mock.assert_not_called()
+
+    def test_skips_error_status(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        c = Collector(out_dir=tmp_path, target_path=tmp_path)
+        outcome = _FakeOutcome(status="error", hypothesis="test")
+        gap = _make_gap()
+        gap["_sage_source_hash"] = "h1"
+
+        with patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock:
+            c.submit(outcome, gap)
+            mock.assert_not_called()
+
+    def test_skips_empty_hypothesis(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        c = Collector(out_dir=tmp_path, target_path=tmp_path)
+        outcome = _FakeOutcome(status="clean", hypothesis="")
+        gap = _make_gap()
+        gap["_sage_source_hash"] = "h1"
+
+        with patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock:
+            c.submit(outcome, gap)
+            mock.assert_not_called()
+
+    def test_sage_error_does_not_break_submit(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        c = Collector(out_dir=tmp_path, target_path=tmp_path)
+        outcome = _FakeOutcome(status="clean", hypothesis="test hyp")
+        gap = _make_gap()
+        gap["_sage_source_hash"] = "h1"
+
+        with patch("core.sage.hooks.store_audit_hypothesis_verdict", side_effect=RuntimeError("boom")):
+            c.submit(outcome, gap)
+
+        assert len(c._log_entries) == 1
