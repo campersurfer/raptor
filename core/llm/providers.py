@@ -507,10 +507,19 @@ class LLMProvider(ABC):
             content = response.content.strip()
             # Strip markdown fences: ```json\n...\n``` or ```\n...\n```
             if content.startswith("```") and content.endswith("```"):
-                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                if "\n" in content:
+                    content = content.split("\n", 1)[1]
+                else:
+                    content = content[3:]
+                    # Single-line: strip language tag (e.g. "json", "ql")
+                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
                 content = content.rsplit("```", 1)[0]
             elif content.startswith("```"):
-                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                if "\n" in content:
+                    content = content.split("\n", 1)[1]
+                else:
+                    content = content[3:]
+                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
             content = content.strip()
             parsed = json.loads(content)
             parsed = _coerce_to_schema(parsed, _normalize_schema(schema))
@@ -711,14 +720,17 @@ def _coerce_to_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str,
             continue
 
         value = coerced[field_name]
-        field_type = field_spec.get("type", "string")
+        raw_type = field_spec.get("type", "string")
 
         # Handle nullable types: ["string", "null"] or ["boolean", "null"]
-        if isinstance(field_type, list):
-            if value is None and "null" in field_type:
+        nullable = isinstance(raw_type, list) and "null" in raw_type
+        if isinstance(raw_type, list):
+            if value is None and nullable:
                 continue  # null is valid
             # Use the non-null type for coercion
-            field_type = next((t for t in field_type if t != "null"), "string")
+            field_type = next((t for t in raw_type if t != "null"), "string")
+        else:
+            field_type = raw_type
 
         if field_type == "boolean" and not isinstance(value, bool):
             if isinstance(value, str):
@@ -735,7 +747,15 @@ def _coerce_to_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str,
             try:
                 coerced[field_name] = float(value)
             except (ValueError, TypeError):
-                coerced[field_name] = 0.0
+                if nullable:
+                    coerced[field_name] = None
+                else:
+                    logger.debug(
+                        "_coerce_to_schema: unparseable number for "
+                        "field %r, value %r — defaulting to 0.0",
+                        field_name, value,
+                    )
+                    coerced[field_name] = 0.0
 
         elif field_type == "integer" and (
             # Pre-fix the check was just `not isinstance(value, int)`.
@@ -762,7 +782,15 @@ def _coerce_to_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str,
             try:
                 coerced[field_name] = int(value)
             except (ValueError, TypeError):
-                coerced[field_name] = 0
+                if nullable:
+                    coerced[field_name] = None
+                else:
+                    logger.debug(
+                        "_coerce_to_schema: unparseable integer for "
+                        "field %r, value %r — defaulting to 0",
+                        field_name, value,
+                    )
+                    coerced[field_name] = 0
 
         elif field_type == "string" and value is None:
             coerced[field_name] = ""
@@ -797,9 +825,15 @@ def _normalize_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
         field_type = parts[0].strip() if parts else "string"
         field_type = type_aliases.get(field_type, field_type)
 
+        desc_lower = field_desc_str.lower()
         # Detect nullable: "string or null", "float or null"
-        if " or null" in field_desc_str.lower():
+        if " or null" in desc_lower:
             prop = {"type": [field_type, "null"]}
+        elif desc_lower.startswith("null or "):
+            # "null or string" — extract the actual type from the second word
+            actual = parts[2].strip() if len(parts) > 2 else "string"
+            actual = type_aliases.get(actual, actual)
+            prop = {"type": [actual, "null"]}
         else:
             prop = {"type": field_type}
 
@@ -815,7 +849,15 @@ def _normalize_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
 
         properties[field_name] = prop
 
-    return {"properties": properties, "required": list(schema.keys())}
+    required = []
+    for field_name, field_desc in schema.items():
+        if isinstance(field_desc, dict):
+            required.append(field_name)
+            continue
+        desc_lower = str(field_desc).lower()
+        if "optional" not in desc_lower and "or null" not in desc_lower:
+            required.append(field_name)
+    return {"properties": properties, "required": required}
 
 
 def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -1510,6 +1552,7 @@ class OpenAICompatibleProvider(LLMProvider):
         system: Optional[str] = None,
         max_tokens: int = 4096,
         cache_control: CacheControl = CacheControl(),
+        max_retries: int = 3,
         **_unused: Any,
     ) -> Iterator[StreamChunk]:
         """Streaming turn via OpenAI ``stream=True``."""
@@ -1562,7 +1605,7 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         t_start = time.monotonic()
         resp = None
-        for attempt in range(4):
+        for attempt in range(max_retries + 1):
             try:
                 resp = self.client.chat.completions.create(**kwargs)
                 break
@@ -1582,7 +1625,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 if _is_rate_limit(exc):
                     from core.llm.throttle import broadcast_rate_limit
                     broadcast_rate_limit()
-                if not _is_transient_openai(exc) or attempt >= 3:
+                if not _is_transient_openai(exc) or attempt >= max_retries:
                     from core.security.log_sanitisation import (
                         escape_nonprintable,
                     )
@@ -2827,10 +2870,18 @@ class GeminiProvider(LLMProvider):
 
             content = (response.text or "").strip()
             if content.startswith("```") and content.endswith("```"):
-                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                if "\n" in content:
+                    content = content.split("\n", 1)[1]
+                else:
+                    content = content[3:]
+                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
                 content = content.rsplit("```", 1)[0].strip()
             elif content.startswith("```"):
-                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                if "\n" in content:
+                    content = content.split("\n", 1)[1]
+                else:
+                    content = content[3:]
+                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
                 content = content.strip()
             parsed = json.loads(content)
             if not parsed:
