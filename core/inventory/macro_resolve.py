@@ -58,7 +58,23 @@ _table_cache: OrderedDict[str, Dict[str, Tuple[str, str]]] = OrderedDict()
 #   enum { FOO = 1, BAR = 2 };
 #   enum limits { MAX_BUF = 256 };
 _ENUM_BLOCK_RE = re.compile(r"\benum\s*(?:\w+\s*)?\{([^}]+)\}", re.DOTALL)
-_ENUMERATOR_RE = re.compile(r"(\w+)\s*=\s*([^,}]+)")
+_ENUMERATOR_NAME_RE = re.compile(r"(\w+)\s*=\s*")
+
+
+def _parse_enumerator_value(text: str, start: int) -> str:
+    """Extract value from enumerator, respecting parentheses."""
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch in ",}" and depth == 0:
+            break
+        i += 1
+    return text[start:i].strip()
 
 # Rust macro_rules! extraction
 # Matches: macro_rules! name { ... } — we capture the full body between braces
@@ -207,9 +223,10 @@ def build_macro_table(target_path: Path) -> Dict[str, Tuple[str, str]]:
                         name, p,
                     )
             for em in _ENUM_BLOCK_RE.finditer(text):
-                for ev in _ENUMERATOR_RE.finditer(em.group(1)):
+                body = em.group(1)
+                for ev in _ENUMERATOR_NAME_RE.finditer(body):
                     ename = ev.group(1).strip()
-                    evalue = ev.group(2).strip().rstrip(",")
+                    evalue = _parse_enumerator_value(body, ev.end())
                     if ename in _SKIP_IDENTS_C:
                         continue
                     if ename not in table:

@@ -203,8 +203,13 @@ def _detect_rust(content: str) -> List[DeadRange]:
         # First ``{`` after the attribute is the gated item's body —
         # nothing between the cfg and the body uses braces (attributes
         # use ``[]``, visibility uses ``()``, generics use ``<>``).
+        # A bodyless item (e.g. ``mod dead_mod;``) has no ``{`` before
+        # its ``;`` — skip rather than latching onto the next item.
         brace_rel = after.find("{")
+        semi_rel = after.find(";")
         if brace_rel == -1:
+            continue
+        if semi_rel != -1 and semi_rel < brace_rel:
             continue
         close = _match_brace(content, m.end() + brace_rel)
         if close is None:

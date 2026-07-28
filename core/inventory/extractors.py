@@ -854,15 +854,48 @@ class JavaExtractor:
     PATTERN = r'((?:public|private|protected|static|\s)+)([\w<>\[\]]+)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws\s+[\w,\s]+)?\s*\{'
     _MAX_JAVA_LINE = 16 * 1024
 
+    @staticmethod
+    def _split_params_respecting_generics(params_str: str) -> List[str]:
+        """Split parameter string on top-level commas only."""
+        parts: List[str] = []
+        depth = 0
+        current: List[str] = []
+        for ch in params_str:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append("".join(current))
+                current = []
+            else:
+                current.append(ch)
+        if current:
+            parts.append("".join(current))
+        return parts
+
     def extract(self, filepath: str, content: str) -> List[FunctionInfo]:
         functions = []
         current_class = None
+        brace_depth = 0
+        class_depth = -1
 
         for i, line in enumerate(content.split('\n'), 1):
-            # Track class scope
-            class_match = re.search(r'class\s+(\w+)', line)
+            stripped = line.lstrip()
+
+            brace_depth += line.count("{") - line.count("}")
+
+            class_match = re.search(r'\bclass\s+(\w+)', line)
             if class_match:
                 current_class = class_match.group(1)
+                class_depth = brace_depth
+
+            if current_class is not None and brace_depth < class_depth:
+                current_class = None
+                class_depth = -1
+
+            if stripped.startswith("//") or stripped.startswith("/*"):
+                continue
 
             # Cap line length before regex match — see PATTERN comment
             # for the ReDoS rationale.
@@ -886,7 +919,7 @@ class JavaExtractor:
                     # Parse parameters
                     parameters = []
                     if params_str:
-                        for p in params_str.split(','):
+                        for p in self._split_params_respecting_generics(params_str):
                             parts = p.strip().split()
                             if len(parts) >= 2:
                                 pname = parts[-1]
@@ -1564,6 +1597,8 @@ class TreeSitterExtractor:
                                 parameters=params,
                             ),
                         ))
+                    self._walk(arrow, functions, class_name=class_name,
+                               class_attributes=class_attributes)
                     continue
                 self._walk(child, functions, class_name=class_name,
                            class_attributes=class_attributes)

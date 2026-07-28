@@ -115,15 +115,19 @@ def scan_public_api(
 
         if include_dirs is not None:
             rel_str = str(rel_root)
-            if not any(
+            in_scope = any(
                 rel_str == d or rel_str.startswith(d + "/")
                 for d in include_dirs
-            ):
-                if not any(
-                    d.startswith(rel_str + "/") or d == rel_str
-                    for d in include_dirs
-                ):
-                    continue
+            )
+            is_ancestor = any(
+                d.startswith(rel_str + "/")
+                for d in include_dirs
+            )
+            if not in_scope and not is_ancestor:
+                continue
+            if is_ancestor and not in_scope:
+                dirs[:] = [d for d in dirs if d not in _EXCLUDE_DIRS]
+                continue
 
         dirs[:] = [d for d in dirs if d not in _EXCLUDE_DIRS]
 

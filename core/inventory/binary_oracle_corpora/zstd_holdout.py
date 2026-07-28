@@ -158,12 +158,11 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
             # outer source-tree dir; Python's for-loop variable
             # persists after the loop and would silently shadow it,
             # breaking the second build_o2 iteration's cp command.
-            for lvl in ("-1", "-3", "-9", "-19", "--ultra", "-22"):
+            for lvl in (("-1",), ("-3",), ("-9",), ("-19",), ("--ultra", "-22")):
                 for input_file in inputs:
-                    out = tmp / (
-                        f"{input_file.name}.{lvl.lstrip('-') or 'u'}.zst"
-                    )
-                    _z(lvl, "-f", "-o", str(out), str(input_file))
+                    tag = "_".join(a.lstrip("-") or "u" for a in lvl)
+                    out = tmp / f"{input_file.name}.{tag}.zst"
+                    _z(*lvl, "-f", "-o", str(out), str(input_file))
             # Long-range mode (different code path)
             _z("--long", "-3", "-f", "-o",
                str(tmp / "long.zst"), str(inputs[0]))

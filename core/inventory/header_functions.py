@@ -45,7 +45,7 @@ def _extract_function_body(lines: List[str], open_brace_line: int) -> Optional[s
     start = open_brace_line
     for i in range(start, min(start + _MAX_BODY_LINES + 5, len(lines))):
         depth += lines[i].count("{") - lines[i].count("}")
-        if depth <= 0 and i > start:
+        if depth <= 0:
             body_lines = lines[start:i + 1]
             if len(body_lines) > _MAX_BODY_LINES:
                 return None
