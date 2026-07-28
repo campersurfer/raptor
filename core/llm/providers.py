@@ -13,7 +13,7 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from inspect import isclass
 from typing import Dict, Optional, Any, Tuple, Type, Union, TYPE_CHECKING
 from dataclasses import dataclass
@@ -30,6 +30,7 @@ from .tool_use.types import (
     CacheControl,
     Message,
     StopReason,
+    StreamChunk,
     TextBlock,
     ToolCall,
     ToolDef,
@@ -332,6 +333,59 @@ class LLMProvider(ABC):
             f"{type(self).__name__} does not support tool-use; "
             f"check ``supports_tool_use()`` before calling ``turn()``"
         )
+
+    def supports_streaming(self) -> bool:
+        """``True`` when ``turn_stream()`` yields real-time chunks
+        from the provider's API rather than wrapping ``turn()``."""
+        return False
+
+    def turn_stream(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolDef],
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 4096,
+        cache_control: CacheControl = CacheControl(),
+        **provider_specific: Any,
+    ) -> Iterator[StreamChunk]:
+        """Streaming variant of :meth:`turn`.
+
+        Default implementation wraps ``turn()`` — all chunks arrive
+        in one burst with no real-time benefit. Providers with native
+        streaming override both this and :meth:`supports_streaming`.
+        """
+        response = self.turn(
+            messages, tools, system=system,
+            max_tokens=max_tokens, cache_control=cache_control,
+            **provider_specific,
+        )
+        for block in response.content:
+            if isinstance(block, TextBlock):
+                yield StreamChunk(type="text_delta", text=block.text)
+            elif isinstance(block, ToolCall):
+                yield StreamChunk(
+                    type="tool_call_start",
+                    tool_call_id=block.id,
+                    tool_call_name=block.name,
+                )
+                if block.input:
+                    yield StreamChunk(
+                        type="tool_call_delta",
+                        tool_call_id=block.id,
+                        tool_call_input_delta=json.dumps(block.input),
+                    )
+                yield StreamChunk(
+                    type="tool_call_end", tool_call_id=block.id,
+                )
+        yield StreamChunk(
+            type="usage",
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cache_read_tokens=response.cache_read_tokens,
+            cache_write_tokens=response.cache_write_tokens,
+        )
+        yield StreamChunk(type="done", stop_reason=response.stop_reason)
 
     def track_usage(self, tokens: int, cost: float,
                     input_tokens: int = 0, output_tokens: int = 0,
@@ -1442,6 +1496,182 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         return turn_response
 
+    def supports_streaming(self) -> bool:
+        return not self._tool_use_unsupported
+
+    def turn_stream(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolDef],
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 4096,
+        cache_control: CacheControl = CacheControl(),
+        **_unused: Any,
+    ) -> Iterator[StreamChunk]:
+        """Streaming turn via OpenAI ``stream=True``."""
+        if _unused:
+            logger.debug(
+                "OpenAICompatibleProvider.turn_stream: ignoring "
+                "unrecognised kwargs: %s", sorted(_unused),
+            )
+
+        if self._tool_use_unsupported and tools:
+            yield from LLMProvider.turn_stream(
+                self, messages, tools, system=system,
+                max_tokens=max_tokens, cache_control=cache_control,
+            )
+            return
+
+        # ---- tools (same as turn) ----------------------------------------
+        tool_schemas: list[Dict[str, Any]] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                },
+            }
+            for t in tools
+        ]
+
+        # ---- messages ----------------------------------------------------
+        wire_messages: list[Dict[str, Any]] = []
+        if system:
+            wire_messages.append({"role": "system", "content": system})
+        for m in messages:
+            wire_messages.extend(_message_to_openai_wire(m))
+
+        # ---- dispatch with stream=True -----------------------------------
+        kwargs: Dict[str, Any] = {
+            "model": self.config.model_name,
+            "messages": wire_messages,
+            "stream": True,
+            **_openai_sampling_kwargs(self.config.model_name, max_tokens),
+        }
+        if tool_schemas:
+            kwargs["tools"] = tool_schemas
+
+        from openai import (                                    # type: ignore[import-not-found]
+            APIConnectionError,
+            APIStatusError,
+        )
+        t_start = time.monotonic()
+        resp = None
+        for attempt in range(4):
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                break
+            except (APIConnectionError, APIStatusError) as exc:
+                if (
+                    tools
+                    and isinstance(exc, APIStatusError)
+                    and _is_tool_use_unsupported_error(exc)
+                ):
+                    self._tool_use_unsupported = True
+                    yield from LLMProvider.turn_stream(
+                        self, messages, tools, system=system,
+                        max_tokens=max_tokens,
+                        cache_control=cache_control,
+                    )
+                    return
+                if _is_rate_limit(exc):
+                    from core.llm.throttle import broadcast_rate_limit
+                    broadcast_rate_limit()
+                if not _is_transient_openai(exc) or attempt >= 3:
+                    from core.security.log_sanitisation import (
+                        escape_nonprintable,
+                    )
+                    logger.warning(
+                        "OpenAICompatibleProvider.turn_stream: %s",
+                        escape_nonprintable(str(exc)),
+                    )
+                    yield StreamChunk(
+                        type="done", stop_reason=StopReason.ERROR,
+                    )
+                    return
+                time.sleep(2.0 ** attempt)
+
+        if resp is None:
+            yield StreamChunk(type="done", stop_reason=StopReason.ERROR)
+            return
+
+        # ---- consume stream ----------------------------------------------
+        tool_calls_seen: Dict[int, str] = {}
+        input_tokens = output_tokens = 0
+        stop = StopReason.ERROR
+
+        for chunk in resp:
+            if not chunk.choices:
+                if chunk.usage:
+                    input_tokens = (
+                        getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    )
+                    output_tokens = (
+                        getattr(chunk.usage, "completion_tokens", 0) or 0
+                    )
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if delta and getattr(delta, "content", None):
+                yield StreamChunk(
+                    type="text_delta", text=delta.content,
+                )
+
+            if delta and getattr(delta, "tool_calls", None):
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if tc.id:
+                        tool_calls_seen[idx] = tc.id
+                        yield StreamChunk(
+                            type="tool_call_start",
+                            tool_call_id=tc.id,
+                            tool_call_name=(
+                                getattr(tc.function, "name", "") or ""
+                            ),
+                        )
+                    if (
+                        tc.function
+                        and getattr(tc.function, "arguments", None)
+                    ):
+                        yield StreamChunk(
+                            type="tool_call_delta",
+                            tool_call_id=tool_calls_seen.get(idx, ""),
+                            tool_call_input_delta=tc.function.arguments,
+                        )
+
+            if choice.finish_reason:
+                stop = _OPENAI_FINISH_REASON_MAP.get(
+                    choice.finish_reason, StopReason.ERROR,
+                )
+                for idx in sorted(tool_calls_seen):
+                    yield StreamChunk(
+                        type="tool_call_end",
+                        tool_call_id=tool_calls_seen[idx],
+                    )
+
+        duration = time.monotonic() - t_start
+
+        yield StreamChunk(
+            type="usage",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+        cost = self._calculate_cost_split(input_tokens, output_tokens)
+        self.track_usage(
+            tokens=input_tokens + output_tokens,
+            cost=cost,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration=duration,
+        )
+
+        yield StreamChunk(type="done", stop_reason=stop)
+
 
 # ---------------------------------------------------------------------------
 # OpenAI tool-use helpers
@@ -2140,6 +2370,176 @@ class AnthropicProvider(LLMProvider):
             f"region size. This warning fires once per provider instance."
         )
         self._caching_warning_emitted = True
+
+    def supports_streaming(self) -> bool:
+        return True
+
+    def turn_stream(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolDef],
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 4096,
+        cache_control: CacheControl = CacheControl(),
+        **_unused: Any,
+    ) -> Iterator[StreamChunk]:
+        """Streaming turn via ``client.messages.stream()``.
+
+        Same argument construction as :meth:`turn` but yields
+        :class:`StreamChunk` objects as the API response arrives.
+        Does not support the task-budget beta endpoint (use
+        non-streaming :meth:`turn` for that).
+        """
+        if _unused:
+            logger.debug(
+                "AnthropicProvider.turn_stream: ignoring unrecognised "
+                "kwargs: %s", sorted(_unused),
+            )
+
+        # ---- system block (same as turn) --------------------------------
+        system_arg: Optional[Union[str, list]]
+        if system:
+            if cache_control.system:
+                system_arg = [{
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+            else:
+                system_arg = system
+        else:
+            system_arg = None
+
+        # ---- tools -------------------------------------------------------
+        tool_schemas: list[Dict[str, Any]] = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            }
+            for t in tools
+        ]
+        if cache_control.tools and tool_schemas:
+            last = dict(tool_schemas[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            tool_schemas[-1] = last
+
+        # ---- messages ----------------------------------------------------
+        wire_messages = [_message_to_anthropic_wire(m) for m in messages]
+        if (
+            cache_control.history_through_index is not None
+            and 0 <= cache_control.history_through_index < len(wire_messages)
+        ):
+            _attach_anthropic_cache_marker(
+                wire_messages[cache_control.history_through_index],
+            )
+
+        # ---- build send_kwargs -------------------------------------------
+        kwargs: Dict[str, Any] = {
+            "model": self.config.model_name,
+            "max_tokens": max_tokens,
+            "messages": wire_messages,
+            "tools": tool_schemas if tool_schemas else None,
+        }
+        if system_arg is not None:
+            kwargs["system"] = system_arg
+        send_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+
+        # ---- stream ------------------------------------------------------
+        t_start = time.monotonic()
+        current_tool_id = ""
+        input_tokens = output_tokens = cache_read = cache_write = 0
+        stop = StopReason.ERROR
+
+        with self.client.messages.stream(**send_kwargs) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", "")
+
+                if event_type == "content_block_start":
+                    cb = getattr(event, "content_block", None)
+                    if cb and getattr(cb, "type", "") == "tool_use":
+                        current_tool_id = getattr(cb, "id", "")
+                        yield StreamChunk(
+                            type="tool_call_start",
+                            tool_call_id=current_tool_id,
+                            tool_call_name=getattr(cb, "name", ""),
+                        )
+                elif event_type == "text":
+                    yield StreamChunk(
+                        type="text_delta",
+                        text=getattr(event, "text", ""),
+                    )
+                elif event_type == "input_json":
+                    yield StreamChunk(
+                        type="tool_call_delta",
+                        tool_call_id=current_tool_id,
+                        tool_call_input_delta=getattr(
+                            event, "partial_json", "",
+                        ),
+                    )
+                elif event_type == "content_block_stop":
+                    if current_tool_id:
+                        yield StreamChunk(
+                            type="tool_call_end",
+                            tool_call_id=current_tool_id,
+                        )
+                        current_tool_id = ""
+                elif event_type == "message_start":
+                    msg = getattr(event, "message", None)
+                    if msg:
+                        u = getattr(msg, "usage", None)
+                        if u:
+                            input_tokens = (
+                                getattr(u, "input_tokens", 0) or 0
+                            )
+                            cache_read = (
+                                getattr(u, "cache_read_input_tokens", 0)
+                                or 0
+                            )
+                            cache_write = (
+                                getattr(u, "cache_creation_input_tokens", 0)
+                                or 0
+                            )
+                elif event_type == "message_delta":
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        sr = getattr(delta, "stop_reason", "")
+                        stop = _ANTHROPIC_STOP_REASON_MAP.get(
+                            sr or "", StopReason.ERROR,
+                        )
+                    u = getattr(event, "usage", None)
+                    if u:
+                        output_tokens = (
+                            getattr(u, "output_tokens", 0) or 0
+                        )
+
+        duration = time.monotonic() - t_start
+
+        yield StreamChunk(
+            type="usage",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+
+        cost = self.compute_cost(TurnResponse(
+            content=[], stop_reason=stop,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+        ))
+        self.track_usage(
+            tokens=input_tokens + output_tokens,
+            cost=cost,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration=duration,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+
+        yield StreamChunk(type="done", stop_reason=stop)
 
 
 # ---------------------------------------------------------------------------
