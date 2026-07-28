@@ -32,6 +32,7 @@ _client: Optional[SageClient] = None
 _client_initialised: bool = False
 _client_none_decided_at: float = 0.0
 _CLIENT_NONE_TTL_S: float = 300.0
+_metrics_lock = threading.Lock()
 _sage_metrics: Dict[str, int] = {
     "propose_attempted": 0,
     "propose_succeeded": 0,
@@ -39,6 +40,11 @@ _sage_metrics: Dict[str, int] = {
     "recall_attempted": 0,
     "recall_hits": 0,
 }
+
+
+def _metric_inc(key: str, n: int = 1) -> None:
+    with _metrics_lock:
+        _sage_metrics[key] += n
 
 _ollama_has_gpu: Optional[bool] = None
 
@@ -185,7 +191,7 @@ def _propose_redacted(
     confidence: float,
     tags: Optional[List[str]] = None,
 ) -> bool:
-    _sage_metrics["propose_attempted"] += 1
+    _metric_inc("propose_attempted")
     redacted_content = redact_secrets(content)
     ok = client.propose(
         content=redacted_content,
@@ -195,9 +201,9 @@ def _propose_redacted(
         tags=tags,
     )
     if ok:
-        _sage_metrics["propose_succeeded"] += 1
+        _metric_inc("propose_succeeded")
     else:
-        _sage_metrics["propose_failed"] += 1
+        _metric_inc("propose_failed")
     return ok
 
 
@@ -345,7 +351,7 @@ def recall_context_for_codeql_build(
     if client is None:
         return []
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         lang_str = ", ".join(languages or []) or "unknown"
         findings = client.query(
             text=(
@@ -366,7 +372,7 @@ def recall_context_for_codeql_build(
             min_confidence=0.5,
         )
         merged = _merge_recall_rows(findings, methodology, top_k=8)
-        _sage_metrics["recall_hits"] += len(merged)
+        _metric_inc("recall_hits", len(merged))
         return merged
     except Exception as e:
         logger.debug(f"SAGE codeql recall failed: {e}")
@@ -458,7 +464,7 @@ def recall_context_for_fuzzing_strategy(
     if client is None:
         return []
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         query = (
             "What fuzzing strategies produced crashes for this binary "
             f"or similar binaries ({binary_fingerprint})?"
@@ -481,7 +487,7 @@ def recall_context_for_fuzzing_strategy(
             min_confidence=0.5,
         )
         merged = _merge_recall_rows(results, methodology, top_k=8)
-        _sage_metrics["recall_hits"] += len(merged)
+        _metric_inc("recall_hits", len(merged))
         return merged
     except Exception as e:
         logger.debug(f"SAGE fuzzing recall failed: {e}")
@@ -580,7 +586,7 @@ def recall_prior_finding_verdict(
     if client is None:
         return None
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         results = client.query(
             text=(
                 f"Finding verdict: rule={rule_id} "
@@ -596,7 +602,7 @@ def recall_prior_finding_verdict(
                 continue
             for v in _SUPPRESS_VERDICTS:
                 if f"||verdict={v}||" in content:
-                    _sage_metrics["recall_hits"] += 1
+                    _metric_inc("recall_hits")
                     return {
                         "verdict": v,
                         "source_hash": source_hash,
@@ -720,7 +726,7 @@ def recall_proven_rules(
     if client is None:
         return []
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         results = client.query(
             text=f"Proven checker rule engine={engine} cwe={cwe}",
             domain_tag=_RULE_LIBRARY_DOMAIN,
@@ -728,7 +734,7 @@ def recall_proven_rules(
             min_confidence=0.7,
         )
         if results:
-            _sage_metrics["recall_hits"] += len(results)
+            _metric_inc("recall_hits", len(results))
         return results
     except Exception as e:
         logger.debug("SAGE rule library recall failed: %s", e)
@@ -863,7 +869,7 @@ def recall_audit_hypothesis_verdict(
         return None
     try:
         hyp_hash = sha256_string(hypothesis)[:16] if hypothesis else ""
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         query_text = (
             f"Audit hypothesis verdict: "
             f"file={file_path} fn={function}"
@@ -888,7 +894,7 @@ def recall_audit_hypothesis_verdict(
                     tool_match = re.search(r"\|\|tool=([^|]*)\|\|", content)
                     if tool_match:
                         tool = tool_match.group(1)
-                    _sage_metrics["recall_hits"] += 1
+                    _metric_inc("recall_hits")
                     return {
                         "status": s,
                         "tool": tool,
@@ -948,7 +954,7 @@ def recall_audit_observations(
     if client is None:
         return []
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         results = client.query(
             text=f"Audit observation: {subject}",
             domain_tag="raptor-methodology",
@@ -956,7 +962,7 @@ def recall_audit_observations(
             min_confidence=0.7,
         )
         out = [r for r in results if "Audit observation" in str(r.get("content", ""))]
-        _sage_metrics["recall_hits"] += len(out)
+        _metric_inc("recall_hits", len(out))
         return out
     except Exception as e:
         logger.debug("SAGE audit observation recall failed: %s", e)
@@ -989,7 +995,7 @@ def recall_context_for_sca(
     if client is None:
         return []
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
         query_parts = [
             "Prior SCA findings: confirmed malicious packages,"
             " false-positive rulings, supply-chain attack patterns"
@@ -1018,7 +1024,7 @@ def recall_context_for_sca(
             min_confidence=0.5,
         )
         merged = _merge_recall_rows(results, methodology, top_k=10)
-        _sage_metrics["recall_hits"] += len(merged)
+        _metric_inc("recall_hits", len(merged))
         if merged:
             logger.info(
                 f"SAGE: Recalled {len(merged)} SCA memories for context"
@@ -1387,7 +1393,7 @@ def recall_concepts_for_teach(
         return []
 
     try:
-        _sage_metrics["recall_attempted"] += 1
+        _metric_inc("recall_attempted")
 
         query = (
             f"Semantic concept for {subject}: ownership, lifetime, "
@@ -1419,7 +1425,7 @@ def recall_concepts_for_teach(
         scored.sort(key=lambda r: r.get("relevance_score", 0), reverse=True)
         out = scored[:top_k]
 
-        _sage_metrics["recall_hits"] += len(out)
+        _metric_inc("recall_hits", len(out))
         return out
     except Exception as e:
         logger.debug(f"SAGE teach recall failed: {e}")
@@ -1478,9 +1484,9 @@ def recall_concepts_for_study(
         for fut in as_completed(futures):
             name, rows = fut.result()
             done += 1
-            _sage_metrics["recall_attempted"] += 1
+            _metric_inc("recall_attempted")
             if rows:
-                _sage_metrics["recall_hits"] += len(rows)
+                _metric_inc("recall_hits", len(rows))
                 result[name] = rows
             if done % 20 == 0 or done == total:
                 logger.info(f"SAGE: recall {done}/{total} ({len(result)} hits)")
