@@ -482,7 +482,6 @@ class AFLRunner:
 
         # Monitor fuzzing
         start_time = time.time()
-        crashes_dir = self.output_dir / "main" / "crashes"
         last_logged_crashes = 0
         last_status_time = 0
 
@@ -491,24 +490,21 @@ class AFLRunner:
                 time.sleep(10)  # Check every 10 seconds
                 current_time = time.time()
 
-                # Count unique crashes
-                if crashes_dir.exists():
-                    crash_files = sorted(
-                        f for f in crashes_dir.iterdir() if f.name.startswith("id:")
-                    )
-                    num_crashes = len(crash_files)
+                # Count unique crashes across all instances (main + secondaries)
+                crash_files = self._collect_all_crash_files()
+                num_crashes = len(crash_files)
 
-                    if num_crashes > last_logged_crashes:
-                        logger.info(f"Progress: {num_crashes} unique crashes found")
-                        # Telemetry: emit a per-crash event for new ones only
-                        if self.telemetry:
-                            for crash_path in crash_files[last_logged_crashes:]:
-                                self.telemetry.record_crash(str(crash_path), signal="afl")
-                        last_logged_crashes = num_crashes
+                if num_crashes > last_logged_crashes:
+                    logger.info(f"Progress: {num_crashes} unique crashes found")
+                    # Telemetry: emit a per-crash event for new ones only
+                    if self.telemetry:
+                        for crash_path in crash_files[last_logged_crashes:]:
+                            self.telemetry.record_crash(str(crash_path), signal="afl")
+                    last_logged_crashes = num_crashes
 
-                    if max_crashes is not None and num_crashes >= max_crashes:
-                        logger.info(f"✓ Reached {max_crashes} crashes, stopping early")
-                        break
+                if max_crashes is not None and num_crashes >= max_crashes:
+                    logger.info(f"✓ Reached {max_crashes} crashes, stopping early")
+                    break
 
                 # Periodic status update (every 60 seconds)
                 if current_time - last_status_time >= 60:
@@ -605,11 +601,9 @@ class AFLRunner:
                 finally:
                     self._close_process_logs(entry)     
 
-        # Count final crashes
-        total_crashes = 0
-        if crashes_dir.exists():
-            crash_files = [f for f in crashes_dir.iterdir() if f.name.startswith("id:")]
-            total_crashes = len(crash_files)
+        # Count final crashes across all instances
+        crash_files = self._collect_all_crash_files()
+        total_crashes = len(crash_files)
 
         elapsed = time.time() - start_time
         
@@ -634,7 +628,9 @@ class AFLRunner:
             logger.info("=" * 70)
 
             if self.telemetry:
-                max_crash_execs = self._max_crash_execs(crashes_dir)
+                max_crash_execs = self._max_crash_execs(
+                    self.output_dir / "main" / "crashes"
+                )
                 self.telemetry.update_stats(
                     total_executions=max(
                         self._parse_afl_int(final_stats.get("execs_done")),
@@ -651,7 +647,7 @@ class AFLRunner:
         logger.info("=" * 70)
         logger.info(f"Duration: {elapsed:.1f}s")
         logger.info(f"Unique crashes: {total_crashes}")
-        logger.info(f"Crashes dir: {crashes_dir}")
+        logger.info(f"Crashes dir: {self.output_dir}")
         logger.info("=" * 70)
 
         # Run coverage analysis if requested
@@ -664,7 +660,7 @@ class AFLRunner:
                 for key, value in coverage_stats.items():
                     logger.info(f"  {key}: {value}")
 
-        return total_crashes, crashes_dir
+        return total_crashes, self.output_dir / "main" / "crashes"
 
     @staticmethod
     def _close_process_logs(entry: dict) -> None:
@@ -673,6 +669,32 @@ class AFLRunner:
             if fp and not fp.closed:
                 fp.flush()
                 fp.close()
+
+    def _find_first_seed(self) -> Path | None:
+        """Return the first seed file in the corpus directory, or *None*.
+
+        The corpus generator writes ``seed-NNNN-<kind>`` files; the
+        emergency fallback writes ``seed0``.  We accept whichever is
+        present, preferring the sorted-first regular file.
+        """
+        try:
+            for entry in sorted(self.corpus_dir.iterdir()):
+                if entry.is_file():
+                    return entry
+        except OSError:
+            pass
+        return None
+
+    def _collect_all_crash_files(self) -> list[Path]:
+        """Collect crash files from main and all secondary instance directories."""
+        crash_files: list[Path] = []
+        for sub in sorted(self.output_dir.iterdir()):
+            crashes_dir = sub / "crashes"
+            if sub.is_dir() and crashes_dir.is_dir():
+                crash_files.extend(
+                    f for f in crashes_dir.iterdir() if f.name.startswith("id:")
+                )
+        return sorted(crash_files)
 
     @staticmethod
     def _tail_file(path: Path, max_bytes: int = 4096) -> str:
@@ -859,17 +881,19 @@ class AFLRunner:
         stdin_input = None
         test_input = None
 
+        # Find the first seed file in the corpus directory.  The corpus
+        # generator names seeds ``seed-NNNN-<kind>`` but the emergency
+        # fallback still writes ``seed0``.  Accept whichever exists.
+        test_input = self._find_first_seed()
+
         if self.input_mode == "file":
             showmap_cmd.append("@@")
-            # For file mode, use first corpus file as the input file
-            test_input = self.corpus_dir / "seed0" if (self.corpus_dir / "seed0").exists() else None
             if test_input:
                 # AFL will replace @@ with the input file path
                 # We need to set AFL_INPUT_FILE environment variable
                 pass
         else:
             # For stdin mode, need to provide input via stdin parameter
-            test_input = self.corpus_dir / "seed0" if (self.corpus_dir / "seed0").exists() else None
             if test_input:
                 try:
                     stdin_input = open(test_input, 'rb')
