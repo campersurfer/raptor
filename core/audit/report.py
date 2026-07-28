@@ -66,8 +66,8 @@ def generate_report(
         try:
             eval_data = json.loads(eval_path.read_text())
             report["evaluation"] = eval_data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("failed to load evaluation results from %s: %s", eval_path, e)
 
     report["summary"] = _format_summary(report)
     return report
