@@ -1019,7 +1019,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         lifecycle = subprocess.run(
             [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
              "start", "audit", "--target", str(target_path)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=30,
         )
         if lifecycle.returncode != 0:
             print(f"lifecycle start failed: {lifecycle.stderr.strip()}",
@@ -1215,7 +1215,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     ]
     if model_id:
         lifecycle_args.extend(["--model", model_id])
-    subprocess.run(lifecycle_args, capture_output=True)
+    subprocess.run(lifecycle_args, capture_output=True, timeout=30, text=True)
 
     return 0 if result.terminated_by == "complete" else 1
 
@@ -1305,7 +1305,7 @@ def _lifecycle_fail(out_dir: Path, reason: str) -> None:
     subprocess.run(
         [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
          "fail", str(out_dir), reason],
-        capture_output=True,
+        capture_output=True, timeout=30, text=True,
     )
 
 
