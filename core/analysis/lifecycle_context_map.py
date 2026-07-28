@@ -67,7 +67,7 @@ def save_state_fields(
 
     fd, tmp_path = tempfile.mkstemp(dir=str(cm_path.parent), suffix=".tmp")
     try:
-        with open(fd, "w") as f:
+        with open(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
         import os
