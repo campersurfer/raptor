@@ -371,7 +371,10 @@ class ProjectManager:
                     f"expected base {expected_base}. Use --no-purge or "
                     f"clean the directory by hand."
                 ) from None
-            shutil.rmtree(project.output_path)
+            try:
+                shutil.rmtree(project.output_path)
+            except FileNotFoundError:
+                pass
             logger.info(f"Deleted output directory: {project.output_dir}")
 
         project_file = self.projects_dir / f"{name}.json"
@@ -380,7 +383,7 @@ class ProjectManager:
         # Clear .active symlink if it pointed to this project
         active_link = self.projects_dir / ".active"
         if active_link.is_symlink() and os.readlink(active_link) == f"{name}.json":
-            active_link.unlink()
+            active_link.unlink(missing_ok=True)
 
         logger.info(f"Deleted project '{name}'")
 
