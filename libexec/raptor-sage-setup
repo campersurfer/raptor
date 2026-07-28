@@ -107,7 +107,7 @@ for arg in "$@"; do
     case "$arg" in
         --install|install)
             if [ "$MODE_EXPLICIT" = "1" ] && [ "$MODE" != "install" ]; then
-                echo "raptor-sage-setup: conflicting modes: $arg vs --uninstall" >&2
+                echo "raptor-sage-setup: conflicting modes: $arg vs --$MODE" >&2
                 exit 2
             fi
             MODE=install
@@ -115,7 +115,7 @@ for arg in "$@"; do
             ;;
         --uninstall|uninstall)
             if [ "$MODE_EXPLICIT" = "1" ] && [ "$MODE" != "uninstall" ]; then
-                echo "raptor-sage-setup: conflicting modes: $arg vs --install" >&2
+                echo "raptor-sage-setup: conflicting modes: $arg vs --$MODE" >&2
                 exit 2
             fi
             MODE=uninstall

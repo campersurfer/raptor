@@ -416,7 +416,7 @@ def test_ttl_expired_entry_treated_as_miss(tmp_path: Path) -> None:
     cache_files = list(client.config.cache_dir.glob("structured-*.json"))
     assert len(cache_files) == 1
     data = json.loads(cache_files[0].read_text(encoding="utf-8"))
-    data["timestamp"] = time.time() - 120
+    data["timestamp"] = time.monotonic() - 120
     cache_files[0].write_text(json.dumps(data), encoding="utf-8")
 
     client.generate_structured("p", {"type": "object"})

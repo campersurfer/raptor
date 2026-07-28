@@ -157,6 +157,8 @@ def run_parallel(
                                 thread_name_prefix=label) as pool:
             result = list(pool.map(_do, enumerate(items)))
     finally:
+        final_effective = throttle.effective_workers
+        final_signals = throttle.signal_count
         throttle.close()
 
     logger.info(
@@ -164,8 +166,8 @@ def run_parallel(
         label,
         sum(1 for r in result if r is not None),
         len(items),
-        throttle.signal_count,
+        final_signals,
         throttle.max_workers,
-        throttle.effective_workers,
+        final_effective,
     )
     return result

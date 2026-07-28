@@ -1616,17 +1616,22 @@ Examples:
                     env=env, env_caller_filtered=True,
                 )
                 if result.returncode == 0:
-                    sandbox_run(
+                    add_result = sandbox_run(
                         ["git"] + git_safe + ["add", "."], block_network=True,
                         cwd=temp_repo, capture_output=True, timeout=60,
                         env=env, env_caller_filtered=True,
                     )
-                    sandbox_run(
-                        ["git"] + git_safe + ["commit", "-m", "RAPTOR scan snapshot"],
-                        block_network=True,
-                        cwd=temp_repo, capture_output=True, timeout=60,
-                        env=env, env_caller_filtered=True,
-                    )
+                    if add_result.returncode != 0:
+                        result = add_result
+                    else:
+                        commit_result = sandbox_run(
+                            ["git"] + git_safe + ["commit", "-m", "RAPTOR scan snapshot"],
+                            block_network=True,
+                            cwd=temp_repo, capture_output=True, timeout=60,
+                            env=env, env_caller_filtered=True,
+                        )
+                        if commit_result.returncode != 0:
+                            result = commit_result
             finally:
                 _sb_log.setLevel(_sb_prev)
             if result.returncode == 0:
@@ -1892,7 +1897,7 @@ Examples:
             completed = threat_model_phase.get("completed", False)
             print(f"\nThreat model only {'complete' if completed else 'skipped'}.")
             print(f"   Report: {report_file}")
-            return
+            return 0 if completed else 1
 
     # ========================================================================
     # PRE-PASS: reachability — always-on companion to /understand.
@@ -2147,8 +2152,7 @@ Examples:
             try:
                 from core.json import save_json as _save_json
                 _save_json(
-                    Path(args.out) / ".semgrep_timeout" if args.out
-                    else RaptorConfig.get_out_dir() / ".semgrep_timeout",
+                    out_dir / ".semgrep_timeout",
                     {"timed_out_at_seconds": 1800, "stage": "semgrep"},
                 )
             except Exception:
@@ -2486,18 +2490,18 @@ Examples:
         try:
             from packages.sca.pipeline import run_sca, RunOptions as ScaRunOptions
 
-            sca_out = out_dir / "sca"
-            sca_out.mkdir(exist_ok=True)
+            sca_deep_out = out_dir / "sca_deep"
+            sca_deep_out.mkdir(exist_ok=True)
             sca_options = ScaRunOptions(
                 enable_llm_review=not args.skip_sca_review,
                 enable_triage=not args.skip_sca_triage,
             )
             sca_result = run_sca(
                 target=original_repo_path,
-                output_dir=sca_out,
+                output_dir=sca_deep_out,
                 options=sca_options,
             )
-            sca_findings_path = sca_out / "findings.json"
+            sca_findings_path = sca_deep_out / "findings.json"
 
             print("\n✓ SCA complete:")
             print(f"  - Dependencies analysed: {sca_result.deps_analysed}")
@@ -2511,6 +2515,8 @@ Examples:
             logger.info("SCA complete: %d vulns, %d hygiene, %d supply-chain",
                         sca_result.vuln_findings, sca_result.hygiene_findings,
                         sca_result.supply_chain_findings)
+            sca_deep_count = sca_result.vuln_findings + sca_result.supply_chain_findings
+            total_findings += sca_deep_count
         except ImportError:
             print("⚠️  SCA package not available — skipping dependency analysis", file=sys.stderr)
             logger.warning("SCA import failed — packages/sca not installed")

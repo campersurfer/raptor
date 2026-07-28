@@ -1783,6 +1783,27 @@ def main() -> None:
                   f"from {len(_deferred_concepts)} concepts (in-memory)",
                   file=sys.stderr)
 
+    # Merge --correlate identifiers early so the relevance filter and doc
+    # discovery see them (previously this ran after both, so standalone
+    # --correlate produced an empty filter set).
+    correlate_identifiers = None
+    if parsed.correlate:
+        correlate_identifiers = [
+            s.strip() for s in re.split(r"[,+]", parsed.correlate)
+            if s.strip()
+        ]
+        if len(correlate_identifiers) < 2:
+            correlate_identifiers = None
+        else:
+            print(f"study-prep: correlation requested for {correlate_identifiers}",
+                  file=sys.stderr)
+            if not identifiers:
+                identifiers = list(correlate_identifiers)
+            else:
+                for ci in correlate_identifiers:
+                    if ci not in identifiers:
+                        identifiers.append(ci)
+
     if identifiers:
         # ident_exact: names that match tier 0 exactly (struct defs)
         # ident_stems: names eligible for stem-in-name tier 1 promotion
@@ -1952,24 +1973,6 @@ def main() -> None:
               f"(writers={usage_counts['writer']}, readers={usage_counts['reader']}, "
               f"passthru={usage_counts['passthru']})",
               file=sys.stderr)
-
-    correlate_identifiers = None
-    if parsed.correlate:
-        correlate_identifiers = [
-            s.strip() for s in re.split(r"[,+]", parsed.correlate)
-            if s.strip()
-        ]
-        if len(correlate_identifiers) < 2:
-            correlate_identifiers = None
-        else:
-            print(f"study-prep: correlation requested for {correlate_identifiers}",
-                  file=sys.stderr)
-            if not identifiers:
-                identifiers = list(correlate_identifiers)
-            else:
-                for ci in correlate_identifiers:
-                    if ci not in identifiers:
-                        identifiers.append(ci)
 
     out_path = output_dir / "study-list.json"
     out_data = {

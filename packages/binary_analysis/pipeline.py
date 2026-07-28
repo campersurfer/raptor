@@ -2114,6 +2114,7 @@ def append_fuzz_evidence_to_run(
     for record in bundle.evidence:
         if record.id not in seen:
             existing.append(record.to_dict())
+            seen.add(record.id)
     context_map["evidence"] = existing
     save_json(out_dir / "binary-context-map.json", context_map)
     save_json(out_dir / "context-map.json", context_map)

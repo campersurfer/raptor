@@ -413,10 +413,29 @@ class CodeQLAdapter(ToolAdapter):
                 for qp in unique_paths
             }
 
+        # Build a lookup from SARIF ruleId back to the originating
+        # query path.  CodeQL sets ruleId to the query's @id metadata
+        # which typically matches the .ql file stem.
+        rule_to_qp: Dict[str, str] = {}
+        for qp in unique_paths:
+            stem = Path(qp).stem
+            rule_to_qp[stem] = qp
+
+        matches_by_qp: Dict[str, List[Dict]] = {qp: [] for qp in unique_paths}
+        for m in all_matches:
+            rid = m.get("rule", "")
+            target = rule_to_qp.get(rid)
+            if target is None and "/" in rid:
+                # ruleId may be qualified like "py/sql-injection"
+                target = rule_to_qp.get(rid.rsplit("/", 1)[-1])
+            if target is not None:
+                matches_by_qp[target].append(m)
+
         results: Dict[str, ToolEvidence] = {}
         for qp in unique_paths:
-            n = len(all_matches)
-            files = sorted({m["file"] for m in all_matches if m.get("file")})
+            qp_matches = matches_by_qp[qp]
+            n = len(qp_matches)
+            files = sorted({m["file"] for m in qp_matches if m.get("file")})
             if n:
                 summary = f"{n} match{'es' if n != 1 else ''} in {len(files)} file{'s' if len(files) != 1 else ''}"
             else:
@@ -425,7 +444,7 @@ class CodeQLAdapter(ToolAdapter):
                 tool=self.name,
                 rule=qp,
                 success=True,
-                matches=all_matches,
+                matches=qp_matches,
                 summary=summary,
             )
 

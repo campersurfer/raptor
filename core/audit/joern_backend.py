@@ -138,12 +138,17 @@ def joern_live_query(
     timeout: int = 30,
     *,
     label: Optional[str] = None,
+    max_call_depth: Optional[int] = None,
 ) -> List[Any]:
     """Fire a targeted taint query via the live Joern server."""
     from packages.joern.runner import _validate_substitution_value
 
     if not _validate_substitution_value(function_name):
         return []
+
+    depth_kwargs: Dict[str, int] = {}
+    if max_call_depth is not None:
+        depth_kwargs["max_call_depth"] = max_call_depth
 
     for sink in sinks:
         sink_name = sink.split(".")[-1] if "." in sink else sink
@@ -152,6 +157,7 @@ def joern_live_query(
         try:
             flows = server.run_taint_query(
                 function_name, sink_name, timeout=timeout,
+                **depth_kwargs,
             )
             if flows:
                 logger.info(

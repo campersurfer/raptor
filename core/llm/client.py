@@ -904,13 +904,13 @@ class LLMClient:
                 if not alias:
                     continue
                 p = int(counts.get("pass") or 0)
-                f = int(counts.get("fail") or 0)
-                if not (p or f):
+                fail_count = int(counts.get("fail") or 0)
+                if not (p or fail_count):
                     continue
                 uses.append({
                     "model": alias, "decision_class": "_structured",
-                    "calls": p + f,
-                    "schema_valid_pass": p, "schema_valid_fail": f,
+                    "calls": p + fail_count,
+                    "schema_valid_pass": p, "schema_valid_fail": fail_count,
                 })
             self.scorecard.register_uses(uses)
             # Per-run scorecard delta — the discoverability lever. One line at
@@ -1001,7 +1001,7 @@ class LLMClient:
         ts = data.get("timestamp")
         if not isinstance(ts, (int, float)):
             return False
-        return (time.time() - ts) > ttl
+        return (time.monotonic() - ts) > ttl
 
     def _get_cached_response(self, cache_key: str) -> Optional[str]:
         """Retrieve cached response if available."""
@@ -1040,7 +1040,7 @@ class LLMClient:
                     "model": response.model,
                     "provider": response.provider,
                     "tokens_used": response.tokens_used,
-                    "timestamp": time.time(),
+                    "timestamp": time.monotonic(),
                 }, mode=0o600)
             # Reset failure counter on a successful write — recovery
             # from a transient EBUSY shouldn't carry the strike count
@@ -1174,7 +1174,7 @@ class LLMClient:
                 "model": response.model,
                 "provider": response.provider,
                 "tokens_used": response.tokens_used,
-                "timestamp": time.time(),
+                "timestamp": time.monotonic(),
             }, mode=0o600)
         except Exception as e:
             # _stats_lock — see _save_to_cache above for the rationale.

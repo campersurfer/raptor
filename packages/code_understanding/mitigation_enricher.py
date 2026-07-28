@@ -382,7 +382,7 @@ def enrich_context_map(
     if build_flags is not None:
         build_flags_source = getattr(build_flags, "source", None)
 
-    sinks = context_map.get("sinks") or []
+    sinks = context_map.get("sink_details") or []
     if not isinstance(sinks, list):
         return context_map
 

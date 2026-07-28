@@ -851,7 +851,7 @@ Examples:
         if not languages or len(languages) != 1:
             print("✗ --build-command requires exactly one language specified with --languages", file=sys.stderr)
             sys.exit(1)
-        build_commands = {languages[0]: args.build_command}
+        build_commands = {_normalise_language(languages[0]): args.build_command}
 
     try:
         # Pre-compute out_dir BEFORE constructing the agent so we

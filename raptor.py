@@ -379,6 +379,11 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
             if res is None:
                 return 1  # extraction failed (message printed); no run sealed yet
             args, target_identity = res
+            # args now points at the extracted directory; update the local
+            # target variable so downstream consumers (license detection,
+            # format_start_line, _preflight_cost_gate) operate on the
+            # extracted tree, not the archive file.
+            target = _extract_target(args)
 
     start_run(out_dir, command, target=target, target_identity=target_identity)
     # Mirror libexec/raptor-run-lifecycle's sentinel so direct

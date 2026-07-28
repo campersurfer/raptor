@@ -175,7 +175,7 @@ def _dispatch_validate_unsafe(
     target_path = Path(target_path).resolve()
     audit_out_dir = Path(audit_out_dir).resolve()
 
-    t0 = time.time()
+    t0 = time.monotonic()
 
     validate_dir = _start_validate_lifecycle(target_path)
     if validate_dir is None:
@@ -183,7 +183,7 @@ def _dispatch_validate_unsafe(
             ran=False,
             selected_count=findings_count,
             skipped_reason="lifecycle start failed",
-            duration_s=time.time() - t0,
+            duration_s=time.monotonic() - t0,
         )
 
     lifecycle_settled = False
@@ -249,7 +249,7 @@ def _dispatch_validate_unsafe(
                 selected_count=findings_count,
                 validate_dir=str(validate_dir),
                 skipped_reason="timeout",
-                duration_s=time.time() - t0,
+                duration_s=time.monotonic() - t0,
             )
 
         if proc.returncode != 0:
@@ -267,7 +267,7 @@ def _dispatch_validate_unsafe(
                 selected_count=findings_count,
                 validate_dir=str(validate_dir),
                 skipped_reason=f"exit {proc.returncode}",
-                duration_s=time.time() - t0,
+                duration_s=time.monotonic() - t0,
             )
 
         _complete_validate_lifecycle(validate_dir)
@@ -277,7 +277,7 @@ def _dispatch_validate_unsafe(
             ran=True,
             selected_count=findings_count,
             validate_dir=str(validate_dir),
-            duration_s=time.time() - t0,
+            duration_s=time.monotonic() - t0,
         )
 
     except KeyboardInterrupt:

@@ -17,6 +17,7 @@ import json as _json
 import logging
 import os
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -51,6 +52,7 @@ class SarifCache:
     _by_file: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     hit_count: int = 0
     miss_count: int = 0
+    _counter_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __bool__(self) -> bool:
         return bool(self._by_file)
@@ -69,10 +71,12 @@ class SarifCache:
         normalized = _normalize_sarif_path(file_path)
         results = self._by_file.get(normalized)
         if results is None:
-            self.miss_count += 1
+            with self._counter_lock:
+                self.miss_count += 1
             return None
 
-        self.hit_count += 1
+        with self._counter_lock:
+            self.hit_count += 1
         if not line_start:
             return results
 
@@ -1059,12 +1063,22 @@ def run_joern_sweep(
             errors=["no CPG provided (build via run_joern_pre_sweep)"],
         )
 
+    # Use per-language max_call_depth_targeted instead of the
+    # hardcoded default (2) -- deeper languages like C need depth 3.
+    try:
+        from packages.joern.lang_config import detect_language, profile_for
+        _lang = detect_language(file_path)
+        _depth = profile_for(_lang).max_call_depth_targeted
+    except Exception:
+        _depth = 2
+
     flows = run_taint_query(
         cpg,
         function_name,
         sink_call,
         source_param=source_param,
         timeout=timeout,
+        max_call_depth=_depth,
     )
 
     if flows:

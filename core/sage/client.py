@@ -14,7 +14,6 @@ the second hook call onwards.
 """
 
 import os
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -120,6 +119,7 @@ class SageClient:
     def __init__(self, config: Optional[SageConfig] = None):
         self._config = config or SageConfig.from_env()
         self._client = None
+        self._query_cache: Dict[Tuple[str, str, int, Optional[float]], Tuple[Tuple[str, float, str], ...]] = {}
         self._register_with_egress_proxy()
 
     def _register_with_egress_proxy(self) -> None:
@@ -324,7 +324,6 @@ class SageClient:
         cached = self._query_cached(text, domain_tag, top_k, min_confidence)
         return [dict(zip(("content", "confidence", "domain"), row)) for row in cached]
 
-    @lru_cache(maxsize=256)
     def _query_cached(
         self,
         text: str,
@@ -332,7 +331,11 @@ class SageClient:
         top_k: int,
         min_confidence: Optional[float],
     ) -> Tuple[Tuple[str, float, str], ...]:
-        """LRU-cached query returning tuples (hashable for the cache)."""
+        """Per-instance cached query returning tuples (hashable for the cache)."""
+        key = (text, domain_tag, top_k, min_confidence)
+        cached = self._query_cache.get(key)
+        if cached is not None:
+            return cached
         client = self._get_client()
         if client is None:
             return ()
@@ -349,11 +352,19 @@ class SageClient:
             if min_confidence is not None:
                 query_kwargs["min_confidence"] = min_confidence
             response = client.query(**query_kwargs)
-            return tuple(
+            result = tuple(
                 (r.content, r.confidence_score, r.domain_tag)
                 for r in response.results
             )
         except Exception as e:
             logger.warning(f"SAGE query failed: {e}")
             return ()
+        if len(self._query_cache) >= 256:
+            # Evict oldest entry (first inserted) to bound memory.
+            try:
+                self._query_cache.pop(next(iter(self._query_cache)))
+            except StopIteration:
+                pass
+        self._query_cache[key] = result
+        return result
 
