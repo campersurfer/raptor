@@ -256,7 +256,10 @@ def mark_checked(
             json.dump(checklist, f, indent=2)
         os.replace(tmp, str(cl_path))
     except BaseException:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
 
