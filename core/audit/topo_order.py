@@ -190,9 +190,11 @@ def resolve_scc_summaries(
             callee_summaries: dict[str, Any] = {}
             for callee in adj.get(member, []):
                 if callee in scc.members:
+                    new_val = new_summaries.get(callee)
                     callee_summaries[callee] = (
-                        new_summaries.get(callee)
-                        or current.get(callee)
+                        new_val
+                        if new_val is not None
+                        else current.get(callee)
                     )
             new_summaries[member] = build_fn(member, callee_summaries)
 
