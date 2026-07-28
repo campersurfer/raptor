@@ -59,6 +59,9 @@ def main() -> int:
     except (json.JSONDecodeError, OSError) as e:
         print(f"✗ Cannot read context-map: {e}", file=sys.stderr)
         return 1
+    if not isinstance(ctx, dict):
+        print("✗ context-map.json is not a JSON object", file=sys.stderr)
+        return 1
     search_dirs = [workdir, workdir.parent]
 
     target_path = None
