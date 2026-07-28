@@ -22,9 +22,10 @@ from pathlib import Path
 from core.inventory.macro_resolve import (
     _C_EXTENSIONS,
     _ENUM_BLOCK_RE,
-    _ENUMERATOR_RE,
+    _ENUMERATOR_NAME_RE,
     _MACRO_DEF_RE,
     _SKIP_IDENTS_C,
+    _parse_enumerator_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,12 +169,13 @@ def _scan_definitions(target_path: Path) -> dict[str, list[_RawDefinition]]:
         for em in _ENUM_BLOCK_RE.finditer(text_joined):
             block_line = _original_line(em.start())
             block_depth = cond_depth.get(block_line, 0)
-            for ev in _ENUMERATOR_RE.finditer(em.group(1)):
+            body = em.group(1)
+            for ev in _ENUMERATOR_NAME_RE.finditer(body):
                 ename = ev.group(1).strip()
-                evalue = ev.group(2).strip().rstrip(",")
+                evalue = _parse_enumerator_value(body, ev.end())
                 if ename in _SKIP_IDENTS_C:
                     continue
-                enum_line = block_line + em.group(1)[:ev.start()].count("\n")
+                enum_line = block_line + body[:ev.start()].count("\n")
                 defs.setdefault(ename, []).append(
                     _RawDefinition(ename, "", evalue, rel, enum_line, block_depth)
                 )
