@@ -203,7 +203,7 @@ def synthesize_and_sweep(
 
     new_hits = []
     for m in cs_result.matches:
-        key = f"{m.file}:{function}"
+        key = f"{m.file}:{m.line}"
         if key not in seen_keys and m.file != file_path:
             new_hits.append({
                 "file": m.file,
