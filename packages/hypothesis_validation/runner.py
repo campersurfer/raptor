@@ -20,6 +20,7 @@ opinion. Confirmation requires that the tool produced concrete matches.
 """
 
 import logging
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Protocol
 
 from .adapters.base import ToolAdapter, ToolEvidence
@@ -285,6 +286,7 @@ def validate(
                 break
         prev_step = curr_step
         rule = refined_rule
+        hypothesis = replace(hypothesis, context=refined_rule)
 
     return ValidationResult(
         verdict=verdict,
