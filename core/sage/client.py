@@ -15,7 +15,6 @@ the second hook call onwards.
 
 import os
 import threading
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
