@@ -111,6 +111,9 @@ class DecisionLog:
                 line = line.strip()
                 if not line:
                     continue
-                d = json.loads(line)
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
                 records.append(DecisionRecord(**d))
         return records
