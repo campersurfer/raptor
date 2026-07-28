@@ -68,7 +68,7 @@ def cmd_gaps(args: argparse.Namespace) -> int:
             cp = subprocess.run(
                 [sys.executable, str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist"),
                  str(target_path), str(out_dir)],
-                env=env, capture_output=True, text=True,
+                env=env, capture_output=True, text=True, timeout=300,
             )
             if cp.returncode != 0:
                 print(f"error: checklist build failed: {cp.stderr.strip()}", file=sys.stderr)
@@ -924,7 +924,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         ck = subprocess.run(
             [str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist"),
              str(target_path), "--out", str(out_dir)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=300,
         )
         if ck.returncode != 0:
             print(f"checklist build failed: {ck.stderr.strip()}",
