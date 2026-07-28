@@ -490,6 +490,34 @@ _DEFAULT_PROVIDER_ORDER = (
 )
 
 
+# Operator's explicit primary model. Set by CLIs that expose --model
+# so every downstream ``LLMConfig()`` no-arg construction honours the
+# operator's directive. Without this, ``_get_default_primary_model()``
+# would silently prefer a models.json-configured "thinking model"
+# (typically Gemini) over the ANTHROPIC_API_KEY env-var route the
+# operator's --model resolves through — breaking the "if I pass
+# --model, use it" contract on every sub-consumer inside the run.
+#
+# Contract: process-wide. Once set, every subsequent LLMConfig() /
+# ``get_client()`` / ``_get_default_primary_model()`` call returns
+# this model as the primary. Set once at operator-facing CLI entry;
+# never mutated mid-run.
+_operator_primary_override: Optional['ModelConfig'] = None
+
+
+def set_operator_primary_override(model: Optional['ModelConfig']) -> None:
+    """Pin the process-wide primary to ``model``, or ``None`` to clear.
+
+    Called by operator-facing CLIs after they resolve the operator's
+    ``--model`` flag, so no downstream consumer accidentally falls
+    through to a models.json-configured "thinking model" (which is
+    the shape of the pre-fix regression that inflated per-iteration
+    cost ~20× on tool-loop runs).
+    """
+    global _operator_primary_override
+    _operator_primary_override = model
+
+
 def _get_default_primary_model(
     prefer: Optional[List[str]] = None,
 ) -> Optional['ModelConfig']:
@@ -497,6 +525,11 @@ def _get_default_primary_model(
     Get default primary model based on available providers.
 
     Resolution order:
+    0. **Operator override** (``set_operator_primary_override``).
+       When an operator-facing CLI has resolved ``--model`` and
+       pinned it, honour that directive across every downstream
+       consumer, unconditionally. Beats every other step; ``prefer``
+       is ignored (operator's explicit choice trumps consumer hint).
     1. **Preferred providers via env var** (when ``prefer`` set).
        Try each named provider in order; skip silently if absent.
     2. **Operator's thinking-model config** (``~/.config/raptor/models.json``).
@@ -515,6 +548,8 @@ def _get_default_primary_model(
     ``cache_control`` + task-budget savings, and that linkage should
     be explicit in code rather than coincidence with the default.
     """
+    if _operator_primary_override is not None:
+        return _operator_primary_override
     if isinstance(prefer, str):
         prefer = [prefer]
     prefer_set = set(prefer) if prefer else None

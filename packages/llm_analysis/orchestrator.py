@@ -353,6 +353,12 @@ def build_llm_config_from_flags(
             # fast-tier models are still auto-seeded by __post_init__ from the
             # primary's OWN provider, so they stay same-provider (cheap).
             llm_config = LLMConfig(primary_model=primary_mc, fallback_models=[])
+            # Pin the operator's --model process-wide so any sub-consumer
+            # deep in the run that constructs ``LLMConfig()`` no-arg
+            # honours the operator's choice instead of silently falling
+            # through to a models.json-configured "thinking model".
+            from core.llm.config import set_operator_primary_override
+            set_operator_primary_override(primary_mc)
             for extra in models[1:]:
                 mc = _resolve_model(extra, "analysis")
                 if mc:

@@ -389,6 +389,12 @@ def _do_hunt(args: argparse.Namespace) -> dict:
                 "Unable to resolve --model entries: " + ", ".join(missing) +
                 "\nCheck models.json or set the relevant *_API_KEY env var."
             )
+        # Pin the operator's --model process-wide so any sub-consumer
+        # that constructs ``LLMConfig()`` no-arg honours the operator's
+        # choice instead of silently falling through to a models.json-
+        # configured "thinking model".
+        from core.llm.config import set_operator_primary_override
+        set_operator_primary_override(models[0])
 
     # Per-model budget = total / N, with a small per-model floor.
     # The cocci backend uses far less of this (1 LLM call to write
@@ -457,6 +463,12 @@ def _do_trace(args: argparse.Namespace) -> dict:
             "Unable to resolve --model entries: " + ", ".join(missing) +
             "\nCheck models.json or set the relevant *_API_KEY env var."
         )
+    # Pin the operator's --model process-wide so any sub-consumer
+    # that constructs ``LLMConfig()`` no-arg honours the operator's
+    # choice instead of silently falling through to a models.json-
+    # configured "thinking model".
+    from core.llm.config import set_operator_primary_override
+    set_operator_primary_override(models[0])
 
     n = len(models)
     per_model_cost = max(_PER_MODEL_COST_FLOOR_USD, args.max_cost / n)
