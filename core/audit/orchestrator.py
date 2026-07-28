@@ -1581,14 +1581,15 @@ def _run_audit_body(
         discover_conventions,
         check_sibling_negative_space,
     )
-    conventions = discover_conventions(gaps)
+    live_gaps = [g for g in gaps if not g.get("dead")]
+    conventions = discover_conventions(live_gaps)
     if conventions:
         logger.info(
             "negative-space: discovered %d security conventions",
             len(conventions),
         )
 
-    sibling_ns_findings = check_sibling_negative_space(gaps, conventions) if conventions else []
+    sibling_ns_findings = check_sibling_negative_space(live_gaps, conventions) if conventions else []
     if sibling_ns_findings:
         logger.info(
             "sibling analysis: %d asymmetry findings across peer groups",

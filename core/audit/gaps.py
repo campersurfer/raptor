@@ -179,6 +179,9 @@ def compute_gaps(
             if isinstance(file_info.get("build_excluded"), dict):
                 gap["build_excluded"] = True
 
+            if gap.get("lexical_dead") or gap.get("module_aborts_on_load") or gap.get("build_excluded"):
+                gap["dead"] = True
+
             if reachable_sinks:
                 gap["reachable_sinks"] = reachable_sinks
 
