@@ -134,11 +134,11 @@ def _resolve_covered_items(output_dir: Path) -> int:
     except (OSError, json.JSONDecodeError):
         return 0
 
-    concept_ids = {c.get("id", "").lower() for c in dm.get("concepts", [])}
+    concept_ids = {(c.get("id") or "").lower() for c in dm.get("concepts", [])}
     concept_descs = " ".join(
-        c.get("description", "") for c in dm.get("concepts", [])
+        (c.get("description") or "") for c in dm.get("concepts", [])
     ).lower()
-    contract_fns = {c.get("function", "").lower() for c in dm.get("contracts", [])}
+    contract_fns = {(c.get("function") or "").lower() for c in dm.get("contracts", [])}
 
     def _word_in_corpus(word: str) -> bool:
         """Word-boundary match against the concatenated descriptions."""
