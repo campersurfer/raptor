@@ -38,7 +38,7 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
     if dest.is_dir():
         result = subprocess.run(
             ["git", "-C", str(dest), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=30,
         )
         current = result.stdout.strip()
         if current == sha:
@@ -47,11 +47,11 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
                      repo_key, current[:12], sha[:12])
         subprocess.run(
             ["git", "-C", str(dest), "fetch", "--depth", "1", "origin", sha],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=120,
         )
         subprocess.run(
             ["git", "-C", str(dest), "checkout", sha],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=30,
         )
         return dest
 
