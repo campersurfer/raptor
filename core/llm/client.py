@@ -904,13 +904,13 @@ class LLMClient:
                 if not alias:
                     continue
                 p = int(counts.get("pass") or 0)
-                f = int(counts.get("fail") or 0)
-                if not (p or f):
+                fail_count = int(counts.get("fail") or 0)
+                if not (p or fail_count):
                     continue
                 uses.append({
                     "model": alias, "decision_class": "_structured",
-                    "calls": p + f,
-                    "schema_valid_pass": p, "schema_valid_fail": f,
+                    "calls": p + fail_count,
+                    "schema_valid_pass": p, "schema_valid_fail": fail_count,
                 })
             self.scorecard.register_uses(uses)
             # Per-run scorecard delta — the discoverability lever. One line at

@@ -740,9 +740,9 @@ def _safe_line(raw) -> int:
     failure — schemas downstream will surface a "missing line" warning.
     """
     if isinstance(raw, int):
-        return raw
+        return max(0, raw)
     try:
-        return int(str(raw).split("-", 1)[0])
+        return max(0, int(str(raw).split("-", 1)[0]))
     except (TypeError, ValueError):
         return 0
 

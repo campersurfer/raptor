@@ -202,7 +202,7 @@ def _entry_to_credentials(entry: dict) -> Optional[BasicCredentials]:
         if ":" not in decoded:
             return None
         user, _, password = decoded.partition(":")
-        if user and password:
+        if user:
             return BasicCredentials(user, password)
     user = entry.get("username")
     password = entry.get("password")
