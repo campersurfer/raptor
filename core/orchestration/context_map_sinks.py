@@ -277,7 +277,7 @@ def _next_sink_id(sink_details: list) -> int:
     """Find the next available SINK-NNN id number."""
     max_id = 0
     for sd in sink_details:
-        sid = sd.get("id", "")
+        sid = sd.get("id") or ""
         if sid.startswith("SINK-"):
             try:
                 max_id = max(max_id, int(sid[5:]))
