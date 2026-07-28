@@ -523,12 +523,29 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             print(f"error: rule file {rule_path} not found", file=sys.stderr)
             return 1
 
+        fn_line_start = args.line_start
+        fn_line_end = args.line_end
+        if fn_line_start is None or fn_line_end is None:
+            from core.audit.gaps import load_checklist
+            cl = load_checklist(out_dir)
+            if cl:
+                for fi in cl.get("files", []):
+                    if fi.get("path") == args.file:
+                        for item in fi.get("items", fi.get("functions", [])):
+                            if item.get("name") == args.function:
+                                fn_line_start = fn_line_start or item.get("line_start")
+                                fn_line_end = fn_line_end or item.get("line_end")
+                                break
+                        break
+
         if tool == "semgrep":
             result = run_semgrep_sweep(
                 target_path=target_path,
                 file_path=args.file,
                 function_name=args.function,
                 rule_config=str(rule_path),
+                line_start=fn_line_start or 0,
+                line_end=fn_line_end or 0,
             )
         elif tool == "codeql":
             result = run_codeql_sweep(
@@ -544,6 +561,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 file_path=args.file,
                 function_name=args.function,
                 cocci_rule=str(rule_path),
+                line_start=fn_line_start,
+                line_end=fn_line_end,
             )
 
         entry = result.to_log_entry()
@@ -1387,6 +1406,10 @@ def main() -> int:
                          help="JSON dict of args for the SMT verb")
     p_sweep.add_argument("--codeql-db", default=None,
                          help="Path to CodeQL database (auto-detected if omitted)")
+    p_sweep.add_argument("--line-start", type=int, default=None,
+                         help="Function start line (auto-detected from checklist)")
+    p_sweep.add_argument("--line-end", type=int, default=None,
+                         help="Function end line (auto-detected from checklist)")
 
     # rules
     p_rules = sub.add_parser("rules", help="Manage synthesized checker rules")
