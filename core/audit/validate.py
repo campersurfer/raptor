@@ -347,8 +347,11 @@ def _copy_findings_for_validate(
     dest: Path,
 ) -> None:
     """Copy audit findings.json into the validate dir."""
-    with open(findings_path) as f:
-        container = json.load(f)
+    try:
+        with open(findings_path) as f:
+            container = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
     entries = container.get("findings", [])
     if len(entries) > _MAX_VALIDATE_FINDINGS:
         entries = entries[:_MAX_VALIDATE_FINDINGS]
