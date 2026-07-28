@@ -73,10 +73,10 @@ def _ensure_pack_installed(
         return
     if pack_dir in _INSTALLED_PACK_DIRS:
         return
-    _INSTALLED_PACK_DIRS.add(pack_dir)
 
     if (pack_dir / "codeql-pack.lock.yml").is_file():
         # Already installed — pack-install would be a no-op.
+        _INSTALLED_PACK_DIRS.add(pack_dir)
         return
 
     try:
@@ -85,6 +85,7 @@ def _ensure_pack_installed(
             capture_output=True, text=True,
             timeout=180, env=env,
         )
+        _INSTALLED_PACK_DIRS.add(pack_dir)
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning(
             "codeql pack install on %s failed: %s — analyze may fail with a clearer error",
