@@ -377,7 +377,7 @@ class AFLRunner:
         logger.info(f"Duration: {duration}s ({duration/60:.1f} minutes)")
         logger.info(f"Parallel jobs: {parallel_jobs}")
         logger.info(f"Timeout: {timeout_ms}ms")
-        if max_crashes:
+        if max_crashes is not None:
             logger.info(f"Stop after: {max_crashes} crashes")
 
         # Pre-flight check for AFL compatibility
@@ -506,7 +506,7 @@ class AFLRunner:
                                 self.telemetry.record_crash(str(crash_path), signal="afl")
                         last_logged_crashes = num_crashes
 
-                    if max_crashes and num_crashes >= max_crashes:
+                    if max_crashes is not None and num_crashes >= max_crashes:
                         logger.info(f"✓ Reached {max_crashes} crashes, stopping early")
                         break
 

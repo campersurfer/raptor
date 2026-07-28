@@ -63,7 +63,7 @@ class CrashCollector:
         crashes = []
         seen_hashes = set()
 
-        for crash_file in crash_files[:max_crashes] if max_crashes else crash_files:
+        for crash_file in crash_files[:max_crashes] if max_crashes is not None else crash_files:
             crash = self._parse_crash_file(crash_file)
 
             # Deduplicate by input hash (simple approach)

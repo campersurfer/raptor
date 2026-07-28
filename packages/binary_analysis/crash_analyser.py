@@ -1285,10 +1285,13 @@ class CrashAnalyser:
                 text=True,
                 timeout=10,
             )
-            if "__stack_chk_fail" in result.stdout or "__chk_fail" in result.stdout:
-                info["stack_canaries"] = "enabled"
+            if result.returncode == 0:
+                if "__stack_chk_fail" in result.stdout or "__chk_fail" in result.stdout:
+                    info["stack_canaries"] = "enabled"
+                else:
+                    info["stack_canaries"] = "not_detected"
             else:
-                info["stack_canaries"] = "not_detected"
+                info["stack_canaries"] = "unknown"
         except (OSError, subprocess.SubprocessError):
             info["stack_canaries"] = "unknown"
             
@@ -1300,7 +1303,7 @@ class CrashAnalyser:
                 text=True,
                 timeout=5,
             )
-            if "NOUNDEFS" in result.stdout or "NO_HEAP_EXECUTION" in result.stdout:
+            if "NO_HEAP_EXECUTION" in result.stdout:
                 info["nx_enabled"] = "enabled"
             else:
                 info["nx_enabled"] = "not_detected"
