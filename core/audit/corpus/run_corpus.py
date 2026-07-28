@@ -124,7 +124,7 @@ def _build_checklist(
             [sys.executable,
              str(raptor_dir / "libexec" / "raptor-build-checklist"),
              str(target_dir), "--out", str(out_dir)],
-            env=env, capture_output=True, text=True,
+            env=env, capture_output=True, text=True, timeout=300,
         )
         if cp.returncode != 0:
             print(f"  checklist build failed: {cp.stderr.strip()[:200]}",
