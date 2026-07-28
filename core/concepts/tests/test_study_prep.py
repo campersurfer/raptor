@@ -285,6 +285,24 @@ class TestFindPairedOperations:
         pairs = prep._find_paired_operations(funcs)
         assert ("get_page", "put_page") in pairs
 
+    def test_get_set_pair(self) -> None:
+        funcs = [
+            {"name": "get_flags", "file": "util.h", "line": 1, "signature": ""},
+            {"name": "set_flags", "file": "util.h", "line": 10, "signature": ""},
+        ]
+        pairs = prep._find_paired_operations(funcs)
+        assert ("get_flags", "set_flags") in pairs
+
+    def test_get_set_and_put_both_paired(self) -> None:
+        funcs = [
+            {"name": "get_ctx", "file": "ctx.c", "line": 1, "signature": ""},
+            {"name": "put_ctx", "file": "ctx.c", "line": 10, "signature": ""},
+            {"name": "set_ctx", "file": "ctx.c", "line": 20, "signature": ""},
+        ]
+        pairs = prep._find_paired_operations(funcs)
+        assert ("get_ctx", "put_ctx") in pairs
+        assert ("get_ctx", "set_ctx") in pairs
+
     def test_alloc_free_pair(self) -> None:
         funcs = [
             {"name": "alloc_skb", "file": "skbuff.h", "line": 1, "signature": ""},

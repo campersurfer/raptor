@@ -62,6 +62,7 @@ _ALLOC_PREFIXES = ("alloc_", "new_", "create_", "init_", "open_")
 _FREE_PREFIXES = ("free_", "destroy_", "release_", "close_", "put_")
 _GET_PREFIX = "get_"
 _PUT_PREFIX = "put_"
+_SET_PREFIX = "set_"
 
 _C_EXTENSIONS = frozenset((".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"))
 
@@ -966,9 +967,10 @@ def _find_paired_operations(functions: list[dict]) -> list[tuple[str, str]]:
     for name in sorted(names):
         if name.startswith(_GET_PREFIX):
             suffix = name[len(_GET_PREFIX):]
-            partner = _PUT_PREFIX + suffix
-            if partner in names:
-                _add(name, partner)
+            for partner_pfx in (_PUT_PREFIX, _SET_PREFIX):
+                partner = partner_pfx + suffix
+                if partner in names:
+                    _add(name, partner)
 
     for alloc_pfx in _ALLOC_PREFIXES:
         for name in sorted(names):
