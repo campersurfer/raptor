@@ -711,8 +711,8 @@ class CrashAnalysisAgent:
                 logger.error(f"Exploit data is still not a dict after processing: {type(exploit_data)}")
                 return False
 
-            exploit_code = exploit_data.get("code", "").strip()
-            reasoning = exploit_data.get("reasoning", "")
+            exploit_code = (exploit_data.get("code") or "").strip()
+            reasoning = exploit_data.get("reasoning") or ""
 
             if not exploit_code:
                 logger.error("No exploit code in structured response")
