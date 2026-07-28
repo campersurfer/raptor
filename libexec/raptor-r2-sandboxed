@@ -61,6 +61,7 @@ Exit codes:
 
 from __future__ import annotations
 import faulthandler
+import subprocess
 
 import os
 import signal
@@ -263,7 +264,7 @@ try:
             timeout=1800,
             strict_env=True,
         )
-except (OSError, RuntimeError, ValueError) as e:
+except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
     _die(f"sandbox invocation failed: {e.__class__.__name__}: {e}",
          code=_RC_WRAPPER_SANDBOX_FAILED)
 
