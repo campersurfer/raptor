@@ -632,12 +632,21 @@ class BinaryUnderstand:
             logger.debug(f"exports extraction failed: {e}")
             ctx.exports = []
 
+    _MAX_FUNCTIONS = 10_000
+
     def _extract_functions(self, r2, ctx: BinaryContextMap) -> None:
         try:
             fns = json.loads(self._cmd_t(r2, "aflj", self._T_QUERY) or "[]")
         except Exception as e:
             logger.warning("function list extraction failed: %s", e)
             return
+
+        if len(fns) > self._MAX_FUNCTIONS:
+            logger.warning(
+                "function list capped: %d -> %d",
+                len(fns), self._MAX_FUNCTIONS,
+            )
+            fns = fns[:self._MAX_FUNCTIONS]
 
         for raw in fns:
             name = str(raw.get("name", ""))
