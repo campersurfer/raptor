@@ -555,6 +555,8 @@ def parse_lockfile(path: Path) -> List[Dependency]:
         logger.warning("sca.parsers.nuget: cannot read %s: %s", path, e)
         return []
 
+    if not isinstance(data, dict):
+        return []
     out: List[Dependency] = []
     seen_keys: set = set()
     deps_block = data.get("dependencies") or {}
