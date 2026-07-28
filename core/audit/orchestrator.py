@@ -85,7 +85,7 @@ from .loaders import (
     load_fuzz_coverage as _load_fuzz_coverage,
     fuzz_coverage_for as _fuzz_coverage_for,
     load_or_build_taint_approx as _load_or_build_taint_approx_raw,
-    recreate_coverage_from_annotations as _recreate_coverage_from_annotations,
+    recreate_coverage_from_journal as _recreate_coverage_from_journal,
 )
 from .hypothesis_mapping import (
     hypothesis_to_semgrep_rule as _hypothesis_to_semgrep_rule,
@@ -1404,9 +1404,14 @@ def _run_audit_body(
         logger.debug("typestate model extraction failed", exc_info=True)
 
     coverage_records = _load_coverage_records(config.out_dir)
-    ann_dir = config.annotations_dir or _resolve_ann_dir(config.out_dir)
-    coverage_records = _recreate_coverage_from_annotations(
-        coverage_records, ann_dir, checklist,
+    # Rebuild coverage from the project-level review-journal index
+    # when this run's per-run coverage records are missing (e.g.
+    # after ``/project clean``). Annotations are human-only under
+    # the current design, so the journal index — not annotations —
+    # is the durable record of prior LLM reviews.
+    project_dir = Path(config.out_dir).parent if config.out_dir else None
+    coverage_records = _recreate_coverage_from_journal(
+        coverage_records, project_dir, checklist,
     )
     fuzz_coverage = _load_fuzz_coverage(config.out_dir)
 
@@ -3135,7 +3140,7 @@ def _commit_outcome(
     *,
     batch: bool = False,
 ) -> None:
-    """Write the review result to annotations + coverage-audit."""
+    """Write the review result to coverage-audit + review-journal.jsonl."""
     checked_by = ["audit"]
     if outcome.model:
         checked_by.append(outcome.model)
@@ -3150,6 +3155,28 @@ def _commit_outcome(
         line_start=gap.get("line_start", 0),
         line_end=gap.get("line_end"),
         strategies=gap.get("strategies"),
+        checked_by=checked_by,
+    )
+
+    # Persist the LLM's reasoning prose + full review context via the
+    # review journal. Without this, every non-Collector path (there
+    # are eight in this file) loses the outcome body — the LLM's
+    # hypotheses, tool evidence, and reasoning silently disappear
+    # after ``record_review`` because ``record_review`` itself only
+    # stamps status/hash/strategies into coverage-audit.json.
+    from .collector import append_journal_for_outcome
+    # ``run_id`` derived from the run-dir basename to match Collector's
+    # convention (see Collector construction ~orchestrator.py:1810).
+    # Without this every ``_commit_outcome`` journal entry would carry
+    # an empty ``run_id``, breaking cross-run queries and the project
+    # index's provenance.
+    run_id = config.out_dir.name if config.out_dir else ""
+    append_journal_for_outcome(
+        out_dir=config.out_dir,
+        target_path=config.target_path,
+        run_id=run_id,
+        outcome=outcome,
+        gap=gap,
         checked_by=checked_by,
     )
 
