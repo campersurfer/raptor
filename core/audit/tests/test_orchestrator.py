@@ -225,7 +225,7 @@ class TestRunOrchestrator:
         def failing_review(ctx, config):
             call_count[0] += 1
             if call_count[0] == 1:
-                raise RuntimeError("LLM timeout")
+                raise RuntimeError("review logic failed")
             return ReviewOutcome(
                 file=ctx["file"],
                 function=ctx["function"],

@@ -1627,7 +1627,7 @@ class TestRealExecutionRuby:
             finding_key="f1", file="greet.rb", function="greet",
             language="ruby",
             args=["world"],
-            expected_return='"hello world"',
+            expected_return='hello world',
             lang_config={"require_path": "greet"},
         )
         r = execute_witness(spec, tmp_path)
