@@ -103,6 +103,36 @@ def test_js_commented_if_false_not_detected():
     assert detect_dead_scopes("javascript", src) == []
 
 
+def test_js_template_literals_do_not_break_brace_match():
+    src = (
+        "if (false) {\n"
+        "  function shell(input) {\n"
+        "    exec(`echo ${input}`);\n"
+        "    return execSync(`ls -la ${input}`);\n"
+        "  }\n"
+        "  function other() { return 'uuid-here'; }\n"
+        "}\n"
+    )
+    ranges = detect_dead_scopes("javascript", src)
+    assert len(ranges) == 1
+    assert ranges[0][0] == 1
+    assert 3 <= ranges[0][1] <= 7
+
+
+def test_js_strings_do_not_break_brace_match():
+    src = (
+        "throw new Error('not loadable');\n"
+        "if (false) {\n"
+        "  function a() { return 'abc'; }\n"
+        "  function b() { return 'def'; }\n"
+        "}\n"
+    )
+    ranges = detect_dead_scopes("javascript", src)
+    assert len(ranges) == 1
+    assert ranges[0][0] == 2
+    assert ranges[0][1] == 5
+
+
 def test_typescript_alias_detected():
     src = "if (false) {\n  bad();\n}\n"
     assert detect_dead_scopes("typescript", src) == [(1, 3)]

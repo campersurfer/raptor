@@ -3261,3 +3261,33 @@ class TestSageCombinedPathway:
             assert "semgrep" in obs["observation"]
             assert obs["kind"] == "tool_confirmation"
 
+
+class TestDeadCodeReason:
+    """Tests for _dead_code_reason helper."""
+
+    def test_lexical_dead(self):
+        from core.audit.orchestrator import _dead_code_reason
+        gap = {"file": "a.py", "name": "f", "lexical_dead": True}
+        r = _dead_code_reason(gap)
+        assert r is not None
+        assert "lexical_dead" in r
+
+    def test_module_aborts(self):
+        from core.audit.orchestrator import _dead_code_reason
+        gap = {"file": "a.py", "name": "f", "module_aborts_on_load": True}
+        r = _dead_code_reason(gap)
+        assert r is not None
+        assert "module_aborts" in r
+
+    def test_build_excluded(self):
+        from core.audit.orchestrator import _dead_code_reason
+        gap = {"file": "a.go", "name": "f", "build_excluded": True}
+        r = _dead_code_reason(gap)
+        assert r is not None
+        assert "build_excluded" in r
+
+    def test_live_returns_none(self):
+        from core.audit.orchestrator import _dead_code_reason
+        gap = {"file": "a.py", "name": "f"}
+        assert _dead_code_reason(gap) is None
+

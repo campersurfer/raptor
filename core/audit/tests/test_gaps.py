@@ -444,3 +444,56 @@ class TestMarkChecked:
         result = self._read_checklist(tmp_path)
         checked = result["files"][0]["items"][0]["checked_by"]
         assert set(checked) == {"tool1", "tool2"}
+
+
+# ---------------------------------------------------------------------------
+# Dead-code flag propagation
+# ---------------------------------------------------------------------------
+
+
+def test_lexical_dead_propagated():
+    checklist = {
+        "files": [{
+            "path": "a.py",
+            "items": [
+                {"name": "dead_fn", "line_start": 5, "line_end": 10,
+                 "lexical_dead": True},
+                {"name": "live_fn", "line_start": 15, "line_end": 20},
+            ],
+        }],
+    }
+    gaps = compute_gaps(checklist, [])
+    by_name = {g["name"]: g for g in gaps}
+    assert by_name["dead_fn"].get("lexical_dead") is True
+    assert "lexical_dead" not in by_name["live_fn"]
+
+
+def test_module_aborts_on_load_propagated():
+    checklist = {
+        "files": [{
+            "path": "b.py",
+            "module_aborts_on_load": {"line": 3, "summary": "raise ImportError"},
+            "items": [
+                {"name": "before_abort", "line_start": 1, "line_end": 2},
+                {"name": "after_abort", "line_start": 5, "line_end": 10},
+            ],
+        }],
+    }
+    gaps = compute_gaps(checklist, [])
+    by_name = {g["name"]: g for g in gaps}
+    assert "module_aborts_on_load" not in by_name["before_abort"]
+    assert by_name["after_abort"].get("module_aborts_on_load") is True
+
+
+def test_build_excluded_propagated():
+    checklist = {
+        "files": [{
+            "path": "c.go",
+            "build_excluded": {"line": 1, "summary": "//go:build ignore"},
+            "items": [
+                {"name": "excluded_fn", "line_start": 5, "line_end": 15},
+            ],
+        }],
+    }
+    gaps = compute_gaps(checklist, [])
+    assert gaps[0].get("build_excluded") is True

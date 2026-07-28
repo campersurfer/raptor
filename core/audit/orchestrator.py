@@ -441,6 +441,35 @@ def review_one_function(
             on_progress(review_idx, total, outcome)
         return outcome
 
+    # ── Dead-code gate (G7): skip LLM for provably dead functions ────
+    _dead_reason = _dead_code_reason(gap)
+    if _dead_reason:
+        outcome = ReviewOutcome(
+            file=gap["file"],
+            function=gap["name"],
+            status="dormant",
+            body=(
+                f"[dead-code gate: {_dead_reason}] "
+                f"Function is in provably dead code — skipped LLM review."
+            ),
+            evidence_tool="reachability:dead_code",
+        )
+        outcome.line = gap.get("line_start", 0)
+        try:
+            if collector is not None:
+                collector.submit(outcome, gap)
+            else:
+                _commit_outcome(config, outcome, gap)
+        except Exception as exc:
+            logger.warning(
+                "commit failed for %s:%s: %s",
+                gap["file"], gap["name"], exc,
+            )
+        _tally_outcome(result, outcome)
+        if on_progress:
+            on_progress(review_idx, total, outcome)
+        return outcome
+
     # ── SAGE: pre-compute source hash for hypothesis recall/store ────
     try:
         from core.sage.hooks import compute_finding_source_hash
@@ -3697,6 +3726,29 @@ def _review_items(
     """Review a group of trivial functions from the same file individually."""
     outcomes = []
     for gap in batch:
+        dead_reason = _dead_code_reason(gap)
+        if dead_reason:
+            outcome = ReviewOutcome(
+                file=gap["file"],
+                function=gap["name"],
+                status="dormant",
+                body=(
+                    f"[dead-code gate: {dead_reason}] "
+                    f"Function is in provably dead code — skipped LLM review."
+                ),
+                evidence_tool="reachability:dead_code",
+            )
+            outcome.line = gap.get("line_start", 0)
+            try:
+                _commit_outcome(config, outcome, gap, batch=True)
+            except Exception as exc:
+                logger.warning(
+                    "commit failed for %s:%s: %s",
+                    gap["file"], gap["name"], exc,
+                )
+            outcomes.append(outcome)
+            continue
+
         ctx = _build_context(config, gap, checklist, context_map, evidence_index,
                              discovered_evidence=discovered_evidence,
                              blind=config.blind_first_pass)
@@ -3746,6 +3798,18 @@ def _review_items(
             )
         outcomes.append(outcome)
     return outcomes
+
+
+def _dead_code_reason(gap: Dict[str, Any]) -> Optional[str]:
+    """Return a human-readable reason if the gap is provably dead code,
+    else None. Checks flags propagated from the checklist by compute_gaps."""
+    if gap.get("lexical_dead"):
+        return "lexical_dead (inside always-false guard)"
+    if gap.get("module_aborts_on_load"):
+        return "module_aborts_on_load (file aborts before function binds)"
+    if gap.get("build_excluded"):
+        return "build_excluded (file excluded from compilation)"
+    return None
 
 
 def _apply_reachability_gate(

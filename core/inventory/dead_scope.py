@@ -133,10 +133,9 @@ _JS_DEAD_IF = re.compile(r"\bif\s*\(\s*(?:false|0)\s*\)\s*\{")
 
 
 def _detect_javascript(content: str) -> List[DeadRange]:
-    stripped = _js_strip_comments(content)
+    stripped = _js_strip_comments_and_strings(content)
     ranges: List[DeadRange] = []
     for m in _JS_DEAD_IF.finditer(stripped):
-        # The opening brace is the last char of the match.
         brace_pos = m.end() - 1
         close = _match_brace(stripped, brace_pos)
         if close is None:
@@ -153,6 +152,63 @@ def _js_strip_comments(content: str) -> str:
     out = _JS_BLOCK_COMMENT.sub(_spaces, content)
     out = _JS_LINE_COMMENT.sub(_spaces, out)
     return out
+
+
+def _js_strip_comments_and_strings(content: str) -> str:
+    """Strip comments AND string literals, preserving newlines so
+    line numbers remain valid.  After this, only braces, keywords,
+    and whitespace remain — the brace matcher never sees quote chars.
+    """
+    out = list(_js_strip_comments(content))
+    i = 0
+    n = len(out)
+    while i < n:
+        c = out[i]
+        if c not in "\"'`":
+            i += 1
+            continue
+        quote = c
+        out[i] = " "
+        j = i + 1
+        while j < n:
+            ch = out[j]
+            if ch == "\\":
+                out[j] = " "
+                if j + 1 < n:
+                    if out[j + 1] != "\n":
+                        out[j + 1] = " "
+                    j += 2
+                else:
+                    j += 1
+                continue
+            if quote == "`" and ch == "$" and j + 1 < n and out[j + 1] == "{":
+                out[j] = " "
+                out[j + 1] = " "
+                j += 2
+                depth = 1
+                while j < n and depth > 0:
+                    ic = out[j]
+                    if ic == "{":
+                        depth += 1
+                    elif ic == "}":
+                        depth -= 1
+                        if depth == 0:
+                            out[j] = " "
+                            j += 1
+                            break
+                    if ic != "\n":
+                        out[j] = " "
+                    j += 1
+                continue
+            if ch == quote:
+                out[j] = " "
+                j += 1
+                break
+            if ch != "\n":
+                out[j] = " "
+            j += 1
+        i = j
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------

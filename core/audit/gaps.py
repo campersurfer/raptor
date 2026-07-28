@@ -160,6 +160,16 @@ def compute_gaps(
                 "sloc": sloc,
             }
 
+            if item.get("lexical_dead"):
+                gap["lexical_dead"] = True
+            file_abort = file_info.get("module_aborts_on_load")
+            if isinstance(file_abort, dict):
+                abort_line = file_abort.get("line", 0)
+                if abort_line and line_start >= abort_line:
+                    gap["module_aborts_on_load"] = True
+            if isinstance(file_info.get("build_excluded"), dict):
+                gap["build_excluded"] = True
+
             if reachable_sinks:
                 gap["reachable_sinks"] = reachable_sinks
 

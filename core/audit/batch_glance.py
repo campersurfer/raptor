@@ -92,12 +92,12 @@ def make_batch_review_fn(
     Functions that can't be parsed from the batch response get
     status='error' so the caller can fall back to individual review.
     """
-    import contextlib
-
     model_config_override = None
     if model_name:
-        with contextlib.suppress(AttributeError, KeyError, TypeError):
-            model_config_override = llm_client.config.find_model_config(model_name)
+        try:
+            model_config_override = llm_client.config.config_for_model(model_name)
+        except (ValueError, AttributeError):
+            logger.warning("model override %r not resolved — using default", model_name)
 
     def batch_review_fn(
         contexts: list[dict[str, Any]],

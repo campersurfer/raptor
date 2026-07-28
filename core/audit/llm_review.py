@@ -489,7 +489,14 @@ _DEFAULT_SYSTEM_PROMPT = (
     "Early-return guards (if len > MAX return -1) protect subsequent "
     "code even though they are not syntactically 'inside' the call.\n\n"
     "If you cannot answer all four concretely, the correct verdict "
-    "is clean or suspicious, not finding."
+    "is clean or suspicious, not finding.\n\n"
+    "KNOWLEDGE GAPS: If you encounter types, macros, API contracts, "
+    "or domain-specific constructs that you do not understand well "
+    "enough to audit confidently, list them in reading_list. Each "
+    "item should be a precise question — e.g. 'What does IPC_NOID "
+    "flag control in ipc_addid?' or 'What invariant does "
+    "rcu_read_lock guarantee here?'. Only emit items when missing "
+    "knowledge genuinely weakened your review."
 )
 
 _CONTENT_FILTER_MARKERS = (
@@ -624,11 +631,12 @@ def make_review_fn(
     deepen_schema = schema or REVIEW_SCHEMA
     first_pass_schema = blind_schema or deepen_schema
 
-    import contextlib
     model_config_override = None
     if model_name:
-        with contextlib.suppress(AttributeError, KeyError, TypeError):
-            model_config_override = llm_client.config.find_model_config(model_name)
+        try:
+            model_config_override = llm_client.config.config_for_model(model_name)
+        except (ValueError, AttributeError):
+            logger.warning("model override %r not resolved — using default", model_name)
 
     def review_fn(
         ctx: Dict[str, Any],
