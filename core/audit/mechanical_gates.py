@@ -505,7 +505,7 @@ def _normalise_call_site(site: str) -> str:
     """
     text = re.sub(r"^\s*\d+\s+", "", site, flags=re.MULTILINE)
     text = re.sub(r"#.*$", "", text, flags=re.MULTILINE)
-    text = re.sub(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', r"\1", text)
+    text = re.sub(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', '"_S_"', text)
     text = re.sub(
         r'(?<!["\'])(?<!\w)([a-zA-Z_]\w*)(?=\s*[,\)\]\s])',
         "_",
