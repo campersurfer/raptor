@@ -283,6 +283,8 @@ def _osv_expand_aliases_impl(identifier: str) -> str:
         )
     except HttpError:
         return json.dumps({"aliases": []})
+    if not isinstance(data, dict):
+        return json.dumps({"aliases": []})
     aliases = list(data.get("aliases") or [])
     return json.dumps({"aliases": aliases, "primary_id": data.get("id")})
 

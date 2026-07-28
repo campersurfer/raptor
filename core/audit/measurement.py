@@ -127,8 +127,8 @@ def load_ground_truth(target_path: Path) -> List[GroundTruthEntry]:
             for item in items:
                 entries.append(GroundTruthEntry(
                     id=item.get("id", f"GT-{len(entries)+1}"),
-                    file=item["file"],
-                    function=item["function"],
+                    file=item.get("file", ""),
+                    function=item.get("function", ""),
                     line=item.get("line", 0),
                     vuln_type=item.get("vuln_type", ""),
                     description=item.get("description", ""),

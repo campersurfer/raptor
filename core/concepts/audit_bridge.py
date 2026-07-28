@@ -389,7 +389,7 @@ def invariant_violations_for_hypothesis(
                 continue
         else:
             # Legacy fallback for invariants without enrichment fields
-            negation = inv.get("negation", "").lower()
+            negation = (inv.get("negation") or "").lower()
             id_parts = re.split(r"[_\-.]", inv_id.lower())
             significant_parts = [p for p in id_parts if len(p) > 3]
 

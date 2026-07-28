@@ -95,6 +95,8 @@ def _extract_versions(data: dict) -> List[str]:
     Shape:
         {"versions": ["1.0.0", "1.1.0", "1.2.0-rc.1", ...]}
     """
+    if not isinstance(data, dict):
+        return []
     raw = data.get("versions") or []
     if not isinstance(raw, list):
         return []

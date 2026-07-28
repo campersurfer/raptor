@@ -133,7 +133,7 @@ _TRUNCATION_SIGNAL_RE = re.compile(
     r"|truncated\s*:\s*(?:true|false)"
     r"|isTruncated\b|is_truncated\b"
     # Logging across languages (bounded .{0,200} to avoid O(n^2) backtracking)
-    r"|warnings?\.warn|logger?\.\w+\(.{0,200}(?:truncat|cap|limit)"
+    r"|warnings?\.warn|(?:log(?:ger)?)\.\w+\(.{0,200}(?:truncat|cap|limit)"
     r"|console\.(?:warn|log)\(.{0,200}(?:truncat|cap|limit)"
     r"|log\.(?:Warn|Info|Printf)\(.{0,200}(?:truncat|cap|limit)"
     r"|fmt\.(?:Printf|Fprintf)\(.{0,200}(?:truncat|cap|limit))",

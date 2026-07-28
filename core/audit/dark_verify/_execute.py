@@ -255,7 +255,7 @@ def _classify_json_output(
                     and actual_repr[-1] == actual_repr[0]
                 ):
                     actual_repr = actual_repr[1:-1]
-            if actual_repr == expected_repr:
+            if actual_repr.lower() == expected_repr.lower():
                 return DarkVerifyResult(
                     finding_key=spec.finding_key, verdict="confirmed",
                     language=language, actual_return=actual_repr,

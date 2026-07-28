@@ -127,7 +127,7 @@ try:
                  output=output_dir) as run:
         # Run with captured stderr so _check_blocked can inspect it,
         # but print it through so the caller sees it too.
-        result = run(cmd, capture_output=True, text=True)
+        result = run(cmd, capture_output=True, text=True, timeout=1800)
 
         # Pass through child output
         if result.stdout:

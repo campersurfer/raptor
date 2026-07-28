@@ -29,16 +29,33 @@ logger = logging.getLogger(__name__)
 CHECKER_MATCHES_FILE = "checker-matches.jsonl"
 
 
-def _llm_callable_from_client(llm_client) -> Optional[Any]:
+def _llm_callable_from_client(
+    llm_client, cost_tracker=None,
+) -> Optional[Any]:
     """Adapt RAPTOR's ``LLMClient`` to checker_synthesis's
     ``LLMCallable`` Protocol. Returns None when the client doesn't
     expose ``generate_structured`` (e.g. ClaudeCodeProvider in
-    prep-only mode — checker synthesis can't run without an LLM)."""
+    prep-only mode -- checker synthesis can't run without an LLM).
+
+    When *cost_tracker* is provided, each call checks the budget
+    before invoking the LLM and returns None (skipped) when the
+    budget is exhausted.
+    """
     if not hasattr(llm_client, "generate_structured"):
         return None
     from core.llm.task_types import TaskType
 
     def _call(prompt, schema, system_prompt):
+        if cost_tracker is not None:
+            try:
+                max_cost = getattr(cost_tracker, "_max_cost", 0)
+                if max_cost > 0 and cost_tracker.total_cost >= max_cost:
+                    logger.debug(
+                        "checker_synthesis skipped: budget exhausted",
+                    )
+                    return None
+            except Exception:
+                pass
         try:
             data, _full = llm_client.generate_structured(
                 prompt=prompt,
@@ -48,7 +65,9 @@ def _llm_callable_from_client(llm_client) -> Optional[Any]:
             )
             return data
         except Exception as e:
-            logger.warning("checker_synthesis LLM call failed: %s", e)
+            logger.warning(
+                "checker_synthesis LLM call failed: %s", e,
+            )
             return None
     return _call
 
@@ -263,6 +282,7 @@ def emit_variant_matches_for_finding(
     checklist: Optional[Dict[str, Any]],
     repo_root: Path,
     llm_client,
+    cost_tracker=None,
     max_matches: int = 10,
     triage_each: bool = True,
     max_triage_calls: int = 10,
@@ -301,7 +321,9 @@ def emit_variant_matches_for_finding(
             )
             return 0
 
-        llm_callable = _llm_callable_from_client(llm_client)
+        llm_callable = _llm_callable_from_client(
+            llm_client, cost_tracker=cost_tracker,
+        )
         if llm_callable is None:
             logger.debug(
                 "checker_followup: skipped — LLM client does not "

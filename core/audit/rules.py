@@ -219,5 +219,8 @@ def _save_manifest(out_dir: Path, manifest: Dict[str, Any]) -> None:
             json.dump(manifest, f, indent=2)
         os.replace(tmp, str(manifest_path))
     except BaseException:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise

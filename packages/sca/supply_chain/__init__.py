@@ -418,7 +418,10 @@ def _install_hook_to_finding(
                     a.has_unconditional_dangerous_call for a in analyses
                 )
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug(
+                "guard analysis failed for %s",
+                hit.dependency.name, exc_info=True,
+            )
     return SupplyChainFinding(
         finding_id=(
             f"sca:supplychain:install_hook_suspicious:"

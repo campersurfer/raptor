@@ -373,7 +373,8 @@ def review_one_function(
     # ── Read-only aliases ──────────────────────────────────────────────
     checklist = shared.checklist
     context_map = shared.context_map
-    evidence_index = shared.evidence_index
+    with shared._evidence_lock:
+        evidence_index = shared.evidence_index
     sarif_cache = shared.sarif_cache
     flow_traces = shared.flow_traces
     variant_targets = shared.variant_targets
@@ -1153,19 +1154,20 @@ def review_one_function(
             outcome.function, outcome.file, outcome.review_result,
         )
         if llm_summary:
-            key = f"{outcome.file}:{outcome.function}"
-            if key not in taint_summary_results:
-                taint_summary_results[key] = llm_summary
+            with shared._taint_lock:
+                key = f"{outcome.file}:{outcome.function}"
+                if key not in taint_summary_results:
+                    taint_summary_results[key] = llm_summary
 
-            for edge in (call_edges or []):
-                callee_name = edge.get("callee", "")
-                if callee_name != outcome.function:
-                    continue
-                caller_key = f"{edge['caller_file']}:{edge['caller']}"
-                caller_sum = taint_summary_results.get(caller_key)
-                if caller_sum:
-                    call_args = edge.get("args", [])
-                    propagate_taint_upward(llm_summary, caller_sum, call_args)
+                for edge in (call_edges or []):
+                    callee_name = edge.get("callee", "")
+                    if callee_name != outcome.function:
+                        continue
+                    caller_key = f"{edge['caller_file']}:{edge['caller']}"
+                    caller_sum = taint_summary_results.get(caller_key)
+                    if caller_sum:
+                        call_args = edge.get("args", [])
+                        propagate_taint_upward(llm_summary, caller_sum, call_args)
 
     _tally_outcome(result, outcome)
 
@@ -1929,10 +1931,12 @@ def _run_audit_body(
         jf = joern_state["future"]
         if jf is not None and jf.done():
             nonlocal evidence_index
-            evidence_index = _drain_joern_future(
+            new_index = _drain_joern_future(
                 jf, evidence_index, checklist, sarif_cache,
             )
-            shared.evidence_index = evidence_index
+            with shared._evidence_lock:
+                evidence_index = new_index
+                shared.evidence_index = evidence_index
             joern_state["future"] = None
         elif jf is not None:
             joern_elapsed = time.monotonic() - (joern_state["submit_time"] or start_time)
@@ -6745,21 +6749,27 @@ def _run_dark_verification(
             outcome.evidence_tool = "dark_verify:confirmed"
             if prior != "finding":
                 result.findings += 1
-                if prior == "dark":
+                if prior in ("dark", "dormant"):
                     result.dormant -= 1
                 elif prior == "suspicious":
                     result.suspicious -= 1
+                elif prior == "clean":
+                    result.clean -= 1
+                elif prior == "error":
+                    result.errors -= 1
         elif verify_result.verdict == "refuted":
             outcome.status = "clean"
             outcome.evidence_tool = "dark_verify:refuted"
             if prior != "clean":
                 result.clean += 1
-                if prior == "dark":
+                if prior in ("dark", "dormant"):
                     result.dormant -= 1
                 elif prior == "suspicious":
                     result.suspicious -= 1
                 elif prior == "finding":
                     result.findings -= 1
+                elif prior == "error":
+                    result.errors -= 1
 
         records.append({
             "file": outcome.file,

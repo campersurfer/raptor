@@ -68,7 +68,7 @@ def cmd_gaps(args: argparse.Namespace) -> int:
             cp = subprocess.run(
                 [sys.executable, str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist"),
                  str(target_path), str(out_dir)],
-                env=env, capture_output=True, text=True,
+                env=env, capture_output=True, text=True, timeout=300,
             )
             if cp.returncode != 0:
                 print(f"error: checklist build failed: {cp.stderr.strip()}", file=sys.stderr)
@@ -665,8 +665,11 @@ def cmd_stale(args: argparse.Namespace) -> int:
             stale_count += 1
             continue
 
-        line_start = int(ann.metadata.get("line_start", "0") or "0")
-        line_end = int(ann.metadata.get("line_end", "0") or "0")
+        try:
+            line_start = int(ann.metadata.get("line_start", "0") or "0")
+            line_end = int(ann.metadata.get("line_end", "0") or "0")
+        except (ValueError, TypeError):
+            line_start, line_end = 0, 0
         if line_start and line_end:
             new_hash = compute_function_hash(full_path, line_start, line_end)
             if new_hash and new_hash != old_hash:
@@ -828,7 +831,8 @@ def cmd_critique(args: argparse.Namespace) -> int:
         for r in list_rules(out_dir):
             existing_rules.add(r.get("origin_function", ""))
     except Exception:
-        pass
+        logging.getLogger(__name__).debug(
+            "rule listing failed", exc_info=True)
 
     for key, stats in func_stats.items():
         if stats["record_count"] == 0:
@@ -923,7 +927,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         ck = subprocess.run(
             [str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist"),
              str(target_path), "--out", str(out_dir)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=300,
         )
         if ck.returncode != 0:
             print(f"checklist build failed: {ck.stderr.strip()}",
@@ -966,8 +970,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         tm = load_for_target(target_path)
         if tm is not None:
             threat_model = tm.to_dict()
-    except (ImportError, Exception):
-        pass
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "threat-model auto-load failed", exc_info=True)
 
     # --- binary oracle ---
     binary_verdicts = None

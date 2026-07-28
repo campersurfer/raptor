@@ -14,6 +14,7 @@ the second hook call onwards.
 """
 
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,6 +30,7 @@ _OLLAMA_EMBED_URL = os.getenv(
 _OLLAMA_EMBED_TIMEOUT = 60.0
 
 _direct_embed: Optional[bool] = None
+_direct_embed_lock = threading.Lock()
 
 
 def _use_direct_embed() -> bool:
@@ -41,13 +43,16 @@ def _use_direct_embed() -> bool:
     global _direct_embed
     if _direct_embed is not None:
         return _direct_embed
-    from .hooks import _ollama_gpu_available
-    _direct_embed = not _ollama_gpu_available()
-    if _direct_embed:
-        logger.debug(
-            "CPU-only: embedding via Ollama directly (60s timeout) "
-            "instead of SAGE /v1/embed (30s Go-side ceiling)"
-        )
+    with _direct_embed_lock:
+        if _direct_embed is not None:
+            return _direct_embed
+        from .hooks import _ollama_gpu_available
+        _direct_embed = not _ollama_gpu_available()
+        if _direct_embed:
+            logger.debug(
+                "CPU-only: embedding via Ollama directly (60s timeout) "
+                "instead of SAGE /v1/embed (30s Go-side ceiling)"
+            )
     return _direct_embed
 
 

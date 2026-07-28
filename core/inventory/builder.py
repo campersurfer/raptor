@@ -337,7 +337,7 @@ def build_inventory(
             for future in as_completed(futures):
                 fp = futures[future]
                 try:
-                    _collect_result(future.result())
+                    _collect_result(future.result(timeout=300))
                 except Exception as exc:
                     logger.warning(
                         "inventory: per-file extractor raised on "

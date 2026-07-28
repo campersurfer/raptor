@@ -236,8 +236,11 @@ def mark_checked(
     cl_path = out_dir / "checklist.json"
     if not cl_path.exists():
         return
-    with open(cl_path) as f:
-        checklist = json.load(f)
+    try:
+        with open(cl_path) as f:
+            checklist = json.load(f)
+    except json.JSONDecodeError:
+        return
 
     for file_info in checklist.get("files", []):
         if file_info.get("path") != file_path:
@@ -256,7 +259,10 @@ def mark_checked(
             json.dump(checklist, f, indent=2)
         os.replace(tmp, str(cl_path))
     except BaseException:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
 

@@ -200,7 +200,10 @@ def write_graded_findings(
             json.dump(export, f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
     return path
 

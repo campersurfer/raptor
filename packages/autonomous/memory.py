@@ -100,6 +100,12 @@ class FuzzingMemory:
         # Campaign history
         self.campaigns: List[Dict] = []
 
+        # Batched save: avoid writing to disk on every remember() call
+        self._dirty_count: int = 0
+        self._save_batch_size: int = 50
+        self._last_save_time: float = 0.0
+        self._save_interval: float = 30.0  # seconds
+
         # Load existing memory
         self.load()
 
@@ -138,6 +144,13 @@ class FuzzingMemory:
 
         except Exception as e:
             logger.error(f"Failed to load memory: {e}")
+
+    def flush(self):
+        """Flush any pending dirty state to disk."""
+        if self._dirty_count > 0:
+            self.save()
+            self._dirty_count = 0
+            self._last_save_time = time.time()
 
     def save(self):
         """Save memory to persistent storage."""
@@ -188,7 +201,16 @@ class FuzzingMemory:
             self.knowledge[key] = knowledge
             logger.info(f"Learned new knowledge: {key}")
 
-        self.save()
+        self._dirty_count += 1
+        now = time.time()
+        elapsed = now - self._last_save_time
+        if (
+            self._dirty_count >= self._save_batch_size
+            or elapsed >= self._save_interval
+        ):
+            self.save()
+            self._dirty_count = 0
+            self._last_save_time = now
 
     def recall(self, knowledge_type: str, key: str) -> Optional[FuzzingKnowledge]:
         """

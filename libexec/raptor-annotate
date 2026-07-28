@@ -176,7 +176,11 @@ def _read_body(opts: argparse.Namespace) -> str:
     if opts.body_file:
         if opts.body_file == "-":
             return sys.stdin.read()
-        return Path(opts.body_file).read_text(encoding="utf-8")
+        try:
+            return Path(opts.body_file).read_text(encoding="utf-8")
+        except (FileNotFoundError, IOError) as exc:
+            print(f"error: cannot read body file: {exc}", file=sys.stderr)
+            sys.exit(1)
     return ""
 
 

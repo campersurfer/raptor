@@ -339,18 +339,31 @@ def inject_chains_as_hypotheses(
     hypotheses = surface.setdefault("hypotheses", [])
     injected = 0
 
+    # Build a set of existing content keys to avoid duplicate injection.
+    existing_keys: set = set()
+    for h in hypotheses:
+        if isinstance(h, dict) and h.get("source") == "audit_chain":
+            key = (h.get("description", ""), h.get("goal", ""))
+            existing_keys.add(key)
+
     for chain in chains:
+        desc = chain.get("description", "")
+        goal = chain.get("goal", "")
+        if (desc, goal) in existing_keys:
+            continue
+        existing_keys.add((desc, goal))
         hypothesis = {
             "id": f"audit_chain_{injected}",
             "source": "audit_chain",
             "status": "imported",
-            "description": chain.get("description", ""),
+            "description": desc,
             "primitives": chain.get("primitives", []),
             "findings": [
-                f.get("finding_id", "") if isinstance(f, dict) else str(f)
+                f.get("finding_id", "")
+                if isinstance(f, dict) else str(f)
                 for f in chain.get("findings", [])
             ],
-            "goal": chain.get("goal", ""),
+            "goal": goal,
         }
         hypotheses.append(hypothesis)
         injected += 1
