@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -1040,6 +1041,7 @@ def scan_image_sources(
 
     deps: List[Dependency] = []
     digest_cache: Dict[str, ImageSbom] = {}
+    digest_cache_lock = threading.Lock()
     seen_images: Dict[str, Optional[ImageSbom]] = {}
 
     # Fetch SBOMs for unique images in parallel — each call is an
@@ -1057,13 +1059,14 @@ def scan_image_sources(
     if unique_images:
         from concurrent.futures import ThreadPoolExecutor
         def _fetch_one(image: str):
-            return image, fetch_image_sbom(
-                image, client=client,
-                platform_os=platform_os,
-                platform_arch=platform_arch,
-                digest_cache=digest_cache,
-                disk_cache=cache,
-            )
+            with digest_cache_lock:
+                return image, fetch_image_sbom(
+                    image, client=client,
+                    platform_os=platform_os,
+                    platform_arch=platform_arch,
+                    digest_cache=digest_cache,
+                    disk_cache=cache,
+                )
         # Cap at 8 — most repos have far fewer unique images, and
         # bigger pools just queue more work onto the egress proxy.
         max_workers = min(8, max(1, len(unique_images)))
