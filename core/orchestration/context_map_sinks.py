@@ -185,7 +185,7 @@ def _merge_framework_apis(
         if isinstance(fw, str):
             existing_fw.add(fw.lower())
         elif isinstance(fw, dict):
-            existing_fw.add(fw.get("name", "").lower())
+            existing_fw.add((fw.get("name") or "").lower())
 
     fresh_mechanical = []
     for api in result.framework_apis[:MAX_FRAMEWORK_APIS]:
