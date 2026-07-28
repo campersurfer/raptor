@@ -1063,12 +1063,22 @@ def run_joern_sweep(
             errors=["no CPG provided (build via run_joern_pre_sweep)"],
         )
 
+    # Use per-language max_call_depth_targeted instead of the
+    # hardcoded default (2) -- deeper languages like C need depth 3.
+    try:
+        from packages.joern.lang_config import detect_language, profile_for
+        _lang = detect_language(file_path)
+        _depth = profile_for(_lang).max_call_depth_targeted
+    except Exception:
+        _depth = 2
+
     flows = run_taint_query(
         cpg,
         function_name,
         sink_call,
         source_param=source_param,
         timeout=timeout,
+        max_call_depth=_depth,
     )
 
     if flows:

@@ -99,7 +99,7 @@ def joern_session(
                 timeout=tunables.cpg_timeout_s,
             )
         if cpg.exists():
-            srv.import_cpg(cpg.path, timeout=tunables.cpg_timeout_s)
+            srv.import_cpg(cpg.path, timeout=tunables.import_timeout_s)
 
         if register_reach_audit:
             try:

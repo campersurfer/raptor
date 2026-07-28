@@ -178,12 +178,14 @@ class DataflowVisualizer:
                         marker = ">>>" if i == node['line'] - 1 else "   "
                         context.append(f"{marker} {i + 1:4d} | {lines[i].rstrip()}")
 
-                    # HTML-escape to prevent injection using code_context
-                    node['code_context'] = escape('\n'.join(context))
+                    # D3's .text() handles escaping on the client side;
+                    # pre-escaping here causes double encoding of angle
+                    # brackets and ampersands in source snippets.
+                    node['code_context'] = '\n'.join(context)
                 else:
-                    node['code_context'] = escape(f"File not found: {node['file']}")
+                    node['code_context'] = f"File not found: {node['file']}"
             except Exception as e:
-                node['code_context'] = escape(f"Error reading file: {e}")
+                node['code_context'] = f"Error reading file: {e}"
 
         # Generate HTML
         html_content = self._create_html_template(

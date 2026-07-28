@@ -280,6 +280,12 @@ def _build_cpg_with_stall_monitor(
     on_progress: Callable,
 ) -> JoernCPG:
     """Build CPG with real-time stderr monitoring and adaptive stall detection."""
+    try:
+        from core.config import RaptorConfig
+        safe_env = RaptorConfig.get_safe_env()
+    except ImportError:
+        safe_env = None
+
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -287,6 +293,7 @@ def _build_cpg_with_stall_monitor(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=safe_env,
         )
     except OSError as e:
         logger.error("joern-parse failed to start: %s", e)
@@ -298,8 +305,12 @@ def _build_cpg_with_stall_monitor(
     )
     monitor_thread.start()
 
+    # Wait for the process without reading its pipes -- the monitor
+    # thread owns stderr and stdout is collected after it exits.
+    # Using proc.communicate() here would race with the monitor
+    # thread on the stderr pipe (two unsynchronised consumers).
     try:
-        stdout, _ = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
@@ -307,6 +318,8 @@ def _build_cpg_with_stall_monitor(
         return JoernCPG(path=cpg_path, target=target)
 
     monitor_thread.join(timeout=5)
+
+    stdout = proc.stdout.read() if proc.stdout else ""
 
     elapsed = int((time.monotonic() - start) * 1000)
 
@@ -436,6 +449,7 @@ def run_taint_query(
     source_param: Optional[str] = None,
     timeout: int = 300,
     subprocess_runner=None,
+    max_call_depth: int = 2,
 ) -> List[TaintFlow]:
     """Run a source-to-sink taint tracking query.
 
@@ -466,7 +480,8 @@ def run_taint_query(
     safe_source = _escape_scala_string(source_method)
     safe_sink = _escape_scala_string(sink_call)
 
-    query = _build_taint_query(safe_source, safe_sink, source_param)
+    query = _build_taint_query(safe_source, safe_sink, source_param,
+                              max_call_depth=max_call_depth)
 
     err = _validate_query(query)
     if err:

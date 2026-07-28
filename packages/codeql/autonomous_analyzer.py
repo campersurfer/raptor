@@ -1145,11 +1145,14 @@ class AutonomousCodeQLAnalyzer:
                 # CodeQLAgent run; fall back to repo_path when not
                 # available (analyzer-as-library call shapes).
                 _out = getattr(self, "out_dir", None) or repo_path
+                _rule = getattr(finding, "rule_id", "") or ""
+                _file = getattr(finding, "file_path", "") or ""
+                _line = getattr(finding, "start_line", None)
                 _finding_dict = {
-                    "finding_id": getattr(finding, "id", "") or "",
-                    "rule_id": getattr(finding, "rule_id", "") or "",
-                    "file_path": getattr(finding, "file_path", "") or "",
-                    "line": getattr(finding, "start_line", None),
+                    "finding_id": f"{_rule}:{_file}:{_line}",
+                    "rule_id": _rule,
+                    "file_path": _file,
+                    "line": _line,
                     "function": "",
                 }
                 record_suppression(
