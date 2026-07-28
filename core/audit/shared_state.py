@@ -150,6 +150,8 @@ class SharedState:
     # "file:function".
     discovered_evidence: dict[str, Any] = field(default_factory=dict)
 
+    _evidence_lock: threading.Lock = field(default_factory=threading.Lock)
+
     # Constraint set; updated via propagation after each finding review.
     constraints: Any = None
     _constraints_lock: threading.Lock = field(default_factory=threading.Lock)

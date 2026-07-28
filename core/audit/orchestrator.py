@@ -373,7 +373,8 @@ def review_one_function(
     # ── Read-only aliases ──────────────────────────────────────────────
     checklist = shared.checklist
     context_map = shared.context_map
-    evidence_index = shared.evidence_index
+    with shared._evidence_lock:
+        evidence_index = shared.evidence_index
     sarif_cache = shared.sarif_cache
     flow_traces = shared.flow_traces
     variant_targets = shared.variant_targets
@@ -1930,10 +1931,12 @@ def _run_audit_body(
         jf = joern_state["future"]
         if jf is not None and jf.done():
             nonlocal evidence_index
-            evidence_index = _drain_joern_future(
+            new_index = _drain_joern_future(
                 jf, evidence_index, checklist, sarif_cache,
             )
-            shared.evidence_index = evidence_index
+            with shared._evidence_lock:
+                evidence_index = new_index
+                shared.evidence_index = evidence_index
             joern_state["future"] = None
         elif jf is not None:
             joern_elapsed = time.monotonic() - (joern_state["submit_time"] or start_time)
