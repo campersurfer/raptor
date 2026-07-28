@@ -1648,56 +1648,59 @@ class OpenAICompatibleProvider(LLMProvider):
         input_tokens = output_tokens = 0
         stop = StopReason.ERROR
 
-        for chunk in resp:
-            if not chunk.choices:
-                if chunk.usage:
-                    input_tokens = (
-                        getattr(chunk.usage, "prompt_tokens", 0) or 0
-                    )
-                    output_tokens = (
-                        getattr(chunk.usage, "completion_tokens", 0) or 0
-                    )
-                continue
-
-            choice = chunk.choices[0]
-            delta = choice.delta
-
-            if delta and getattr(delta, "content", None):
-                yield StreamChunk(
-                    type="text_delta", text=delta.content,
-                )
-
-            if delta and getattr(delta, "tool_calls", None):
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if tc.id:
-                        tool_calls_seen[idx] = tc.id
-                        yield StreamChunk(
-                            type="tool_call_start",
-                            tool_call_id=tc.id,
-                            tool_call_name=(
-                                getattr(tc.function, "name", "") or ""
-                            ),
+        try:
+            for chunk in resp:
+                if not chunk.choices:
+                    if chunk.usage:
+                        input_tokens = (
+                            getattr(chunk.usage, "prompt_tokens", 0) or 0
                         )
-                    if (
-                        tc.function
-                        and getattr(tc.function, "arguments", None)
-                    ):
-                        yield StreamChunk(
-                            type="tool_call_delta",
-                            tool_call_id=tool_calls_seen.get(idx, ""),
-                            tool_call_input_delta=tc.function.arguments,
+                        output_tokens = (
+                            getattr(chunk.usage, "completion_tokens", 0) or 0
                         )
+                    continue
 
-            if choice.finish_reason:
-                stop = _OPENAI_FINISH_REASON_MAP.get(
-                    choice.finish_reason, StopReason.ERROR,
-                )
-                for idx in sorted(tool_calls_seen):
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                if delta and getattr(delta, "content", None):
                     yield StreamChunk(
-                        type="tool_call_end",
-                        tool_call_id=tool_calls_seen[idx],
+                        type="text_delta", text=delta.content,
                     )
+
+                if delta and getattr(delta, "tool_calls", None):
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if tc.id:
+                            tool_calls_seen[idx] = tc.id
+                            yield StreamChunk(
+                                type="tool_call_start",
+                                tool_call_id=tc.id,
+                                tool_call_name=(
+                                    getattr(tc.function, "name", "") or ""
+                                ),
+                            )
+                        if (
+                            tc.function
+                            and getattr(tc.function, "arguments", None)
+                        ):
+                            yield StreamChunk(
+                                type="tool_call_delta",
+                                tool_call_id=tool_calls_seen.get(idx, ""),
+                                tool_call_input_delta=tc.function.arguments,
+                            )
+
+                if choice.finish_reason:
+                    stop = _OPENAI_FINISH_REASON_MAP.get(
+                        choice.finish_reason, StopReason.ERROR,
+                    )
+                    for idx in sorted(tool_calls_seen):
+                        yield StreamChunk(
+                            type="tool_call_end",
+                            tool_call_id=tool_calls_seen[idx],
+                        )
+        finally:
+            resp.close()
 
         duration = time.monotonic() - t_start
 
