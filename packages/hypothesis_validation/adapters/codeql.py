@@ -415,12 +415,25 @@ class CodeQLAdapter(ToolAdapter):
             }
 
         # Build a lookup from SARIF ruleId back to the originating
-        # query path.  CodeQL sets ruleId to the query's @id metadata
-        # which typically matches the .ql file stem.
+        # query path.  CodeQL sets ruleId to the query's @id metadata.
+        # Register by both the full @id (extracted from the .ql source)
+        # and the bare stem as a fallback.  Using setdefault for stems
+        # avoids misattribution when query-pack subdirs contain queries
+        # with colliding filenames.
         rule_to_qp: Dict[str, str] = {}
         for qp in unique_paths:
-            stem = Path(qp).stem
-            rule_to_qp[stem] = qp
+            rule_to_qp.setdefault(Path(qp).stem, qp)
+            try:
+                ql_header = Path(qp).read_text(encoding="utf-8", errors="replace")[:4096]
+                for line in ql_header.split("\n"):
+                    stripped = line.strip().lstrip("*").strip()
+                    if stripped.startswith("@id "):
+                        at_id = stripped[4:].strip()
+                        if at_id:
+                            rule_to_qp[at_id] = qp
+                        break
+            except OSError:
+                pass
 
         matches_by_qp: Dict[str, List[Dict]] = {qp: [] for qp in unique_paths}
         for m in all_matches:
