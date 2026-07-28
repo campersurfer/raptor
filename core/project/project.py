@@ -490,9 +490,12 @@ class ProjectManager:
         if is_run_directory(src, strict=False):
             # Single run directory
             dest = dest_base / src.name
-            if dest.exists():
+            try:
+                dest.mkdir()
+            except FileExistsError:
                 skipped = 1
             else:
+                dest.rmdir()
                 shutil.move(str(src), str(dest))
                 generate_run_metadata(dest)
                 added = 1
@@ -501,9 +504,12 @@ class ProjectManager:
             for child in sorted(src.iterdir()):
                 if child.is_dir() and is_run_directory(child, strict=False):
                     dest = dest_base / child.name
-                    if dest.exists():
+                    try:
+                        dest.mkdir()
+                    except FileExistsError:
                         skipped += 1
                     else:
+                        dest.rmdir()
                         shutil.move(str(child), str(dest))
                         generate_run_metadata(dest)
                         added += 1
