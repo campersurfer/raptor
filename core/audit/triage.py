@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 
 from .prefilter import PrefilterResult
@@ -231,6 +232,8 @@ _GENERATED_EXTENSIONS = frozenset({
 
 def detect_generated_files(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[str]:
     """Identify generated files that should get reduced review depth."""
     generated: list[str] = []
@@ -247,9 +250,23 @@ def detect_generated_files(
             continue
 
         source = gap.get("source", "")
+        if not source and target_path:
+            source = _read_file_header(file_path, target_path)
         if source:
             first_lines = source[:500]
             if any(m.search(first_lines) for m in _GENERATED_MARKERS):
                 generated.append(file_path)
 
     return generated
+
+
+def _read_file_header(file_path: str, target_path: Path) -> str:
+    """Read the first 512 bytes of a file for generated-marker detection."""
+    try:
+        full = (target_path / file_path).resolve()
+        if not full.is_relative_to(target_path.resolve()):
+            return ""
+        with open(full, "r", errors="replace") as f:
+            return f.read(512)
+    except OSError:
+        return ""

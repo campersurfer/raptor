@@ -1572,7 +1572,7 @@ def _run_audit_body(
         or getattr(approx, "direct_flows", None)
     )
     from .triage import detect_generated_files
-    generated_files = set(detect_generated_files(gaps))
+    generated_files = set(detect_generated_files(gaps, target_path=config.target_path))
     if generated_files:
         logger.info(
             "triage: %d generated files detected — functions will be skipped",
@@ -2633,7 +2633,7 @@ def _run_audit_body(
 
     try:
         from .triage import detect_generated_files
-        generated = detect_generated_files(gaps)
+        generated = detect_generated_files(gaps, target_path=config.target_path)
     except Exception:
         logger.debug("generated-file detection failed", exc_info=True)
 
