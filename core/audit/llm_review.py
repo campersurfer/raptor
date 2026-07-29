@@ -762,6 +762,11 @@ def make_review_fn(
 
         status = result.get("status", "suspicious")
         if status not in ("clean", "suspicious", "finding", "dormant"):
+            logger.warning(
+                "LLM returned invalid status %r for %s:%s — "
+                "falling back to suspicious",
+                status, ctx["file"], ctx["function"],
+            )
             status = "suspicious"
 
         if status == "clean" and escalate_clean:

@@ -434,6 +434,11 @@ def _evaluate(
         data = _extract_data(response) or {}
         claim = data.get("verdict", "refuted")
         if claim not in ("confirmed", "refuted", "inconclusive"):
+            logger.warning(
+                "LLM returned invalid verdict %r for hypothesis %r "
+                "— falling back to refuted",
+                claim, hypothesis.text[:80],
+            )
             claim = "refuted"
         verdict = verdict_from(evidence, claim)
         reasoning = data.get("reasoning", "") or evidence.summary
@@ -487,6 +492,11 @@ def _evaluate_with_refinement(
     data = _extract_data(response) or {}
     claim = data.get("verdict", "inconclusive" if evidence.matches else "refuted")
     if claim not in ("confirmed", "refuted", "inconclusive"):
+        logger.warning(
+            "LLM returned invalid verdict %r for hypothesis %r "
+            "— falling back to inconclusive",
+            claim, hypothesis.text[:80],
+        )
         claim = "inconclusive"
     verdict = verdict_from(evidence, claim)
     reasoning = data.get("reasoning", "") or evidence.summary

@@ -147,6 +147,11 @@ def make_batch_review_fn(
                 r = results[i]
                 status = r.get("status", "suspicious")
                 if status not in ("clean", "suspicious"):
+                    logger.warning(
+                        "batch glance returned invalid status %r for "
+                        "%s:%s — falling back to suspicious",
+                        status, ctx["file"], ctx["function"],
+                    )
                     status = "suspicious"
                 outcomes.append(ReviewOutcome(
                     file=ctx["file"],
