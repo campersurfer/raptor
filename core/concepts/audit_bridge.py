@@ -114,7 +114,7 @@ def _relevance_score(
     source_lower = source.lower() if source else ""
 
     desc = (item.get("description") or item.get("statement") or "").lower()
-    item_id = (item.get("id") or item.get("concept") or "").lower()
+    item_id = (item.get("id") or item.get("concept") or item.get("name") or "").lower()
 
     # Direct naming match (case-insensitive, no double-count)
     if fn_lower in desc or fn_lower in item_id:
@@ -137,7 +137,9 @@ def _relevance_score(
     # Contract is FOR this function specifically
     if item.get("function") == function_name:
         score += 8.0
-    elif item.get("file", "") and _paths_match(file_path, item.get("file", "")):
+    item_file = item.get("file") or item.get("source") or ""
+    item_file = re.split(r":\d", item_file, maxsplit=1)[0]
+    if item_file and _paths_match(file_path, item_file):
         score += 2.0
 
     # Concept ID parts appear in the source body (weak signal)
@@ -257,6 +259,127 @@ def domain_model_context(
                 parts.append(f"  - Implication: {c['implication']}")
 
     return "\n".join(parts)
+
+
+def primers_from_domain_model(
+    out_dir: Path,
+    file_path: str,
+    function_name: str,
+    source: str = "",
+) -> list[str]:
+    """Generate dynamic review primers from study output.
+
+    Unlike the fixed primers in strategy.py, these are derived from the
+    actual domain model — they carry the specific invariants and contracts
+    that study discovered for this codebase.  Each primer is an active
+    review directive telling the LLM exactly what to check.
+
+    All candidate primers are scored and ranked — contracts and paired
+    operations naturally score highest (exact function match / direct
+    source reference), so they are never crowded out by generic concepts.
+    The relevance threshold (>1.0) is the only filter; no hard cap.
+
+    Returns a list of primer strings (may be empty).
+    """
+    model = _find_domain_model(out_dir)
+    if not model:
+        return []
+
+    candidates: list[tuple[float, str]] = []
+
+    # --- Concepts (simple schema: name/kind/description/invariants as strings) ---
+    for concept in model.get("concepts", []):
+        inv_list = concept.get("invariants", [])
+        if not inv_list:
+            continue
+        score = _relevance_score(concept, file_path, function_name, source)
+        if score <= 1.0:
+            continue
+        kind_label = (concept.get("kind") or "domain concept").upper().replace("_", " ")
+        lines = [f"DOMAIN-SPECIFIC: {kind_label} — {concept.get('name', '?')}"]
+        if concept.get("description"):
+            lines.append(concept["description"])
+        lines.append("")
+        lines.append("Check each invariant — a violation is a bug:")
+        for inv in inv_list:
+            lines.append(f"- {inv}")
+        candidates.append((score, "\n".join(lines)))
+
+    # --- Paired operations → check for unbalanced acquire/release ---
+    paired = model.get("paired_operations", [])
+    if paired and source:
+        source_lower = source.lower()
+        relevant_pairs = []
+        for po in paired:
+            acq = po.get("acquire", "")
+            rel = po.get("release", "")
+            if acq and re.search(r"\b" + re.escape(acq.lower()) + r"\b", source_lower):
+                relevant_pairs.append(po)
+            elif rel and re.search(r"\b" + re.escape(rel.lower()) + r"\b", source_lower):
+                relevant_pairs.append(po)
+        if relevant_pairs:
+            score = 6.0 + len(relevant_pairs)
+            lines = ["DOMAIN-SPECIFIC: PAIRED OPERATIONS"]
+            lines.append(
+                "This function touches paired acquire/release APIs. "
+                "Every acquire must have a matching release on all paths "
+                "(including error paths)."
+            )
+            lines.append("")
+            for po in relevant_pairs:
+                note = f" ({po['note']})" if po.get("note") else ""
+                lines.append(
+                    f"- {po['acquire']} / {po['release']} "
+                    f"[{po.get('kind', '?')}]{note}"
+                )
+            candidates.append((score, "\n".join(lines)))
+
+    # --- Top-level invariants (rich schema: id/statement/negation) ---
+    top_invariants = model.get("invariants", [])
+    if top_invariants:
+        scored = sorted(
+            [
+                (inv, _relevance_score(inv, file_path, function_name, source))
+                for inv in top_invariants
+            ],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        relevant_invs = [(inv, s) for inv, s in scored[:5] if s > 1.0]
+        if relevant_invs:
+            avg_score = sum(s for _, s in relevant_invs) / len(relevant_invs)
+            lines = ["DOMAIN-SPECIFIC: INVARIANTS FROM STUDY"]
+            lines.append(
+                "These invariants were extracted from this codebase by "
+                "/understand --study. A violation is a real bug."
+            )
+            lines.append("")
+            for inv, _ in relevant_invs:
+                stmt = inv.get("statement") or inv.get("description", "")
+                lines.append(f"- {stmt}")
+                neg = inv.get("negation")
+                if neg:
+                    lines.append(f"  Violation consequence: {neg}")
+            candidates.append((avg_score, "\n".join(lines)))
+
+    # --- Contracts (rich schema: function/input_semantics/output_semantics) ---
+    for contract in model.get("contracts", []):
+        cf = (contract.get("function") or "").lower()
+        if cf != function_name.lower():
+            continue
+        lines = [f"DOMAIN-SPECIFIC: CONTRACT FOR {contract['function']}"]
+        if contract.get("input_semantics"):
+            lines.append(f"Input: {contract['input_semantics']}")
+        if contract.get("output_semantics"):
+            lines.append(f"Output: {contract['output_semantics']}")
+        if contract.get("ownership_transfer"):
+            lines.append(f"Ownership: {contract['ownership_transfer']}")
+        if contract.get("implication"):
+            lines.append(f"Implication: {contract['implication']}")
+        candidates.append((10.0, "\n".join(lines)))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return [text for _, text in candidates]
 
 
 def _guard_in_scope(inv: dict[str, Any], finding_file: str) -> bool:

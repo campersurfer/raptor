@@ -216,6 +216,18 @@ def assemble_context(
         )
     ctx["strategy_exemplars"] = _load_strategy_exemplars(strategies)
     ctx["strategy_primers"] = _load_strategy_primers(strategies)
+    _has_domain_primers = False
+    if out_dir:
+        try:
+            from core.concepts.audit_bridge import primers_from_domain_model
+            dynamic = primers_from_domain_model(
+                out_dir, file_path, function_name, ctx.get("source", ""),
+            )
+            if dynamic:
+                ctx["strategy_primers"].extend(dynamic)
+                _has_domain_primers = True
+        except Exception:
+            logger.debug("domain model primer extraction failed", exc_info=True)
     ctx["language_patterns"] = _load_language_patterns(
         file_path, source=ctx.get("source", ""),
     )
@@ -232,7 +244,7 @@ def assemble_context(
         file_path, ctx.get("source", ""),
     )
 
-    if out_dir:
+    if out_dir and not _has_domain_primers:
         try:
             from core.concepts.audit_bridge import domain_model_context
             dm_block = domain_model_context(
