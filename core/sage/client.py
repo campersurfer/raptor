@@ -194,7 +194,7 @@ class SageClient:
             )
             return resp.status_code == 200 and "status" in resp.json()
         except Exception as e:
-            logger.debug(f"SAGE health check failed: {e}")
+            logger.debug("SAGE health check failed: %s", e)
             return False
 
     def _get_client(self):
@@ -229,7 +229,7 @@ class SageClient:
         try:
             return client.embed(text)
         except Exception as e:
-            logger.warning(f"SAGE embed failed: {e}")
+            logger.warning("SAGE embed failed: %s", e)
             return None
 
     def propose(
@@ -308,7 +308,7 @@ class SageClient:
             client.propose(**propose_kwargs)
             return True
         except Exception as e:
-            logger.warning(f"SAGE propose failed: {e}")
+            logger.warning("SAGE propose failed: %s", e)
             return False
 
     def query(
@@ -362,7 +362,7 @@ class SageClient:
                 for r in response.results
             )
         except Exception as e:
-            logger.warning(f"SAGE query failed: {e}")
+            logger.warning("SAGE query failed: %s", e)
             return ()
         if len(self._query_cache) >= 256:
             # Evict oldest entry (first inserted) to bound memory.
