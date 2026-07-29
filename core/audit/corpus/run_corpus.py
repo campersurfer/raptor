@@ -177,7 +177,6 @@ def _run_audit(
     *,
     model: str = "",
     out_dir: Optional[Path] = None,
-    two_pass: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
@@ -214,7 +213,6 @@ def _run_audit(
 
         outcomes, audit_dir = _run_audit_on_target(
             src_dir, repo_labels, model=model, out_dir=out_dir,
-            two_pass=two_pass,
         )
         if audit_dir:
             run_dirs.append(audit_dir)
@@ -252,14 +250,26 @@ def _run_audit(
     return results, run_dirs
 
 
-def _status_matches(expected: str, actual: str) -> bool:
-    """Check if actual status satisfies the expected ground truth."""
+def _status_matches(
+    expected: str,
+    actual: str,
+    *,
+    probe: bool = False,
+) -> bool:
+    """Check if actual status satisfies the expected ground truth.
+
+    In probe mode, dormant-labeled functions match on ``finding`` too —
+    the model correctly detected the bug but lacks the reachability
+    context (callers, binary oracle) that the orchestrator uses to
+    downgrade findings to dormant.
+    """
     if expected == "finding":
         return actual == "finding"
     if expected == "clean":
         return actual in ("clean", "dormant")
     if expected == "dormant":
-        return actual in ("dormant", "clean")
+        accept = {"dormant", "clean", "finding"} if probe else {"dormant", "clean"}
+        return actual in accept
     return False
 
 
@@ -269,7 +279,6 @@ def _run_audit_on_target(
     *,
     model: str = "",
     out_dir: Optional[Path] = None,
-    two_pass: bool = False,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
     """Run /audit orchestrator on a target.
 
@@ -292,8 +301,6 @@ def _run_audit_on_target(
     ]
     if model:
         cmd.extend(["--model", model])
-    if two_pass:
-        cmd.append("--two-pass")
 
     from core.config import RaptorConfig
     env = RaptorConfig.get_safe_env()
@@ -351,6 +358,410 @@ def _run_audit_on_target(
                     outcomes_by_id[key] = entry
 
     return outcomes_by_id, out_dir
+
+
+def _extract_source(
+    source_dir: Path,
+    label: Any,
+) -> Optional[str]:
+    """Read the labeled function's source lines from a fixture directory."""
+    src_file = source_dir / label.source.file
+    if not src_file.is_file():
+        return None
+    lines = src_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    start = max(0, label.source.line_start - 1)
+    end = label.source.line_end
+    return "\n".join(lines[start:end])
+
+
+def _build_probe_context(
+    label: Any,
+    source: str,
+    *,
+    domain_model_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Build a minimal context dict for format_context_for_prompt.
+
+    Mirrors the real audit pipeline's context slice but without call
+    graph, context map, or mechanical evidence.  Tests whether the
+    prompting alone is sufficient for correct bug detection.
+
+    Probe mode deliberately omits reachability signals (callers, role
+    classification) — the finding/dormant distinction is made by the
+    orchestrator's G7 gate, not the LLM.  Probe scoring accounts for
+    this: dormant-labeled functions match on finding or dormant.
+
+    When *domain_model_dir* points to a directory containing
+    ``domain-model.json``, the relevant domain knowledge is injected
+    into the context — the same path the real pipeline takes after
+    ``/understand --study``.
+    """
+    file_path = label.source.file
+    func_name = label.function_id.split(":")[-1] if ":" in label.function_id else label.function_id
+
+    ctx: Dict[str, Any] = {
+        "file": file_path,
+        "function": func_name,
+        "line_start": label.source.line_start,
+        "line_end": label.source.line_end,
+        "source": source,
+        "metadata": {},
+        "callers": [],
+        "callees": [],
+    }
+
+    if domain_model_dir:
+        try:
+            from core.concepts.audit_bridge import domain_model_context
+            dm_block = domain_model_context(
+                domain_model_dir, file_path, func_name, source,
+            )
+            if dm_block:
+                ctx["domain_model"] = dm_block
+        except Exception:
+            logger.debug("domain model context failed for %s:%s",
+                         file_path, func_name, exc_info=True)
+
+    return ctx
+
+
+def _run_probe(
+    labels: List[Any],
+    source_dirs: Dict[str, Path],
+    *,
+    model: str = "",
+    max_tokens: int = 8192,
+    domain_model_dir: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Run lightweight LLM probes against labeled functions.
+
+    Uses the same system prompt, strategy primers, and review schema as
+    the real audit pipeline, but skips the orchestrator, mechanical
+    tools, and refinement loops.  Tests whether the prompting alone
+    produces correct verdicts.
+
+    When *domain_model_dir* points to a directory containing
+    ``domain-model.json``, the domain model is used for both passive
+    context injection and active primer generation.
+
+    LLM calls are parallelised via ``run_parallel`` using the same
+    adaptive throttle as /audit — concurrency is derived from the
+    model's RPM limit and backs off on 429s.
+    """
+    import threading
+    from core.audit.context import format_context_for_prompt
+    from core.audit.llm_review import REVIEW_SCHEMA, _DEFAULT_SYSTEM_PROMPT
+    from core.audit.strategy import infer_strategies, primers_for_strategies
+    from core.llm.client import LLMClient
+    from core.llm.concurrency import run_parallel, derive_max_workers
+
+    client = LLMClient()
+    model_config = None
+    if model:
+        try:
+            model_config = client.config.config_for_model(model)
+        except (ValueError, AttributeError) as exc:
+            logger.error("cannot resolve model %r: %s", model, exc)
+            return []
+
+    probe_schema = {
+        "type": "object",
+        "properties": {
+            "status": REVIEW_SCHEMA["properties"]["status"],
+            "hypothesis": REVIEW_SCHEMA["properties"]["hypothesis"],
+            "hypotheses": REVIEW_SCHEMA["properties"]["hypotheses"],
+            "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
+            "cwe": REVIEW_SCHEMA["properties"].get("cwe", {"type": "string"}),
+            "body": REVIEW_SCHEMA["properties"].get("body", {"type": "string"}),
+        },
+        "required": ["status"],
+    }
+
+    # --- Phase 1: prep (serial, cheap) ---
+    work_items: List[Optional[Dict[str, Any]]] = []
+    early_results: Dict[int, Dict[str, Any]] = {}
+    total = len(labels)
+
+    for i, label in enumerate(labels):
+        src_dir = source_dirs.get(label.source.repo)
+        if src_dir is None or not src_dir.is_dir():
+            early_results[i] = {
+                "function_id": label.function_id,
+                "bug_class": label.bug_class,
+                "expected": label.expected_status,
+                "actual": "error",
+                "match": False,
+                "hypothesis": "",
+                "evidence_tool": "probe",
+                "model": model,
+                "cost_usd": 0.0,
+                "duration_s": 0.0,
+                "error": f"source dir missing: {label.source.repo}",
+            }
+            work_items.append(None)
+            continue
+
+        source = _extract_source(src_dir, label)
+        if source is None:
+            early_results[i] = {
+                "function_id": label.function_id,
+                "bug_class": label.bug_class,
+                "expected": label.expected_status,
+                "actual": "error",
+                "match": False,
+                "hypothesis": "",
+                "evidence_tool": "probe",
+                "model": model,
+                "cost_usd": 0.0,
+                "duration_s": 0.0,
+                "error": f"source file not found: {label.source.file}",
+            }
+            work_items.append(None)
+            continue
+
+        dm_dir = domain_model_dir
+
+        ctx = _build_probe_context(label, source, domain_model_dir=dm_dir)
+        prompt = format_context_for_prompt(ctx)
+
+        strategies = infer_strategies(
+            file_path=label.source.file,
+            function_name=ctx["function"],
+            source=source,
+        )
+        primers = primers_for_strategies(strategies)
+
+        if dm_dir:
+            try:
+                from core.concepts.audit_bridge import primers_from_domain_model
+                dynamic = primers_from_domain_model(
+                    dm_dir, label.source.file,
+                    ctx["function"], source,
+                )
+                if dynamic:
+                    primers.extend(dynamic)
+            except Exception:
+                logger.debug("domain model primer extraction failed",
+                             exc_info=True)
+
+        system_prompt = _DEFAULT_SYSTEM_PROMPT
+        if primers:
+            system_prompt = (
+                system_prompt + "\n\n"
+                + "\n\n".join(primers)
+            )
+
+        work_items.append({
+            "idx": i,
+            "label": label,
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "strategies": strategies,
+        })
+
+    # --- Phase 2: LLM calls (parallel, throttled) ---
+    llm_items = [w for w in work_items if w is not None]
+    progress_lock = threading.Lock()
+    progress_counter = [0]
+
+    def _probe_one(item: Dict[str, Any]) -> Dict[str, Any]:
+        label = item["label"]
+        kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
+        if model_config is not None:
+            kwargs["model_config"] = model_config
+        else:
+            kwargs["task_type"] = "audit"
+
+        t0 = time.monotonic()
+        try:
+            response = client.generate_structured(
+                item["prompt"],
+                probe_schema,
+                system_prompt=item["system_prompt"],
+                **kwargs,
+            )
+            result = response.result if hasattr(response, "result") else {}
+            cost = response.cost if hasattr(response, "cost") else 0.0
+        except Exception as exc:
+            logger.error("probe failed for %s: %s", label.function_id, exc)
+            result = {"status": "error"}
+            cost = 0.0
+        dur = time.monotonic() - t0
+
+        actual = result.get("status", "error")
+        expected = label.expected_status
+        match = _status_matches(expected, actual, probe=True)
+        hypothesis = result.get("hypothesis") or ""
+        strategies = item["strategies"]
+
+        with progress_lock:
+            progress_counter[0] += 1
+            n = progress_counter[0]
+        strat_str = ",".join(sorted(strategies - {"general"})) or "general"
+        status_marker = {"clean": ".", "finding": "!",
+                         "dormant": "~", "suspicious": "?",
+                         "error": "x"}.get(actual, "?")
+        match_marker = " " if match else " MISS"
+        print(f"  [{n}/{total}] {label.function_id} "
+              f"[{strat_str}] "
+              f"expected={expected} got={actual}{status_marker}"
+              f"{match_marker} "
+              f"(${cost:.4f}, {dur:.1f}s)",
+              flush=True)
+
+        return {
+            "idx": item["idx"],
+            "function_id": label.function_id,
+            "bug_class": label.bug_class,
+            "expected": expected,
+            "actual": actual,
+            "match": match,
+            "hypothesis": hypothesis,
+            "hypotheses": result.get("hypotheses", []),
+            "counter_hypothesis": result.get("counter_hypothesis", ""),
+            "strategies": sorted(strategies),
+            "evidence_tool": "probe",
+            "model": model,
+            "cost_usd": cost,
+            "duration_s": dur,
+        }
+
+    model_name = model_config.model_name if model_config else model
+    workers = derive_max_workers(model_name) if model_name else 1
+    logger.info("probe: %d items, %d workers (model=%s)",
+                len(llm_items), workers, model_name)
+
+    llm_results = run_parallel(
+        llm_items, _probe_one,
+        max_workers=workers, model=model_name, label="probe",
+    )
+
+    # --- Phase 3: merge and order ---
+    result_by_idx: Dict[int, Dict[str, Any]] = dict(early_results)
+    for r in llm_results:
+        if r is not None:
+            result_by_idx[r.pop("idx")] = r
+
+    results = [result_by_idx[i] for i in range(total) if i in result_by_idx]
+
+    _record_scorecard(results, model)
+
+    return results
+
+
+def _record_scorecard(
+    results: List[Dict[str, Any]],
+    model: str,
+) -> None:
+    """Record probe results into the model scorecard.
+
+    Each result becomes one CORPUS_GROUND_TRUTH event under the
+    decision class ``audit:<bug_class>``.
+    """
+    if not model or not results:
+        return
+    try:
+        from core.llm.scorecard.scorecard import EventType, ModelScorecard
+        scorecard_path = Path(
+            os.environ.get("RAPTOR_DIR", "."),
+        ) / "out" / "llm_scorecard.json"
+        scorecard = ModelScorecard(scorecard_path)
+        for r in results:
+            if r.get("actual") == "error":
+                continue
+            decision_class = f"audit:{r['bug_class']}"
+            outcome = "correct" if r.get("match") else "incorrect"
+            sample = None
+            if outcome == "incorrect":
+                hyp = (r.get("hypothesis") or "")[:200]
+                sample = {
+                    "function_id": r["function_id"],
+                    "expected": r["expected"],
+                    "actual": r["actual"],
+                    "hypothesis": hyp,
+                }
+            scorecard.record_event(
+                decision_class=decision_class,
+                model=model,
+                event_type=EventType.CORPUS_GROUND_TRUTH,
+                outcome=outcome,
+                sample=sample,
+            )
+    except Exception:
+        logger.debug("scorecard recording failed", exc_info=True)
+
+
+def _print_cross_model_summary(
+    results: List[Dict[str, Any]],
+    models: List[str],
+) -> None:
+    """Print a matrix showing per-function verdicts across models."""
+    by_func: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for r in results:
+        fid = r["function_id"]
+        mdl = r.get("model", "") or "default"
+        by_func.setdefault(fid, {})[mdl] = r
+
+    model_labels = [m or "default" for m in models]
+    header = f"{'Function':<45} {'Expected':<9}"
+    for ml in model_labels:
+        short = ml[:12]
+        header += f" {short:<13}"
+    header += " Agree?"
+
+    print(f"\n{'=' * len(header)}")
+    print("Cross-model comparison")
+    print(header)
+    print("-" * len(header))
+
+    agree_count = 0
+    disagree_count = 0
+    for fid in sorted(by_func):
+        verdicts = by_func[fid]
+        first = next(iter(verdicts.values()))
+        expected = first["expected"]
+
+        fid_short = fid if len(fid) <= 44 else "..." + fid[-41:]
+        line = f"{fid_short:<45} {expected:<9}"
+
+        statuses = []
+        for ml in model_labels:
+            r = verdicts.get(ml)
+            if r is None:
+                line += f" {'—':<13}"
+            else:
+                actual = r["actual"]
+                match = r.get("match", False)
+                marker = "" if match else "*"
+                line += f" {actual + marker:<13}"
+                statuses.append(actual)
+
+        all_agree = len(set(statuses)) <= 1
+        if all_agree:
+            agree_count += 1
+            line += " yes"
+        else:
+            disagree_count += 1
+            line += " NO"
+        print(line)
+
+    total = agree_count + disagree_count
+    print(f"\nAgreement: {agree_count}/{total} "
+          f"({100 * agree_count / total:.0f}%)" if total else "")
+
+    per_model_acc = {}
+    for ml in model_labels:
+        model_results = [r for r in results if (r.get("model", "") or "default") == ml]
+        matched = sum(1 for r in model_results if r.get("match"))
+        per_model_acc[ml] = (matched, len(model_results))
+
+    print("\nPer-model accuracy:")
+    for ml in model_labels:
+        matched, total = per_model_acc[ml]
+        pct = 100 * matched / total if total else 0
+        cost = sum(r.get("cost_usd", 0) for r in results
+                   if (r.get("model", "") or "default") == ml)
+        print(f"  {ml}: {matched}/{total} ({pct:.0f}%) ${cost:.4f}")
 
 
 def _write_results(
@@ -500,8 +911,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Run only one label by function_id (e.g. c/heartbeat.c:read_u16_be)",
     )
     parser.add_argument(
-        "--model", default="",
-        help="LLM model to use (default: orchestrator default)",
+        "--model", action="append", default=[],
+        help="LLM model to use (repeatable for cross-model comparison; "
+             "default: orchestrator default)",
     )
     parser.add_argument(
         "--fetch", action="store_true",
@@ -520,12 +932,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Load and verify labels without running audit",
     )
     parser.add_argument(
-        "--two-pass", action="store_true",
-        help="Split reasoning from classification into two LLM calls",
+        "--probe", action="store_true",
+        help="Lightweight LLM probe mode: test prompting without the full "
+             "audit pipeline.  Uses the same system prompt, strategy primers, "
+             "and review schema as /audit but skips orchestrator, mechanical "
+             "tools, and refinement loops",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, default=8192,
+        help="Maximum output tokens for --probe mode (default: 8192)",
+    )
+    parser.add_argument(
+        "--domain-model", type=Path, default=None,
+        help="Directory containing domain-model.json from /understand --study "
+             "(injected into probe context when set)",
     )
     parser.add_argument(
         "--debug", action="store_true",
-        help="Save LLM reasoning alongside CSV for diagnosis",
+        help="Save LLM reasoning alongside results for diagnosis",
     )
     args = parser.parse_args(argv)
 
@@ -563,24 +987,48 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"expected={label.expected_status}")
         return 0
 
-    print(f"Running audit (model: {args.model or 'default'})...", flush=True)
-    t0 = time.monotonic()
-    results, run_dirs = _run_audit(
-        labels, source_dirs,
-        model=args.model, out_dir=args.out,
-        two_pass=args.two_pass,
-    )
-    wall_s = time.monotonic() - t0
+    models = args.model if args.model else [""]
+
+    if args.probe:
+        t0 = time.monotonic()
+        results = []
+        for mdl in models:
+            label_text = mdl or "default"
+            print(f"\nProbe mode (model: {label_text})...",
+                  flush=True)
+            run_results = _run_probe(
+                labels, source_dirs,
+                model=mdl,
+                max_tokens=args.max_tokens,
+                domain_model_dir=args.domain_model,
+            )
+            results.extend(run_results)
+        wall_s = time.monotonic() - t0
+        run_dirs = []
+
+        if len(models) > 1:
+            _print_cross_model_summary(results, models)
+    else:
+        model = models[0]
+        print(f"Running audit (model: {model or 'default'})...",
+              flush=True)
+        t0 = time.monotonic()
+        results, run_dirs = _run_audit(
+            labels, source_dirs,
+            model=model, out_dir=args.out,
+        )
+        wall_s = time.monotonic() - t0
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     _write_results(results, args.output)
     print(f"\nResults written to {args.output}")
 
-    if args.debug:
+    if args.debug and run_dirs:
         _save_debug(results, run_dirs, args.output)
 
     print()
-    print(_format_summary(results, wall_s, args.model))
+    model_label = ", ".join(m or "default" for m in models)
+    print(_format_summary(results, wall_s, model_label))
 
     return 0
 
