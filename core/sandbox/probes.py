@@ -266,7 +266,7 @@ def check_net_available() -> bool:
             # then treat as "no network isolation available". Fail-
             # closed: caller sees a disabled sandbox, not a PATH-
             # hijacked one.
-            logger.debug(f"Sandbox: {e}")
+            logger.debug("Sandbox: %s", e)
             state._net_available_cache = False
             return False
 
