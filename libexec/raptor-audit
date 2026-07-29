@@ -471,7 +471,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             line=line_start,
             title=f"{args.vuln_type or 'novel'}: {args.function}",
             description=args.body or "",
-            cwe=args.cwe,
+            cwe=args.cwe or args.vuln_type,
             tool_evidence=(
                 [{"tool": et_normalised}] if et_normalised else None
             ),
@@ -797,9 +797,7 @@ def cmd_feedback(args: argparse.Namespace) -> int:
         return 1
 
     annotations_dir = Path(args.annotations_dir)
-    if not annotations_dir.exists():
-        print(f"error: {annotations_dir} not found", file=sys.stderr)
-        return 1
+    annotations_dir.mkdir(parents=True, exist_ok=True)
 
     audit_out = Path(args.audit_out) if args.audit_out else None
 

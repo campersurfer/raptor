@@ -558,7 +558,7 @@ class TestContentFilter:
 
 @pytest.mark.slow
 class TestCheckedByLabels:
-    def test_checked_by_written_to_checklist(self, tmp_path: Path):
+    def test_checked_by_written_to_journal(self, tmp_path: Path):
         target, out = _setup_target(tmp_path)
 
         def review_fn(ctx, config):
@@ -578,18 +578,19 @@ class TestCheckedByLabels:
         )
         run_orchestrator(config, review_fn)
 
-        with open(out / "checklist.json") as f:
-            updated = json.load(f)
-        items = updated["files"][0]["items"]
-        for item in items:
-            assert "checked_by" in item
-            assert "audit" in item["checked_by"]
-            assert "gpt-test" in item["checked_by"]
+        from core.audit.journal import latest_entries
+        entries = latest_entries(out)
+        assert len(entries) > 0
+        for entry in entries.values():
+            assert entry.producer == "audit"
+            assert entry.model == "gpt-test"
 
-    def test_error_status_not_marked_checked(self, tmp_path: Path):
+    def test_error_status_journal_verdict(self, tmp_path: Path):
         target, out = _setup_target(tmp_path)
 
+        call_count = [0]
         def review_fn(ctx, config):
+            call_count[0] += 1
             raise RuntimeError("boom")
 
         config = OrchestratorConfig(
@@ -598,13 +599,12 @@ class TestCheckedByLabels:
         )
         run_orchestrator(config, review_fn)
 
-        with open(out / "checklist.json") as f:
-            updated = json.load(f)
-        items = updated["files"][0]["items"]
-        for item in items:
-            assert "checked_by" not in item
+        from core.audit.journal import latest_entries
+        entries = latest_entries(out)
+        error_entries = [e for e in entries.values() if e.verdict == "error"]
+        assert len(error_entries) > 0
 
-    def test_checked_by_written_to_coverage_audit(self, tmp_path: Path):
+    def test_journal_entry_for_each_function(self, tmp_path: Path):
         target, out = _setup_target(tmp_path)
 
         def review_fn(ctx, config):
@@ -622,16 +622,15 @@ class TestCheckedByLabels:
         )
         run_orchestrator(config, review_fn)
 
-        with open(out / "coverage-audit.json") as f:
-            audit_data = json.load(f)
-        analysed = audit_data["functions_analysed"]
+        from core.audit.journal import latest_entries
+        entries = latest_entries(out)
         check_pw = next(
-            (fa for fa in analysed if fa["function"] == "check_pw"),
+            (e for e in entries.values() if e.function == "check_pw"),
             None,
         )
         assert check_pw is not None
-        assert "checked_by" in check_pw
-        assert "audit" in check_pw["checked_by"]
+        assert check_pw.verdict == "clean"
+        assert check_pw.producer == "audit"
 
 
 @pytest.mark.slow

@@ -383,12 +383,20 @@ class TestAuditE2E:
         assert r.returncode == 0, r.stderr
         assert "Downgraded: 1" in r.stdout
 
-        # Verify annotation was actually updated
-        ann_file = ann_dir / "vuln.c.md"
-        content = ann_file.read_text()
-        assert "status=clean" in content
-        assert "/validate feedback" in content
-        assert "test-only code" in content
+        # Verify journal carries the corrected verdict
+        journal_path = out_dir / "review-journal.jsonl"
+        assert journal_path.exists(), "review-journal.jsonl not created"
+        entries = json.loads("[" + ",".join(
+            journal_path.read_text().strip().splitlines()
+        ) + "]")
+        correction = [
+            e for e in entries
+            if e.get("function") == "vuln_fn"
+            and e.get("prior_review")
+        ]
+        assert correction, "no correction entry in journal"
+        assert correction[-1]["verdict"] == "clean"
+        assert correction[-1]["prior_review"] == "finding"
 
     def test_feedback_upgrades_missed_clean(self, setup):
         """Feedback loop: /validate confirms → clean upgraded to finding."""
@@ -422,18 +430,20 @@ class TestAuditE2E:
         assert r.returncode == 0, r.stderr
         assert "Upgraded: 1" in r.stdout
 
-        # Verify coverage-audit.json was updated
-        import json
-        ca_path = out_dir / "coverage-audit.json"
-        with open(ca_path) as f:
-            ca = json.load(f)
-        funcs = ca.get("functions_analysed", [])
-        match = [
-            e for e in funcs
-            if e.get("file") == "vuln.c" and e.get("function") == "safe_fn"
+        # Verify journal carries the upgraded verdict
+        journal_path = out_dir / "review-journal.jsonl"
+        assert journal_path.exists(), "review-journal.jsonl not created"
+        entries = json.loads("[" + ",".join(
+            journal_path.read_text().strip().splitlines()
+        ) + "]")
+        correction = [
+            e for e in entries
+            if e.get("function") == "safe_fn"
+            and e.get("prior_review")
         ]
-        assert match, f"safe_fn not in coverage-audit: {ca.keys()}"
-        assert match[0]["status"] == "finding"
+        assert correction, "no correction entry in journal"
+        assert correction[-1]["verdict"] == "finding"
+        assert correction[-1]["prior_review"] == "clean"
 
     def test_g1_blocks_finding_without_hypothesis(self, setup):
         """G1: finding without --hypothesis is rejected."""
