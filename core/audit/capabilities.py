@@ -50,9 +50,11 @@ def _has_dwarf(binary_path: Optional[Path]) -> bool:
         return False
     import subprocess
     try:
+        from core.config import RaptorConfig
         result = subprocess.run(
             [readelf, "--debug-dump=info", "--dwarf-depth=1", str(binary_path)],
             capture_output=True, timeout=10,
+            env=RaptorConfig.get_safe_env(),
         )
         return b"DW_TAG_compile_unit" in result.stdout
     except Exception:

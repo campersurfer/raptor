@@ -2315,7 +2315,8 @@ def _run_audit_body(
                     str(config.target_path),
                     str(config.out_dir),
                 ]
-                study_env = os.environ.copy()
+                from core.config import RaptorConfig
+                study_env = RaptorConfig.get_safe_env()
                 study_env["_RAPTOR_TRUSTED"] = "1"
                 study_result = subprocess.run(
                     study_cmd,

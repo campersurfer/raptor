@@ -34,10 +34,12 @@ FIXTURES_DIR = Path("out/audit-corpus-fixtures")
 def _fetch_source(repo_key: str, sha: str) -> Path:
     """Fetch a pinned source tree.  Returns the local path."""
     dest = FIXTURES_DIR / repo_key
+    from core.config import RaptorConfig
+    safe_env = RaptorConfig.get_safe_env()
     if dest.is_dir():
         result = subprocess.run(
             ["git", "-C", str(dest), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=safe_env,
         )
         current = result.stdout.strip()
         if current == sha:
@@ -46,11 +48,11 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
                      repo_key, current[:12], sha[:12])
         subprocess.run(
             ["git", "-C", str(dest), "fetch", "--depth", "1", "origin", sha],
-            check=True, capture_output=True, timeout=120,
+            check=True, capture_output=True, timeout=120, env=safe_env,
         )
         subprocess.run(
             ["git", "-C", str(dest), "checkout", sha],
-            check=True, capture_output=True, timeout=30,
+            check=True, capture_output=True, timeout=30, env=safe_env,
         )
         return dest
 
@@ -114,7 +116,10 @@ def _build_checklist(
     not built here.  raptor-audit run will search for it via the bridge.
     """
     raptor_dir = Path(os.environ["RAPTOR_DIR"])
-    env = {**os.environ, "CLAUDECODE": "1", "_RAPTOR_TRUSTED": "1"}
+    from core.config import RaptorConfig
+    env = RaptorConfig.get_safe_env()
+    env["CLAUDECODE"] = "1"
+    env["_RAPTOR_TRUSTED"] = "1"
 
     checklist_path = out_dir / "checklist.json"
     if not checklist_path.exists():
@@ -290,7 +295,10 @@ def _run_audit_on_target(
     if two_pass:
         cmd.append("--two-pass")
 
-    env = {**os.environ, "CLAUDECODE": "1", "_RAPTOR_TRUSTED": "1"}
+    from core.config import RaptorConfig
+    env = RaptorConfig.get_safe_env()
+    env["CLAUDECODE"] = "1"
+    env["_RAPTOR_TRUSTED"] = "1"
     labeled_ids = {label.function_id for label in labels}
     log_path = out_dir / ".audit-log.jsonl"
 

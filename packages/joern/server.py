@@ -164,11 +164,13 @@ class JoernServer:
 
         logger.info("starting Joern server on 127.0.0.1:%d", self._port)
 
+        from core.config import RaptorConfig
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            env=RaptorConfig.get_safe_env(),
         )
 
         if not self._wait_for_ready():
