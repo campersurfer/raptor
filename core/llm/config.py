@@ -112,149 +112,136 @@ def _get_best_thinking_model() -> Optional['ModelConfig']:
         if _thinking_model_checked and _cached_thinking_model is not None:
             return _cached_thinking_model
 
-    models = _get_configured_models()
-    if not models:
-        return None
+        models = _get_configured_models()
+        if not models:
+            return None
 
-    # Define priority order for thinking models (best first)
-    thinking_model_patterns = [
-        # Tier 1: Most capable models
-        ("anthropic", "claude-opus-4-6", 110),
-        ("openai", "gpt-5.4-pro", 100),
-        ("openai", "gpt-5.4", 95),
-        ("openai", "o3", 90),
+        # Define priority order for thinking models (best first)
+        thinking_model_patterns = [
+            # Tier 1: Most capable models
+            ("anthropic", "claude-opus-4-6", 110),
+            ("openai", "gpt-5.4-pro", 100),
+            ("openai", "gpt-5.4", 95),
+            ("openai", "o3", 90),
 
-        # Tier 2: Strong models
-        ("openai", "gpt-5.2", 80),
-        ("openai", "o4-mini", 78),
-        ("mistral", "mistral-large-latest", 75),
+            # Tier 2: Strong models
+            ("openai", "gpt-5.2", 80),
+            ("openai", "o4-mini", 78),
+            ("mistral", "mistral-large-latest", 75),
 
-        # Tier 3: Latest capable models (fallback)
-        ("anthropic", "claude-sonnet-4-6", 70),
-        ("gemini", "gemini-2.5-pro", 65),
-        ("gemini", "gemini-2.5-flash", 55),
-    ]
+            # Tier 3: Latest capable models (fallback)
+            ("anthropic", "claude-sonnet-4-6", 70),
+            ("gemini", "gemini-2.5-pro", 65),
+            ("gemini", "gemini-2.5-flash", 55),
+        ]
 
-    # Find best matching model
-    best_model = None
-    best_score = -1
+        # Find best matching model
+        best_model = None
+        best_score = -1
 
-    for model_entry in models:
-        if not isinstance(model_entry, dict):
-            logger.debug("Skipping malformed model entry (not a dict): %s", type(model_entry))
-            continue
+        for model_entry in models:
+            if not isinstance(model_entry, dict):
+                logger.debug("Skipping malformed model entry (not a dict): %s", type(model_entry))
+                continue
 
-        try:
-            entry_provider = model_entry.get('provider', '')
-            if entry_provider is None:
-                entry_provider = ''
+            try:
+                entry_provider = model_entry.get('provider', '')
+                if entry_provider is None:
+                    entry_provider = ''
 
-            entry_model = model_entry.get('model', '')
-            if entry_model is None:
-                entry_model = ''
-            # Default to best known model for provider if not specified
-            if not entry_model and entry_provider:
-                entry_model = PROVIDER_DEFAULT_MODELS.get(entry_provider, '')
+                entry_model = model_entry.get('model', '')
+                if entry_model is None:
+                    entry_model = ''
+                # Default to best known model for provider if not specified
+                if not entry_model and entry_provider:
+                    entry_model = PROVIDER_DEFAULT_MODELS.get(entry_provider, '')
 
-            entry_role = model_entry.get('role', '')
-            if entry_role is None:
-                entry_role = ''
+                entry_role = model_entry.get('role', '')
+                if entry_role is None:
+                    entry_role = ''
 
-            # Score this model
-            for pattern_provider, pattern_model, base_score in thinking_model_patterns:
-                if entry_provider == pattern_provider and entry_model == pattern_model:
-                    # Boost score if explicitly tagged as reasoning/thinking
-                    effective_score = base_score
-                    if entry_role in ('thinking', 'reasoning'):
-                        effective_score += 10
+                # Score this model
+                for pattern_provider, pattern_model, base_score in thinking_model_patterns:
+                    if entry_provider == pattern_provider and entry_model == pattern_model:
+                        # Boost score if explicitly tagged as reasoning/thinking
+                        effective_score = base_score
+                        if entry_role in ('thinking', 'reasoning'):
+                            effective_score += 10
 
-                    if effective_score > best_score:
-                        best_score = effective_score
+                        if effective_score > best_score:
+                            best_score = effective_score
 
-                        # Resolve API key: entry-level, then env var
-                        api_key = model_entry.get('api_key')
-                        if not api_key:
-                            env_key = PROVIDER_ENV_KEYS.get(entry_provider)
-                            if env_key:
-                                api_key = os.getenv(env_key)
+                            # Resolve API key: entry-level, then env var
+                            api_key = model_entry.get('api_key')
+                            if not api_key:
+                                env_key = PROVIDER_ENV_KEYS.get(entry_provider)
+                                if env_key:
+                                    api_key = os.getenv(env_key)
 
-                        # Determine cost
-                        cost_info = MODEL_COSTS.get(entry_model, {})
-                        cost_per_1k = (cost_info.get('input', 0.005) + cost_info.get('output', 0.005)) / 2
+                            # Determine cost
+                            cost_info = MODEL_COSTS.get(entry_model, {})
+                            cost_per_1k = (cost_info.get('input', 0.005) + cost_info.get('output', 0.005)) / 2
 
-                        # Determine max_tokens and max_context from config or limits
-                        limits = MODEL_LIMITS.get(entry_model, {})
-                        max_tokens = model_entry.get(
-                            'max_output',
-                            limits.get('max_output', _DEFAULT_MAX_OUTPUT_USER_CONFIGURED),
-                        )
-                        max_context = model_entry.get(
-                            'max_context',
-                            limits.get('max_context', _DEFAULT_MAX_CONTEXT_LOCAL),
-                        )
-
-                        # Set api_base for non-Anthropic providers. For
-                        # ``ollama`` specifically, prefer the operator-
-                        # configured ``RaptorConfig.OLLAMA_HOST`` over
-                        # the ``localhost:11434`` default; otherwise an
-                        # operator running a remote Ollama server gets a
-                        # ``Connection refused`` against their loopback
-                        # interface even though the rest of the codebase
-                        # (``_build_ollama_config`` /
-                        # ``_ollama_check_url``) correctly honours the
-                        # configured host. Explicit ``api_base`` in
-                        # ``model_entry`` wins over both — handled below
-                        # via the ``Optional overrides from config``
-                        # path.
-                        if entry_provider == "ollama":
-                            from core.config import RaptorConfig
-                            # Reuse the same scheme/url validator
-                            # the cold-start path uses
-                            # (``_build_ollama_config``). Pre-fix
-                            # the user-config branch took
-                            # ``OLLAMA_HOST`` raw — an operator who
-                            # forgot the scheme (``example.com:11434``
-                            # instead of ``http://example.com:11434``)
-                            # got a broken ``api_base`` here even
-                            # though the cold-start path would have
-                            # surfaced the same misconfig as a
-                            # ValueError. Run through the validator
-                            # so both paths fail the same way.
-                            ollama_base = _validate_ollama_url(
-                                RaptorConfig.OLLAMA_HOST,
+                            # Determine max_tokens and max_context from config or limits
+                            limits = MODEL_LIMITS.get(entry_model, {})
+                            max_tokens = model_entry.get(
+                                'max_output',
+                                limits.get('max_output', _DEFAULT_MAX_OUTPUT_USER_CONFIGURED),
                             )
-                            api_base = f"{ollama_base.rstrip('/')}/v1"
-                        else:
-                            api_base = PROVIDER_ENDPOINTS.get(entry_provider)
+                            max_context = model_entry.get(
+                                'max_context',
+                                limits.get('max_context', _DEFAULT_MAX_CONTEXT_LOCAL),
+                            )
 
-                        # Optional overrides from config
-                        timeout = model_entry.get('timeout', 120)
+                            # Set api_base for non-Anthropic providers. For
+                            # ``ollama`` specifically, prefer the operator-
+                            # configured ``RaptorConfig.OLLAMA_HOST`` over
+                            # the ``localhost:11434`` default; otherwise an
+                            # operator running a remote Ollama server gets a
+                            # ``Connection refused`` against their loopback
+                            # interface even though the rest of the codebase
+                            # (``_build_ollama_config`` /
+                            # ``_ollama_check_url``) correctly honours the
+                            # configured host. Explicit ``api_base`` in
+                            # ``model_entry`` wins over both — handled below
+                            # via the ``Optional overrides from config``
+                            # path.
+                            if entry_provider == "ollama":
+                                from core.config import RaptorConfig
+                                ollama_base = _validate_ollama_url(
+                                    RaptorConfig.OLLAMA_HOST,
+                                )
+                                api_base = f"{ollama_base.rstrip('/')}/v1"
+                            else:
+                                api_base = PROVIDER_ENDPOINTS.get(entry_provider)
 
-                        best_model = ModelConfig(
-                            provider=entry_provider,
-                            model_name=entry_model,
-                            api_key=api_key,
-                            api_base=api_base,
-                            max_tokens=max_tokens,
-                            max_context=max_context,
-                            timeout=timeout,
-                            temperature=0.7,
-                            cost_per_1k_tokens=cost_per_1k,
-                            role=entry_role or None,
-                        )
-                    break
+                            # Optional overrides from config
+                            timeout = model_entry.get('timeout', 120)
 
-        except Exception as e:
-            logger.debug("Error processing model entry %s: %s", model_entry.get('model', 'unknown'), e)
-            continue
+                            best_model = ModelConfig(
+                                provider=entry_provider,
+                                model_name=entry_model,
+                                api_key=api_key,
+                                api_base=api_base,
+                                max_tokens=max_tokens,
+                                max_context=max_context,
+                                timeout=timeout,
+                                temperature=0.7,
+                                cost_per_1k_tokens=cost_per_1k,
+                                role=entry_role or None,
+                            )
+                        break
 
-    if best_model:
-        logger.debug("Auto-selected thinking model: %s/%s (score: %s)", best_model.provider, best_model.model_name, best_score)
+            except Exception as e:
+                logger.debug("Error processing model entry %s: %s", model_entry.get('model', 'unknown'), e)
+                continue
 
-    with _thinking_model_lock:
+        if best_model:
+            logger.debug("Auto-selected thinking model: %s/%s (score: %s)", best_model.provider, best_model.model_name, best_score)
+
         _cached_thinking_model = best_model
         _thinking_model_checked = best_model is not None
-    return best_model
+        return best_model
 
 
 # ---------------------------------------------------------------------------
