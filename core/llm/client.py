@@ -917,6 +917,7 @@ class LLMClient:
             # process end so every command's user sees the scorecard active
             # and learns the command exists. Best-effort print to stderr.
             try:
+                import os as _os
                 import sys as _sys
                 # Test-run noise suppression: under pytest, a scorecard
                 # line for a zero-cost run (stub providers, cache-only
@@ -935,6 +936,8 @@ class LLMClient:
                 # after pytest has already unset the per-test env var.
                 # sys.modules entry persists for the process lifetime.
                 if "pytest" in _sys.modules and tot_cost == 0.0:
+                    return
+                if _os.environ.get("RAPTOR_LLM_QUIET"):
                     return
                 avg_ms = (tot_lat_ms // tot_calls) if tot_calls else 0
                 # Four-decimal format always: preserves sub-penny

@@ -33,6 +33,7 @@
       "Bash(libexec/raptor-verified-outcomes *)",
       "Bash(libexec/raptor-threat-model)",
       "Bash(libexec/raptor-threat-model *)",
+      "Bash(libexec/raptor-llm-ask *)",
       "Bash(libexec/raptor-understand *)",
       "Bash(libexec/raptor-validate-schema *)",
       "Bash(libexec/raptor-validation-helper *)",

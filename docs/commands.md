@@ -1054,6 +1054,34 @@ Options: `--out DIR` (explicit output directory), `--raw` (JSON output).
 
 ---
 
+### /ask
+
+Send a free-form prompt to any configured LLM model and print the response.  Developer tool for cross-model diagnosis, debugging model reasoning, and comparing verdicts across providers.
+
+```
+/ask --model gemini-2.5-pro "Why did you classify this function as suspicious?"
+/ask --model claude-opus-4-7 --file context.txt "Summarise this"
+/ask --model gemini-2.5-pro --system "You are a code auditor" < prompt.txt
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model NAME` | *(required)* | Model to query (e.g. `gemini-2.5-pro`, `claude-opus-4-7`) |
+| `--system TEXT` | *(none)* | System prompt |
+| `--file PATH` | *(none)* | Prepend file contents as context (repeatable) |
+| `--max-tokens N` | `4096` | Maximum output tokens |
+| `--temperature F` | model default | Sampling temperature |
+| `--json-schema PATH` | *(none)* | Path to a JSON schema file for structured output |
+| `--debug` | off | Show model metadata, cost, provider logging, and scorecard summary |
+
+By default only the model's response text is printed — no logging, no scorecard line, no metadata.  Pass `--debug` to see the full diagnostic output.
+
+Natural-language routing: when the user says "ask gemini...", "ask claude...", "ask gpt..." or similar, Claude routes through this tool automatically.
+
+**Implementation:** `libexec/raptor-llm-ask`
+
+---
+
 ### /version
 
 Print the running RAPTOR framework version.
