@@ -1298,7 +1298,14 @@ def _run_audit_body(
 
     try:
         from .validate_bridge import import_validate_evidence
-        bridge_result = import_validate_evidence(config.out_dir)
+        _bridge_project = (
+            Path(config.out_dir).parent
+            if config.out_dir and (Path(config.out_dir) / ".raptor-run.json").exists()
+            else None
+        )
+        bridge_result = import_validate_evidence(
+            config.out_dir, config.target_path, project_dir=_bridge_project,
+        )
         if bridge_result and (bridge_result.feasibility_verdicts or bridge_result.runtime_evidence):
             _merge_validate_evidence(bridge_result, evidence_index)
             logger.info(

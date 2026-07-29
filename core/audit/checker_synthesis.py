@@ -165,6 +165,11 @@ def synthesize_and_sweep(
                         rationale=entry.rationale,
                     )
                     matches, errors = _run_engine(rule, rule_path, Path(target_path))
+                    if errors:
+                        logger.warning(
+                            "audit synthesis: engine errors for %s: %s",
+                            entry.rule_id, "; ".join(errors),
+                        )
                     from packages.checker_synthesis.synthesise import _is_seed_match
                     matches = [m for m in matches if not _is_seed_match(seed, m)]
                     if len(matches) > MAX_SWEEP_HITS_PER_RULE:
