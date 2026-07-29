@@ -123,7 +123,14 @@ def _get_sanitizer_callables(cwe: str, language: str) -> FrozenSet[str]:
     try:
         from core.analysis.sanitizer_cut import sanitizer_callables_for_cwe
         return sanitizer_callables_for_cwe(cwe, language)
+    except ImportError:
+        return frozenset()
     except Exception:
+        logger.warning(
+            "sanitizer catalog lookup failed for CWE %s/%s"
+            " — taint analysis will see zero sanitisers",
+            cwe, language, exc_info=True,
+        )
         return frozenset()
 
 

@@ -1449,8 +1449,13 @@ def _load_existing_annotation(
             entry = latest.get(f"{file_path}:{function_name}")
             if entry and entry.body:
                 return entry.body
-    except Exception:
+    except (ImportError, OSError):
         pass
+    except Exception:
+        logger.debug(
+            "journal lookup failed for %s:%s", file_path, function_name,
+            exc_info=True,
+        )
     if not annotations_dir:
         return None
     try:
@@ -1458,8 +1463,13 @@ def _load_existing_annotation(
         ann = read_annotation(annotations_dir, file_path, function_name)
         if ann:
             return ann.body
-    except Exception:
+    except (ImportError, OSError):
         pass
+    except Exception:
+        logger.debug(
+            "annotation lookup failed for %s:%s", file_path, function_name,
+            exc_info=True,
+        )
     return None
 
 
@@ -1486,8 +1496,13 @@ def _is_prior_audit_annotation(
                 "clean", "suspicious", "finding", "dormant", "error",
             ):
                 return True
-    except Exception:
+    except (ImportError, OSError):
         pass
+    except Exception:
+        logger.debug(
+            "journal verdict lookup failed for %s:%s", file_path, function_name,
+            exc_info=True,
+        )
     if not annotations_dir:
         return False
     try:
@@ -1496,8 +1511,13 @@ def _is_prior_audit_annotation(
         if ann and ann.metadata.get("source") == "llm":
             status = ann.metadata.get("status", "")
             return status in ("clean", "suspicious", "finding", "dormant", "error")
-    except Exception:
+    except (ImportError, OSError):
         pass
+    except Exception:
+        logger.debug(
+            "annotation verdict lookup failed for %s:%s", file_path, function_name,
+            exc_info=True,
+        )
     return False
 
 
@@ -2081,7 +2101,13 @@ def _resolve_macros(
             return resolve_rust_macros(target_path, source)
         from core.inventory.macro_resolve import resolve_macros
         return resolve_macros(target_path, source)
+    except (ImportError, OSError):
+        return []
     except Exception:
+        logger.warning(
+            "macro resolution failed for %s — LLM will see unexpanded macros",
+            target_path, exc_info=True,
+        )
         return []
 
 
@@ -2339,7 +2365,13 @@ def _load_strategy_primers(
     try:
         from .strategy import primers_for_strategies
         return primers_for_strategies(strategies)
+    except ImportError:
+        return []
     except Exception:
+        logger.warning(
+            "strategy primer loading failed — review will lack pattern guidance",
+            exc_info=True,
+        )
         return []
 
 

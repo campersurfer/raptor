@@ -67,8 +67,10 @@ def append_journal_for_outcome(
         )
         if h:
             source_hash = h
-    except Exception:
+    except (ImportError, OSError):
         pass
+    except Exception:
+        logger.debug("source hash computation failed for %s", outcome.file, exc_info=True)
 
     hypotheses_list: list[dict[str, str]] = []
     if getattr(outcome, "hypotheses", None):
@@ -119,13 +121,18 @@ def append_journal_for_outcome(
                 inv_id = inv.get("id", "")
                 if inv_id:
                     invariants_available.append(inv_id)
-    except Exception:
+    except ImportError:
         pass
+    except Exception:
+        logger.debug("domain model context failed for %s:%s", outcome.file, outcome.function, exc_info=True)
 
     if domain_model_hash is None:
         try:
             domain_model_hash = compute_domain_model_hash(out_dir)
+        except (ImportError, OSError):
+            domain_model_hash = None
         except Exception:
+            logger.debug("domain model hash failed", exc_info=True)
             domain_model_hash = None
 
     verdict_rationale = None
