@@ -91,11 +91,14 @@ VULNERABILITY_ANALYSIS_SCHEMA = {
 # FPs; ambiguous and confident-TP cases both fall through. A cheap
 # model that says "needs_analysis" pays nothing in trust.
 FP_PREFILTER_SCHEMA = {
-    "verdict": (
-        "string — one of 'clear_fp' (this is clearly a false positive "
-        "and needs no further analysis) or 'needs_analysis' (any "
-        "uncertainty, or this looks like a real issue)"
-    ),
+    "verdict": {
+        "type": "string",
+        "enum": ["clear_fp", "needs_analysis"],
+        "description": (
+            "clear_fp = clearly a false positive, needs no further analysis; "
+            "needs_analysis = any uncertainty, or this looks like a real issue"
+        ),
+    },
     "reasoning": "string — brief justification, 1-2 sentences",
 }
 

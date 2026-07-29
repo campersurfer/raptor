@@ -309,7 +309,7 @@ DATAFLOW_VALIDATION_SCHEMA = {
     "sanitizers_effective": "boolean",
     "bypass_possible": "boolean",
     "bypass_strategy": "string - strategy to bypass sanitizers, or empty if none",
-    "attack_complexity": "string (low/medium/high)",
+    "attack_complexity": {"type": "string", "enum": ["low", "medium", "high"]},
     "reasoning": "string",
     "barriers": "list of strings",
     "prerequisites": "list of strings",
@@ -320,12 +320,15 @@ DATAFLOW_VALIDATION_SCHEMA = {
 # schema in autonomous_analyzer.py — same asymmetric framing, same
 # verdict literal set, so the scorecard substrate keys uniformly.
 DATAFLOW_FP_PREFILTER_SCHEMA = {
-    "verdict": (
-        "string — one of 'clear_fp' (this dataflow is clearly NOT "
-        "exploitable — source isn't attacker-controlled, sink isn't "
-        "reachable, sanitizers definitively block) or 'needs_analysis' "
-        "(any uncertainty)"
-    ),
+    "verdict": {
+        "type": "string",
+        "enum": ["clear_fp", "needs_analysis"],
+        "description": (
+            "clear_fp = dataflow is clearly NOT exploitable (source not "
+            "attacker-controlled, sink not reachable, sanitizers block); "
+            "needs_analysis = any uncertainty"
+        ),
+    },
     "reasoning": "string — brief justification, 1-2 sentences",
 }
 

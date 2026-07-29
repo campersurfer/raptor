@@ -127,7 +127,10 @@ _TOOL_SELECTION_SCHEMA = {
 
 
 _EVALUATION_SCHEMA = {
-    "verdict": "string — one of: confirmed, refuted, inconclusive",
+    "verdict": {
+        "type": "string",
+        "enum": ["confirmed", "refuted", "inconclusive"],
+    },
     "reasoning": "string — explanation grounded in the concrete tool output",
     "matches_support_claim": "boolean — true if at least one match is consistent with the hypothesis",
     "refined_rule": "string — if inconclusive, a revised rule that might produce better evidence (empty string if no refinement possible)",

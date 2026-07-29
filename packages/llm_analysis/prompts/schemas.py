@@ -98,7 +98,7 @@ DATAFLOW_VALIDATION_SCHEMA = {
     "is_exploitable": "boolean - FINAL VERDICT: is this truly exploitable?",
     "exploitability_confidence": "float (0.0-1.0) - how confident in this assessment?",
     "exploitability_reasoning": "string - detailed explanation of verdict",
-    "attack_complexity": "string - low/medium/high - difficulty of exploitation",
+    "attack_complexity": {"type": "string", "enum": ["low", "medium", "high"], "description": "difficulty of exploitation"},
     "attack_prerequisites": "list of strings - what attacker needs to succeed",
     "attack_payload_concept": "string - describe what payload would work, or empty if not exploitable",
     "impact_if_exploited": "string - what attacker can achieve",
