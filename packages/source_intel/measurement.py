@@ -223,7 +223,7 @@ def _iter_memory_corruption_corpus(
         buckets[key].append(entry)
     out: List[tuple] = []
     while len(out) < count and any(buckets.values()):
-        for key in sorted(buckets.keys()):
+        for key in sorted(buckets):
             if not buckets[key]:
                 continue
             out.append(buckets[key].pop(0))
