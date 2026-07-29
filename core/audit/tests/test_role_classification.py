@@ -74,7 +74,7 @@ def test_leaf_note_checks_for_unsafe_ops():
     )
     note = result["reachability_note"]
     assert "missing bounds check" in note.lower() or "indexing" in note.lower()
-    assert "absence of validation is the bug" in note
+    assert "validation responsibility lies with the caller" in note
 
 
 def test_on_flow_path_from_unchecked_flows():
