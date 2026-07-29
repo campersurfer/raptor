@@ -445,16 +445,13 @@ class DataflowValidator:
                 task_type=TaskType.VERDICT_BINARY,
             )
         except Exception as e:                         # noqa: BLE001
-            self.logger.debug(
-                f"Cheap dataflow FP check failed (falling through): {e}"
-            )
+            self.logger.debug("Cheap dataflow FP check failed (falling through): %s", e)
             return None
         verdict = (response.get("verdict") or "").strip().lower()
         reasoning = response.get("reasoning") or ""
         if verdict not in ("clear_fp", "needs_analysis"):
             self.logger.debug(
-                f"Cheap dataflow FP check returned unexpected verdict "
-                f"{verdict!r} — falling through"
+                "Cheap dataflow FP check returned unexpected verdict %r — falling through", verdict
             )
             return None
         return verdict, reasoning
@@ -546,7 +543,7 @@ class DataflowValidator:
             )
 
         except Exception as e:
-            self.logger.warning(f"Failed to extract dataflow path: {e}")
+            self.logger.warning("Failed to extract dataflow path: %s", e)
             return None
 
     def read_source_context(self, file_path: str, line: int, context_lines: int = 10,
@@ -594,9 +591,9 @@ class DataflowValidator:
                 content = content[:_MAX_SOURCE_BYTES]
                 content = content.rsplit("\n", 1)[0] + "\n"
                 self.logger.warning(
-                    f"Source file {resolved} exceeded "
-                    f"{_MAX_SOURCE_BYTES}-byte cap; context window "
-                    f"reflects truncated read"
+                    "Source file %s exceeded %s-byte cap; context window reflects truncated read",
+                    resolved,
+                    _MAX_SOURCE_BYTES
                 )
             lines = content.splitlines(keepends=True)
 
@@ -610,7 +607,7 @@ class DataflowValidator:
 
             return "\n".join(context)
         except Exception as e:
-            self.logger.warning(f"Failed to read source context: {e}")
+            self.logger.warning("Failed to read source context: %s", e)
             return ""
 
     def _extract_path_conditions(
@@ -716,7 +713,7 @@ class DataflowValidator:
             }
             return conditions, hint
         except Exception as e:
-            self.logger.debug(f"Path condition extraction failed: {e}")
+            self.logger.debug("Path condition extraction failed: %s", e)
             return [], {}
 
     def validate_dataflow_path(
@@ -735,7 +732,7 @@ class DataflowValidator:
             DataflowValidation result
         """
         from core.reporting.formatting import display_rule_id
-        self.logger.info(f"Validating dataflow path: {display_rule_id(dataflow.rule_id)}")
+        self.logger.info("Validating dataflow path: %s", display_rule_id(dataflow.rule_id))
 
         # SMT pre-check: extract path conditions (plus a bitvector type
         # hint from the LLM) and test joint satisfiability.  If unsat,
@@ -745,9 +742,7 @@ class DataflowValidator:
         smt_result = check_path_feasibility(conditions, profile=profile)
 
         if smt_result.feasible is False:
-            self.logger.info(
-                f"SMT: path infeasible — {smt_result.reasoning}"
-            )
+            self.logger.info("SMT: path infeasible — %s", smt_result.reasoning)
             return DataflowValidation(
                 is_exploitable=False,
                 confidence=SMT_INFEASIBLE_CONFIDENCE,
@@ -789,9 +784,8 @@ class DataflowValidator:
         )
         if decision.short_circuit:
             self.logger.info(
-                f"Fast-tier short-circuit on dataflow {decision_class} — "
-                f"skipping full validation (cheap verdict trusted by "
-                f"scorecard)"
+                "Fast-tier short-circuit on dataflow %s — skipping full validation (cheap verdict trusted by scorecard)",
+                decision_class
             )
             self.llm.record_short_circuit()
             return self._short_circuit_fp_dataflow_result(cheap_reasoning)
@@ -926,8 +920,9 @@ class DataflowValidator:
             })
 
             self.logger.info(
-                f"Dataflow validation: exploitable={validation.is_exploitable}, "
-                f"confidence={validation.confidence:.2f}"
+                "Dataflow validation: exploitable=%s, confidence=%.2f",
+                validation.is_exploitable,
+                validation.confidence
             )
 
             # Record cheap-vs-full agreement for the scorecard.
@@ -948,7 +943,7 @@ class DataflowValidator:
             return validation
 
         except Exception as e:
-            self.logger.error(f"Dataflow validation failed: {e}")
+            self.logger.error("Dataflow validation failed: %s", e)
 
             # Return conservative default
             return DataflowValidation(

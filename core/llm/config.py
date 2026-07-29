@@ -141,7 +141,7 @@ def _get_best_thinking_model() -> Optional['ModelConfig']:
 
     for model_entry in models:
         if not isinstance(model_entry, dict):
-            logger.debug(f"Skipping malformed model entry (not a dict): {type(model_entry)}")
+            logger.debug("Skipping malformed model entry (not a dict): %s", type(model_entry))
             continue
 
         try:
@@ -245,11 +245,11 @@ def _get_best_thinking_model() -> Optional['ModelConfig']:
                     break
 
         except Exception as e:
-            logger.debug(f"Error processing model entry {model_entry.get('model', 'unknown')}: {e}")
+            logger.debug("Error processing model entry %s: %s", model_entry.get('model', 'unknown'), e)
             continue
 
     if best_model:
-        logger.debug(f"Auto-selected thinking model: {best_model.provider}/{best_model.model_name} (score: {best_score})")
+        logger.debug("Auto-selected thinking model: %s/%s (score: %s)", best_model.provider, best_model.model_name, best_score)
 
     with _thinking_model_lock:
         _cached_thinking_model = best_model

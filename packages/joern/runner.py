@@ -704,11 +704,12 @@ def build_cpg_cached(
 def cleanup_cpg(cpg: JoernCPG) -> None:
     """Remove the CPG binary from disk."""
     try:
-        if cpg.path.exists():
-            cpg.path.unlink()
+        cpg.path.unlink(missing_ok=True)
         parent = cpg.path.parent
-        if parent.exists() and not any(parent.iterdir()):
+        try:
             parent.rmdir()
+        except OSError:
+            pass
     except OSError as e:
         logger.warning("cleanup_cpg failed: %s", e)
 
