@@ -511,7 +511,7 @@ class LLMClient:
                 self.config.cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError:
                 self.config.enable_caching = False
-                logger.warning(f"Cannot create cache dir {self.config.cache_dir} — caching disabled")
+                logger.warning("Cannot create cache dir %s — caching disabled", self.config.cache_dir)
 
         # Consecutive cache-write failure counter. Auto-disable
         # caching after `_CACHE_WRITE_FAILURE_THRESHOLD` in a row to
@@ -527,13 +527,13 @@ class LLMClient:
             # default config, but none of them will actually fire in this
             # run.  Log what WILL fire instead.
             logger.info(
-                f"Pinned model: {self._pinned_model} "
-                f"(caller override; RAPTOR config defaults bypassed)"
+                "Pinned model: %s (caller override; RAPTOR config defaults bypassed)",
+                self._pinned_model,
             )
         elif self.config.primary_model:
-            logger.info(f"Primary model: {self.config.primary_model.provider}/{self.config.primary_model.model_name}")
+            logger.info("Primary model: %s/%s", self.config.primary_model.provider, self.config.primary_model.model_name)
             if self.config.enable_fallback:
-                logger.info(f"Fallback models: {len(self.config.fallback_models)}")
+                logger.info("Fallback models: %d", len(self.config.fallback_models))
         else:
             logger.warning("LLM Client initialized with no primary model — all calls will fail")
 
@@ -562,7 +562,7 @@ class LLMClient:
 
         with self._stats_lock:
             if key not in self.providers:
-                logger.debug(f"Creating provider: {key}")
+                logger.debug("Creating provider: %s", key)
                 self.providers[key] = create_provider(model_config)
             return self.providers[key]
 
@@ -1018,9 +1018,9 @@ class LLMClient:
         if data is None:
             return None
         if self._is_entry_stale(data):
-            logger.debug(f"Cache stale (TTL): {cache_key}")
+            logger.debug("Cache stale (TTL): %s", cache_key)
             return None
-        logger.debug(f"Cache hit: {cache_key}")
+        logger.debug("Cache hit: %s", cache_key)
         return data.get("content")
 
     def _save_to_cache(self, cache_key: str, response: LLMResponse) -> None:
@@ -1158,9 +1158,9 @@ class LLMClient:
         if "result" not in data or "raw" not in data:
             return None
         if self._is_entry_stale(data):
-            logger.debug(f"Structured cache stale (TTL): {cache_key}")
+            logger.debug("Structured cache stale (TTL): %s", cache_key)
             return None
-        logger.debug(f"Structured cache hit: {cache_key}")
+        logger.debug("Structured cache hit: %s", cache_key)
         return data["result"], data["raw"]
 
     def _save_structured_to_cache(
@@ -1214,7 +1214,7 @@ class LLMClient:
 
         with self._stats_lock:
             if self.total_cost + estimated_cost > self.config.max_cost_per_scan:
-                logger.error(f"Budget exceeded: ${self.total_cost:.2f} + ${estimated_cost:.2f} > ${self.config.max_cost_per_scan:.2f}")
+                logger.error("Budget exceeded: $%.2f + $%.2f > $%.2f", self.total_cost, estimated_cost, self.config.max_cost_per_scan)
                 return False
 
         return True
@@ -1346,7 +1346,7 @@ class LLMClient:
         with self._key_lock(cache_key):
             cached_content = self._get_cached_response(cache_key)
             if cached_content is not None:
-                logger.debug(f"Using cached response for {model_config.provider}/{model_config.model_name}")
+                logger.debug("Using cached response for %s/%s", model_config.provider, model_config.model_name)
                 with self._stats_lock:
                     self.request_count += 1
                 return LLMResponse(
@@ -1404,13 +1404,13 @@ class LLMClient:
                 attempts_count += 1
 
                 if model_idx == 0:
-                    logger.debug(f"Using model: {model.provider}/{model.model_name}")
+                    logger.debug("Using model: %s/%s", model.provider, model.model_name)
                 else:
-                    logger.warning(f"Falling back to: {model.provider}/{model.model_name}")
+                    logger.warning("Falling back to: %s/%s", model.provider, model.model_name)
                 if model.provider.lower() == "ollama":
                     logger.warning("Local model — exploit PoCs may be unreliable")
 
-                logger.debug(f"Trying model: {model.provider}/{model.model_name}")
+                logger.debug("Trying model: %s/%s", model.provider, model.model_name)
 
                 for attempt in range(self.config.max_retries):
                     try:
@@ -1423,7 +1423,7 @@ class LLMClient:
                             # the retry from either. Adding an INFO
                             # bookend produces operator log noise
                             # without new signal.
-                            logger.debug(f"Retrying {model.provider}/{model.model_name} (attempt {attempt + 1}/{self.config.max_retries})")
+                            logger.debug("Retrying %s/%s (attempt %d/%d)", model.provider, model.model_name, attempt + 1, self.config.max_retries)
 
                         provider = self._get_provider(model)
                         # Acquire budget reservation immediately before the
@@ -1485,9 +1485,7 @@ class LLMClient:
                             duration_s=duration,
                         )
 
-                        logger.debug(f"Generation successful: {model.provider}/{model.model_name} "
-                                    f"(tokens: {response.tokens_used}, cost: ${response.cost:.4f}, "
-                                    f"duration: {duration:.1f}s)")
+                        logger.debug("Generation successful: %s/%s (tokens: %s, cost: $%.4f, duration: %.1fs)", model.provider, model.model_name, response.tokens_used, response.cost, duration)
 
                         return response
 
@@ -1538,21 +1536,21 @@ class LLMClient:
                         )
                         _safe_e = _esc_np(_redact(str(e)))[:1024]
                         logger.warning(
-                            f"Attempt {attempt + 1}/{self.config.max_retries} "
-                            f"failed for {model.provider}/{model.model_name}: "
-                            f"{_safe_e}"
+                            "Attempt %d/%d failed for %s/%s: %s",
+                            attempt + 1, self.config.max_retries,
+                            model.provider, model.model_name, _safe_e,
                         )
 
                         if not _is_retryable_error(e):
-                            logger.info(f"Non-retryable error — skipping remaining retries for {model.provider}/{model.model_name}")
+                            logger.info("Non-retryable error — skipping remaining retries for %s/%s", model.provider, model.model_name)
                             break
 
                         if attempt < self.config.max_retries - 1:
                             delay = min(self.config.retry_delay * (2 ** attempt), 30)
-                            logger.debug(f"Retrying in {delay}s...")
+                            logger.debug("Retrying in %ss...", delay)
                             time.sleep(delay)
 
-                logger.warning(f"All attempts failed for {model.provider}/{model.model_name}, trying next model...")
+                logger.warning("All attempts failed for %s/%s, trying next model...", model.provider, model.model_name)
 
             # All models in tier failed
             tier = "local (Ollama)" if model_config.provider.lower() == "ollama" else "cloud"
@@ -1714,9 +1712,9 @@ class LLMClient:
                 attempts_count += 1
 
                 if model_idx == 0:
-                    logger.debug(f"Using model: {model.provider}/{model.model_name} (structured)")
+                    logger.debug("Using model: %s/%s (structured)", model.provider, model.model_name)
                 else:
-                    logger.warning(f"Falling back to: {model.provider}/{model.model_name} (structured)")
+                    logger.warning("Falling back to: %s/%s (structured)", model.provider, model.model_name)
                 if model.provider.lower() == "ollama":
                     logger.warning("Local model — exploit PoCs may be unreliable")
 
@@ -1725,7 +1723,7 @@ class LLMClient:
                         if attempt > 0:
                             # DEBUG, not INFO — see ``generate`` above
                             # for the same noise-vs-signal rationale.
-                            logger.debug(f"Retrying {model.provider}/{model.model_name} (attempt {attempt + 1}/{self.config.max_retries})")
+                            logger.debug("Retrying %s/%s (attempt %d/%d)", model.provider, model.model_name, attempt + 1, self.config.max_retries)
 
                         provider = self._get_provider(model)
 
@@ -1784,9 +1782,7 @@ class LLMClient:
                             if task_type:
                                 self.task_type_costs[task_type] = self.task_type_costs.get(task_type, 0.0) + cost_delta
 
-                        logger.debug(f"Structured generation successful: {model.provider}/{model.model_name} "
-                                    f"(tokens: {tokens_delta}, cost: ${cost_delta:.4f}, "
-                                    f"duration: {duration:.1f}s)")
+                        logger.debug("Structured generation successful: %s/%s (tokens: %s, cost: $%.4f, duration: %.1fs)", model.provider, model.model_name, tokens_delta, cost_delta, duration)
 
                         result_dict, raw = result_tuple
                         # Lift the resolved snapshot the provider attached
@@ -1873,17 +1869,17 @@ class LLMClient:
                         )
                         _safe_e = _esc_np(_redact(str(e)))[:1024]
                         logger.warning(
-                            f"Structured generation attempt {attempt + 1} "
-                            f"failed: {_safe_e}"
+                            "Structured generation attempt %d failed: %s",
+                            attempt + 1, _safe_e,
                         )
 
                         if not _is_retryable_error(e):
-                            logger.info(f"Non-retryable error — skipping remaining retries for {model.provider}/{model.model_name}")
+                            logger.info("Non-retryable error — skipping remaining retries for %s/%s", model.provider, model.model_name)
                             break
 
                         if attempt < self.config.max_retries - 1:
                             delay = min(self.config.retry_delay * (2 ** attempt), 30)
-                            logger.debug(f"Retrying in {delay}s...")
+                            logger.debug("Retrying in %ss...", delay)
                             time.sleep(delay)
 
             # All models in tier failed

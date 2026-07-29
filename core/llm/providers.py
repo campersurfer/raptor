@@ -403,7 +403,7 @@ class LLMProvider(ABC):
             self.total_cost += (cost or 0.0)
             self.call_count += 1
             self.total_duration += duration
-        logger.debug(f"LLM usage: {tokens} tokens, ${(cost or 0.0):.4f} (total: {self.total_tokens} tokens, ${self.total_cost:.4f})")
+        logger.debug("LLM usage: %s tokens, $%.4f (total: %s tokens, $%.4f)", tokens, cost or 0.0, self.total_tokens, self.total_cost)
 
     def _calculate_cost_split(self, input_tokens: int, output_tokens: int,
                               thinking_tokens: int = 0,
@@ -1131,7 +1131,7 @@ class OpenAICompatibleProvider(LLMProvider):
         # persisted — a fresh process re-detects on first turn.
         self._tool_use_unsupported = False
 
-        logger.debug(f"Initialized OpenAICompatibleProvider: {config.model_name} (base_url={config.api_base})")
+        logger.debug("Initialized OpenAICompatibleProvider: %s (base_url=%s)", config.model_name, config.api_base)
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None,
                  **kwargs) -> LLMResponse:
@@ -1202,8 +1202,9 @@ class OpenAICompatibleProvider(LLMProvider):
                 tokens_used, cost, input_tokens, output_tokens, duration,
                 cache_read_tokens=cache_read_tokens,
             )
-            logger.debug(f"[OpenAI] model={self.config.model_name}, tokens={tokens_used}, cost=${cost:.4f}, duration={duration:.2f}s"
-                         + (f", thinking={thinking_tokens}" if thinking_tokens else ""))
+            logger.debug("[OpenAI] model=%s, tokens=%s, cost=$%.4f, duration=%.2fs%s",
+                         self.config.model_name, tokens_used, cost, duration,
+                         (", thinking=%d" % thinking_tokens) if thinking_tokens else "")
 
             return LLMResponse(
                 content=content,
@@ -1306,7 +1307,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
             except Exception as e:
                 if not self._instructor_warned:
-                    logger.warning(f"Instructor structured generation failed for {self.config.provider}/{self.config.model_name} — disabling for this provider, using JSON fallback")
+                    logger.warning("Instructor structured generation failed for %s/%s — disabling for this provider, using JSON fallback", self.config.provider, self.config.model_name)
                     self._instructor_warned = True
                 else:
                     from core.security.log_sanitisation import escape_nonprintable as _esc
@@ -1940,7 +1941,7 @@ class AnthropicProvider(LLMProvider):
         # but doesn't honor it). See ``_maybe_warn_silent_cache_failure``.
         self._caching_warning_emitted = False
 
-        logger.debug(f"Initialized AnthropicProvider: {config.model_name}")
+        logger.debug("Initialized AnthropicProvider: %s", config.model_name)
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None,
                  **kwargs) -> LLMResponse:
@@ -2007,7 +2008,7 @@ class AnthropicProvider(LLMProvider):
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
             )
-            logger.debug(f"[Anthropic] model={self.config.model_name}, tokens={tokens_used}, cost=${cost:.4f}, duration={duration:.2f}s")
+            logger.debug("[Anthropic] model=%s, tokens=%s, cost=$%.4f, duration=%.2fs", self.config.model_name, tokens_used, cost, duration)
 
             return LLMResponse(
                 content=content,
@@ -2108,7 +2109,7 @@ class AnthropicProvider(LLMProvider):
 
             except Exception as e:
                 if not self._instructor_warned:
-                    logger.warning(f"Instructor structured generation failed for {self.config.provider}/{self.config.model_name} — disabling for this provider, using JSON fallback")
+                    logger.warning("Instructor structured generation failed for %s/%s — disabling for this provider, using JSON fallback", self.config.provider, self.config.model_name)
                     self._instructor_warned = True
                 else:
                     from core.security.log_sanitisation import escape_nonprintable as _esc
@@ -2814,8 +2815,8 @@ class GeminiProvider(LLMProvider):
             cost = self._calculate_cost_split(input_tokens, output_tokens, thinking_tokens)
 
             self.track_usage(tokens_used, cost, input_tokens, output_tokens, duration)
-            logger.debug(f"[Gemini] model={self.config.model_name}, tokens={tokens_used}, cost=${cost:.4f}, "
-                         f"duration={duration:.2f}s, thinking={thinking_tokens}")
+            logger.debug("[Gemini] model=%s, tokens=%s, cost=$%.4f, duration=%.2fs, thinking=%s",
+                         self.config.model_name, tokens_used, cost, duration, thinking_tokens)
 
             return LLMResponse(
                 content=content,
@@ -2900,8 +2901,8 @@ class GeminiProvider(LLMProvider):
             cost = self._calculate_cost_split(input_tokens, output_tokens, thinking_tokens)
             self.track_usage(tokens_used, cost, input_tokens, output_tokens, duration)
 
-            logger.debug(f"[Gemini] structured model={self.config.model_name}, tokens={tokens_used}, "
-                         f"cost=${cost:.4f}, duration={duration:.2f}s, thinking={thinking_tokens}")
+            logger.debug("[Gemini] structured model=%s, tokens=%s, cost=$%.4f, duration=%.2fs, thinking=%s",
+                         self.config.model_name, tokens_used, cost, duration, thinking_tokens)
 
             content = (response.text or "").strip()
             if content.startswith("```") and content.endswith("```"):
@@ -2934,7 +2935,7 @@ class GeminiProvider(LLMProvider):
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # Schema/parsing error — native mode incompatible, fall back to JSON-in-prompt
-            logger.warning(f"Gemini native structured generation failed (falling back): {e}")
+            logger.warning("Gemini native structured generation failed (falling back): %s", e)
             return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
         except Exception:
             # Auth, network, quota — don't waste a second call
@@ -3416,7 +3417,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             )
         except RuntimeError as exc:
             err_msg = f"subprocess error: {exc}"
-            logger.warning(f"ClaudeCodeLLMProvider.turn: {err_msg}")
+            logger.warning("ClaudeCodeLLMProvider.turn: %s", err_msg)
             return TurnResponse(
                 content=[],
                 stop_reason=StopReason.ERROR,

@@ -198,7 +198,7 @@ def main(argv: Sequence[str]) -> int:
 
     # Second pass: retry hygiene plans that _materialise_changes couldn't
     # apply (bare names with no version operator).
-    hygiene_keys = set(hygiene_plans.keys())
+    hygiene_keys = set(hygiene_plans)
     skipped_hygiene = [
         c for c in changes
         if c.skipped_reason is not None
@@ -773,7 +773,7 @@ def _print_dry_run(
 ) -> None:
     """Print what fix *would* do, grouped by manifest file."""
     all_plans = list(vuln_plans.values()) + list(hygiene_plans.values())
-    vuln_keys = set(vuln_plans.keys())
+    vuln_keys = set(vuln_plans)
 
     by_manifest: Dict[Path, List[_PlanEntry]] = defaultdict(list)
     for plan in all_plans:

@@ -150,13 +150,13 @@ class TestSkipLogging:
 
         LanguageDetector(tmp_path).detect_languages()
 
-        warning_msgs = [
-            c.args[0] % c.args[1:] if len(c.args) > 1 else c.args[0]
+        warning_calls = [
+            c.args[0] % c.args[1:] if c.args[1:] else c.args[0]
             for c in mock_logger.warning.call_args_list
         ]
         assert any(
-            "Skipping ruby" in msg for msg in warning_msgs
-        ), f"expected ruby-skip WARN; got warnings: {warning_msgs}"
+            "Skipping ruby" in msg for msg in warning_calls
+        ), f"expected ruby-skip WARN; got warnings: {warning_calls}"
 
     def test_completely_absent_languages_do_not_warn(self, tmp_path: Path, monkeypatch):
         # Just Python source — no ruby, no go, no java, no js etc.
@@ -250,7 +250,7 @@ class TestFloorFallback:
         LanguageDetector(tmp_path).detect_languages_floor(floor=2)
 
         warns = [
-            c.args[0] % c.args[1:] if len(c.args) > 1 else c.args[0]
+            c.args[0] % c.args[1:] if c.args[1:] else c.args[0]
             for c in mock_logger.warning.call_args_list
         ]
         assert any(

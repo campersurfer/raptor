@@ -103,8 +103,7 @@ def main(
 
     overlay_dir = out_dir / "overlay"
     try:
-        if overlay_dir.exists():
-            shutil.rmtree(overlay_dir)
+        shutil.rmtree(overlay_dir, ignore_errors=True)
         _copy_target(target, overlay_dir)
         applied = _apply_overlay(proposed, overlay_dir)
     except OSError as e:
