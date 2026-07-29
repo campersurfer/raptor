@@ -127,10 +127,10 @@ class AFLRunner:
         # Validate AFL command
         self._validate_afl_command()
 
-        logger.info(f"AFL++ found: {self.afl_fuzz}")
-        logger.info(f"Binary: {self.binary}")
-        logger.info(f"Corpus: {self.corpus_dir}")
-        logger.info(f"Output: {self.output_dir}")
+        logger.info("AFL++ found: %s", self.afl_fuzz)
+        logger.info("Binary: %s", self.binary)
+        logger.info("Corpus: %s", self.corpus_dir)
+        logger.info("Output: %s", self.output_dir)
 
     def _validate_afl_command(self) -> None:
         """Validate that AFL command works with basic arguments."""
@@ -143,13 +143,13 @@ class AFLRunner:
                 timeout=10
             )
             if result.returncode not in [0, 1]:  # AFL --help typically returns 1
-                logger.warning(f"AFL validation returned unexpected exit code: {result.returncode}")
+                logger.warning("AFL validation returned unexpected exit code: %s", result.returncode)
                 if result.stderr:
-                    logger.warning(f"AFL stderr: {result.stderr.strip()}")
+                    logger.warning("AFL stderr: %s", result.stderr.strip())
         except subprocess.TimeoutExpired:
             logger.warning("AFL validation timed out - AFL may be slow to start")
         except Exception as e:
-            logger.warning(f"AFL validation failed: {e}")
+            logger.warning("AFL validation failed: %s", e)
             raise RuntimeError(f"AFL++ validation failed: {e}") from e
 
     def _create_default_corpus(self) -> Path:
@@ -183,7 +183,7 @@ class AFLRunner:
             ]
             for idx, seed in enumerate(seeds):
                 (corpus / f"seed{idx}").write_bytes(seed)
-            logger.info(f"Created emergency default corpus with {len(seeds)} seeds")
+            logger.info("Created emergency default corpus with %d seeds", len(seeds))
         return corpus
 
     def check_binary_instrumentation(self) -> bool:
@@ -257,7 +257,7 @@ class AFLRunner:
                 logger.error("afl-fuzz not found in PATH")
                 raise RuntimeError("AFL++ not installed") from None
             except Exception as e:
-                logger.warning(f"AFL compatibility check failed: {e}")
+                logger.warning("AFL compatibility check failed: %s", e)
 
     def check_binary_sanitizers(self) -> bool:
         """Check if binary is compiled with sanitizers like ASAN.
@@ -374,11 +374,11 @@ class AFLRunner:
         logger.info("=" * 70)
         logger.info("STARTING AFL++ FUZZING CAMPAIGN")
         logger.info("=" * 70)
-        logger.info(f"Duration: {duration}s ({duration/60:.1f} minutes)")
-        logger.info(f"Parallel jobs: {parallel_jobs}")
-        logger.info(f"Timeout: {timeout_ms}ms")
+        logger.info("Duration: %ss (%.1f minutes)", duration, duration/60)
+        logger.info("Parallel jobs: %s", parallel_jobs)
+        logger.info("Timeout: %sms", timeout_ms)
         if max_crashes is not None:
-            logger.info(f"Stop after: {max_crashes} crashes")
+            logger.info("Stop after: %s crashes", max_crashes)
 
         # Pre-flight check for AFL compatibility
         self._check_afl_compatibility()
@@ -412,8 +412,8 @@ class AFLRunner:
                     use_qemu=not is_instrumented,
                 )
 
-                logger.info(f"Starting AFL instance: {instance_name}")
-                logger.debug(f"Command: {' '.join(cmd)}")
+                logger.info("Starting AFL instance: %s", instance_name)
+                logger.debug("Command: %s", ' '.join(cmd))
 
                 # AFL refuses to run if the host's core_pattern pipes cores (apport,
                 # systemd-coredump) or the CPU governor is not 'performance'. Both
@@ -505,7 +505,7 @@ class AFLRunner:
                 num_crashes = len(crash_files)
 
                 if num_crashes > last_logged_crashes:
-                    logger.info(f"Progress: {num_crashes} unique crashes found")
+                    logger.info("Progress: %s unique crashes found", num_crashes)
                     # Telemetry: emit a per-crash event for new ones only
                     if self.telemetry:
                         for crash_path in crash_files[last_logged_crashes:]:
@@ -513,7 +513,7 @@ class AFLRunner:
                     last_logged_crashes = num_crashes
 
                 if max_crashes is not None and num_crashes >= max_crashes:
-                    logger.info(f"✓ Reached {max_crashes} crashes, stopping early")
+                    logger.info("✓ Reached %s crashes, stopping early", max_crashes)
                     break
 
                 # Periodic status update (every 60 seconds)
@@ -527,7 +527,7 @@ class AFLRunner:
                         stability = stats.get('stability', 'N/A')
                         bitmap_cvg = stats.get('bitmap_cvg', 'N/A')
 
-                        logger.info(f"Status: {elapsed:.0f}s elapsed | {execs_per_sec} exec/s | {total_execs} total execs | {paths_found} paths | {stability}% stable | {bitmap_cvg}% coverage")
+                        logger.info("Status: %.0fs elapsed | %s exec/s | %s total execs | %s paths | %s%% stable | %s%% coverage", elapsed, execs_per_sec, total_execs, paths_found, stability, bitmap_cvg)
 
                         # Mirror to telemetry for live status line and JSONL trail
                         if self.telemetry:
@@ -542,7 +542,7 @@ class AFLRunner:
                             except (ValueError, TypeError):
                                 pass
                     else:
-                        logger.info(f"Status: {elapsed:.0f}s elapsed (no stats available yet)")
+                        logger.info("Status: %.0fs elapsed (no stats available yet)", elapsed)
 
                     last_status_time = current_time
 
@@ -556,9 +556,9 @@ class AFLRunner:
                         self._close_process_logs(entry)
                         stderr_str = self._tail_file(entry["stderr_path"])
                         if stderr_str:
-                            logger.error(f"AFL instance {name} exited with code {exit_code}")
-                            logger.error(f"AFL stderr saved to: {entry['stderr_path']}")
-                            logger.error(f"AFL stderr tail:\n{stderr_str}")
+                            logger.error("AFL instance %s exited with code %s", name, exit_code)
+                            logger.error("AFL stderr saved to: %s", entry['stderr_path'])
+                            logger.error("AFL stderr tail:\n%s", stderr_str)
                             self._log_common_afl_startup_error(stderr_str)
                             if self.telemetry:
                                 self.telemetry.record_error(
@@ -600,7 +600,7 @@ class AFLRunner:
                 try:
                     proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"Force killing {name}")
+                    logger.warning("Force killing %s", name)
                     proc.kill()
                     try:
                         proc.communicate(timeout=2)
@@ -629,12 +629,12 @@ class AFLRunner:
             logger.info("=" * 70)
             logger.info("FINAL FUZZING STATISTICS")
             logger.info("=" * 70)
-            logger.info(f"Total executions: {total_execs}")
-            logger.info(f"Executions per second: {execs_per_sec}")
-            logger.info(f"Paths found: {paths_found}")
-            logger.info(f"Stability: {stability}%")
-            logger.info(f"Bitmap coverage: {bitmap_cvg}%")
-            logger.info(f"Unique crashes: {total_crashes}")
+            logger.info("Total executions: %s", total_execs)
+            logger.info("Executions per second: %s", execs_per_sec)
+            logger.info("Paths found: %s", paths_found)
+            logger.info("Stability: %s%%", stability)
+            logger.info("Bitmap coverage: %s%%", bitmap_cvg)
+            logger.info("Unique crashes: %s", total_crashes)
             logger.info("=" * 70)
 
             if self.telemetry:
@@ -655,9 +655,9 @@ class AFLRunner:
         logger.info("=" * 70)
         logger.info("FUZZING CAMPAIGN COMPLETE")
         logger.info("=" * 70)
-        logger.info(f"Duration: {elapsed:.1f}s")
-        logger.info(f"Unique crashes: {total_crashes}")
-        logger.info(f"Crashes dir: {self.output_dir}")
+        logger.info("Duration: %.1fs", elapsed)
+        logger.info("Unique crashes: %s", total_crashes)
+        logger.info("Crashes dir: %s", self.output_dir)
         logger.info("=" * 70)
 
         # Run coverage analysis if requested
@@ -668,7 +668,7 @@ class AFLRunner:
             if coverage_stats:
                 logger.info("Coverage stats:")
                 for key, value in coverage_stats.items():
-                    logger.info(f"  {key}: {value}")
+                    logger.info("  %s: %s", key, value)
 
         return total_crashes, self.output_dir / "main" / "crashes"
 
@@ -908,7 +908,7 @@ class AFLRunner:
                 try:
                     stdin_input = open(test_input, 'rb')
                 except Exception as e:
-                    logger.warning(f"Failed to open test input {test_input}: {e}")
+                    logger.warning("Failed to open test input %s: %s", test_input, e)
                     return {}
             else:
                 logger.warning("No test input for afl-showmap with stdin mode")
@@ -984,13 +984,13 @@ class AFLRunner:
                 logger.info("Coverage analysis complete")
                 return coverage
             else:
-                logger.warning(f"afl-showmap failed: {result.stderr}")
+                logger.warning("afl-showmap failed: %s", result.stderr)
                 return {}
 
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
         except Exception as e:
-            logger.warning(f"Error running afl-showmap: {e}")
+            logger.warning("Error running afl-showmap: %s", e)
             return {}
         finally:
             if stdin_input:
