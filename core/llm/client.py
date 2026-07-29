@@ -1111,6 +1111,10 @@ class LLMClient:
                 # only job is to bring count down, and that's happening.
                 continue
 
+    # Bump when schema-to-Pydantic conversion changes behaviour so
+    # cached results validated under old rules are not replayed.
+    _STRUCTURED_CACHE_VERSION = 2  # v2: enum enforcement (Literal)
+
     def _get_structured_cache_key(
         self, prompt: str, system_prompt: Optional[str],
         model: str, schema: Dict[str, Any],
@@ -1131,6 +1135,7 @@ class LLMClient:
             # weird, fall back to repr — still deterministic for that caller.
             schema_json = repr(schema)
         content = (
+            f"v{self._STRUCTURED_CACHE_VERSION}:"
             f"{model}:{system_prompt or ''}:{prompt}:{schema_json}:"
             f"{self._kwargs_for_cache_key(kwargs)}"
         )

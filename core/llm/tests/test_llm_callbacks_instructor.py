@@ -152,6 +152,35 @@ class TestDictSchemaToPydanticJsonSchema:
         assert instance.name == "test"
         assert instance.notes is None
 
+    def test_string_enum_becomes_literal(self):
+        """JSON Schema enum on a string field produces Literal type."""
+        schema = {
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["clean", "suspicious", "finding"],
+                },
+                "notes": {"type": "string"},
+            },
+            "required": ["status"],
+        }
+        model = _dict_schema_to_pydantic(schema)
+        instance = model(status="clean")
+        assert instance.status == "clean"
+        instance2 = model(status="finding")
+        assert instance2.status == "finding"
+        # Wrong case must be rejected
+        with pytest.raises(Exception):
+            model(status="CLEAN")
+        # Value not in enum must be rejected
+        with pytest.raises(Exception):
+            model(status="banana")
+        # Enum must appear in the generated JSON schema
+        json_schema = model.model_json_schema()
+        assert json_schema["properties"]["status"]["enum"] == [
+            "clean", "suspicious", "finding",
+        ]
+
     def test_invalid_schema_type_raises(self):
         """Non-dict, non-Pydantic schema raises ValueError."""
         with pytest.raises(ValueError, match="must be dict or Pydantic"):

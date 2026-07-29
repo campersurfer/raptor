@@ -971,7 +971,13 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']]):
             non_null = [t for t in field_type if t != "null"]
             field_type = non_null[0] if non_null else "string"
 
-        python_type = type_map.get(field_type, str)
+        enum_values = field_spec.get("enum")
+        if enum_values and field_type == "string":
+            from typing import Literal
+            python_type = Literal[tuple(enum_values)]
+        else:
+            python_type = type_map.get(field_type, str)
+
         if nullable:
             from typing import Optional as Opt
             python_type = Opt[python_type]
