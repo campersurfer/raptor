@@ -79,7 +79,7 @@ class WebScanner:
         crawl_file = self.out_dir / "crawl_results.json"
         save_json(crawl_file, crawl_results)
 
-        logger.info(f"Discovery complete: {crawl_results['stats']}")
+        logger.info("Discovery complete: %s", crawl_results['stats'])
 
         # Phase 2: Intelligent Fuzzing
         fuzzing_findings = []
@@ -148,8 +148,8 @@ class WebScanner:
         report_file = self.out_dir / "web_scan_report.json"
         save_json(report_file, report)
 
-        logger.info(f"Web scan complete. Found {len(fuzzing_findings)} potential vulnerabilities")
-        logger.info(f"Report saved to {report_file}")
+        logger.info("Web scan complete. Found %d potential vulnerabilities", len(fuzzing_findings))
+        logger.info("Report saved to %s", report_file)
 
         return report
 
@@ -305,8 +305,8 @@ def main():
     logger.info("=" * 70)
     logger.info("RAPTOR WEB SCAN STARTED")
     logger.info("=" * 70)
-    logger.info(f"Target: {args.url}")
-    logger.info(f"Output: {out_dir}")
+    logger.info("Target: %s", args.url)
+    logger.info("Output: %s", out_dir)
 
     # Initialize LLM client with multi-model support, fallback, and retry
     from packages.llm_analysis import get_client
@@ -348,7 +348,7 @@ def main():
         logger.info("=" * 70)
         logger.info("WEB SCAN COMPLETE")
         logger.info("=" * 70)
-        logger.info(f"Vulnerabilities found: {results['total_vulnerabilities']}")
+        logger.info("Vulnerabilities found: %s", results['total_vulnerabilities'])
 
         return 0 if results['total_vulnerabilities'] == 0 else 1
 
@@ -358,7 +358,7 @@ def main():
         return 130
     except Exception as e:
         print(f"\n✗ Scan failed: {e}", file=sys.stderr)
-        logger.error(f"Scan failed: {e}", exc_info=True)
+        logger.error("Scan failed: %s", e, exc_info=True)
         return 1
     finally:
         scanner.close()
