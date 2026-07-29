@@ -1082,6 +1082,34 @@ Natural-language routing: when the user says "ask gemini...", "ask claude...", "
 
 ---
 
+### /ask
+
+Send a prompt to any configured LLM model.  Developer tool for cross-model
+diagnosis, debugging model reasoning, or comparing verdicts.
+
+```
+/ask --model <name> "prompt text"
+/ask --model <name> --file context.c "Why is this vulnerable?"
+/ask --model <name> --system-file system.txt --file code.c "Review this"
+```
+
+| Flag | Description |
+|------|-------------|
+| `--model <name>` | Model to query (required) |
+| `--file <path>` | Prepend file contents as context (repeatable) |
+| `--system <text>` | System prompt (inline) |
+| `--system-file <path>` | Load system prompt from a file |
+| `--json-schema <path>` | Path to a JSON schema file for structured output |
+| `--max-tokens <n>` | Maximum output tokens (default: 4096) |
+| `--temperature <f>` | Sampling temperature |
+| `--raw` | Print response text only (compact JSON for structured output) |
+| `--debug` | Show model metadata, cost, and provider logging |
+
+When no positional prompt is given and stdin is a pipe, stdin is the prompt.
+Multiple `--file` flags concatenate in order, followed by the prompt text.
+
+---
+
 ### /version
 
 Print the running RAPTOR framework version.
