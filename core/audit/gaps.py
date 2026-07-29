@@ -350,6 +350,34 @@ def hydrate_live_gaps_for_detectors(
     return hydrated
 
 
+def read_gap_source(gap: Dict[str, Any], target_path: Path) -> str:
+    """Read a single gap's source from disk using its line spans.
+
+    Wraps ``_read_spans`` so all consumers share the same path-safety,
+    binary-detection, and per-function byte cap.  No SLOC cap and no
+    total-byte ceiling — callers that iterate per-gap never hold more
+    than one function's body at a time.
+    """
+    file_path = gap.get("file", "")
+    if not file_path:
+        return ""
+    ls = gap.get("line_start")
+    le = gap.get("line_end")
+    if not isinstance(ls, int) or isinstance(ls, bool):
+        return ""
+    if not isinstance(le, int) or isinstance(le, bool):
+        return ""
+    if ls < 1 or le < ls:
+        return ""
+    bodies = _read_spans(
+        target_path, file_path, [(ls, le)],
+        budget_bytes=_MAX_HYDRATED_FUNCTION_BYTES,
+    )
+    if not bodies:
+        return ""
+    return bodies.get((ls, le), "")
+
+
 def _read_spans(
     target_path: Path,
     file_path: str,

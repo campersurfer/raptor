@@ -1595,10 +1595,8 @@ def _run_audit_body(
         check_sibling_negative_space,
     )
     # Detectors need the function body; gaps carry line spans only.
-    # Hydrated *copies* — see hydrate_live_gaps_for_detectors: putting
-    # `source` on the shared gap dicts would also switch on triage's
-    # generated-file detection (changing which functions get reviewed)
-    # and spec_inference's LLM calls, neither of which belongs here.
+    # Hydrated *copies* — sibling check holds all gaps in gap_by_key,
+    # so the total byte cap bounds memory.
     detector_gaps = hydrate_live_gaps_for_detectors(
         [g for g in gaps if not g.get("dead")], Path(config.target_path),
     )
@@ -2583,23 +2581,24 @@ def _run_audit_body(
             check_signal_safety,
             check_ub_patterns,
         )
-        for nf in check_resource_exhaustion(gaps):
+        tp = Path(config.target_path)
+        for nf in check_resource_exhaustion(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_protocol_ambiguity(gaps):
+        for nf in check_protocol_ambiguity(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_missing_app_features(gaps):
+        for nf in check_missing_app_features(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_signal_safety(gaps):
+        for nf in check_signal_safety(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_ub_patterns(gaps):
+        for nf in check_ub_patterns(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_side_channels(gaps):
+        for nf in check_side_channels(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_multi_process(gaps):
+        for nf in check_multi_process(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_deployment_assumptions(gaps):
+        for nf in check_deployment_assumptions(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        for nf in check_lock_ordering(gaps):
+        for nf in check_lock_ordering(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
     except Exception:
         logger.debug("negative-space post-loop checks failed", exc_info=True)

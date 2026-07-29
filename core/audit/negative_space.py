@@ -17,7 +17,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set
+
+from .gaps import read_gap_source
 
 logger = logging.getLogger(__name__)
 
@@ -674,12 +677,16 @@ _RECURSION_GUARD = re.compile(
 
 def check_resource_exhaustion(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Detect resource exhaustion patterns."""
     findings: List[NegativeSpaceFinding] = []
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
 
@@ -839,13 +846,17 @@ _PROTOCOL_CHECKS = [
 
 def check_protocol_ambiguity(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Flag protocol-handling code vulnerable to known ambiguity classes."""
     findings: List[NegativeSpaceFinding] = []
     seen: Set[str] = set()
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
 
@@ -955,15 +966,29 @@ _APP_FEATURE_CHECKS = [
 
 def check_missing_app_features(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Check for application-level security features that should exist
     but may not have been implemented."""
-    all_source = "\n".join(g.get("source", "") for g in gaps if g.get("source"))
+    found_features: Set[int] = set()
+    for gap in gaps:
+        if len(found_features) == len(_APP_FEATURE_CHECKS):
+            break
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
+        if not source:
+            continue
+        for idx, check in enumerate(_APP_FEATURE_CHECKS):
+            if idx in found_features:
+                continue
+            if any(p.search(source) for p in check.search_patterns):
+                found_features.add(idx)
 
     findings: List[NegativeSpaceFinding] = []
-    for check in _APP_FEATURE_CHECKS:
-        found = any(p.search(all_source) for p in check.search_patterns)
-        if not found:
+    for idx, check in enumerate(_APP_FEATURE_CHECKS):
+        if idx not in found_features:
             findings.append(NegativeSpaceFinding(
                 check_type="missing_app_feature",
                 expected=f"{check.feature} present in application",
@@ -1019,6 +1044,7 @@ def check_ub_patterns(
     gaps: Sequence[Dict[str, Any]],
     *,
     languages: Optional[Set[str]] = None,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Detect known undefined behaviour patterns in C/C++ source."""
     if languages and not (languages & {"c", "cpp", "c++"}):
@@ -1026,7 +1052,9 @@ def check_ub_patterns(
 
     findings: List[NegativeSpaceFinding] = []
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
 
@@ -1068,13 +1096,17 @@ _SIGNAL_UNSAFE_CALLS = frozenset({
 
 def check_signal_safety(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Flag signal handlers that call signal-unsafe functions."""
     findings: List[NegativeSpaceFinding] = []
 
     handler_funcs: Set[str] = set()
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         handler_matches = re.findall(
             r"signal\s*\(\s*\w+\s*,\s*(\w+)\s*\)", source,
         )
@@ -1134,12 +1166,16 @@ _TIMING_BRANCH = re.compile(
 
 def check_side_channels(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Blind spot 12: flag secret-dependent branches and timing leaks."""
     findings: List[NegativeSpaceFinding] = []
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
         file = gap.get("file", "")
@@ -1245,12 +1281,16 @@ _SUBPROCESS_SHELL_UNTRUSTED = re.compile(
 
 def check_multi_process(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Blind spot 3: cross-service trust boundary analysis."""
     findings: List[NegativeSpaceFinding] = []
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
         file = gap.get("file", "")
@@ -1365,12 +1405,16 @@ _DEBUG_SKIP_SECURITY = re.compile(
 
 def check_deployment_assumptions(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Blind spot 9: deployment mismatch detection."""
     findings: List[NegativeSpaceFinding] = []
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
         file = gap.get("file", "")
@@ -1483,12 +1527,16 @@ _NON_REENTRANT_CALLS = frozenset({
 
 def check_lock_ordering(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[NegativeSpaceFinding]:
     """Extends blind spot 11: lock ordering and locking discipline analysis."""
     findings: List[NegativeSpaceFinding] = []
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or (
+            read_gap_source(gap, target_path) if target_path else ""
+        )
         if not source:
             continue
         file = gap.get("file", "")

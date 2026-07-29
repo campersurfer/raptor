@@ -19,6 +19,7 @@ from core.audit.gaps import (
     _MAX_HYDRATED_FILE_BYTES,
     _read_spans,
     hydrate_live_gaps_for_detectors,
+    read_gap_source,
 )
 from core.audit.negative_space import discover_conventions
 
@@ -364,3 +365,55 @@ class TestBinaryProbeIsBestEffort:
         """
         (tmp_path / "b.py").write_bytes(b"x\n" * 8192 + b"\0" * 10)
         assert _read_spans(tmp_path, "b.py", [(1, 2)]) is not None
+
+
+class TestReadGapSource:
+    """Unit tests for the shared read_gap_source() helper."""
+
+    def test_reads_span(self, tmp_path):
+        (tmp_path / "a.py").write_text("line1\nline2\nline3\n")
+        gap = {"file": "a.py", "line_start": 2, "line_end": 3}
+        src = read_gap_source(gap, tmp_path)
+        assert "line2" in src
+        assert "line3" in src
+
+    def test_missing_file(self, tmp_path):
+        gap = {"file": "nope.py", "line_start": 1, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_path_traversal(self, tmp_path):
+        gap = {"file": "../etc/passwd", "line_start": 1, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_none_line_end(self, tmp_path):
+        (tmp_path / "a.py").write_text("hello\n")
+        gap = {"file": "a.py", "line_start": 1, "line_end": None}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_bool_line_start(self, tmp_path):
+        (tmp_path / "a.py").write_text("hello\n")
+        gap = {"file": "a.py", "line_start": True, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_zero_line_start(self, tmp_path):
+        (tmp_path / "a.py").write_text("hello\n")
+        gap = {"file": "a.py", "line_start": 0, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_reversed_span(self, tmp_path):
+        (tmp_path / "a.py").write_text("line1\nline2\n")
+        gap = {"file": "a.py", "line_start": 3, "line_end": 1}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_empty_file_path(self, tmp_path):
+        gap = {"file": "", "line_start": 1, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_refuses_binary_file(self, tmp_path):
+        (tmp_path / "b.bin").write_bytes(b"\x00" * 100 + b"text\n" * 10)
+        gap = {"file": "b.bin", "line_start": 1, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""
+
+    def test_no_file_key(self, tmp_path):
+        gap = {"line_start": 1, "line_end": 2}
+        assert read_gap_source(gap, tmp_path) == ""

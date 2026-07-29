@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 
+from ._util import safe_join
 from .prefilter import PrefilterResult
 
 
@@ -262,11 +263,11 @@ def detect_generated_files(
 
 def _read_file_header(file_path: str, target_path: Path) -> str:
     """Read the first 512 bytes of a file for generated-marker detection."""
+    resolved = safe_join(target_path, file_path)
+    if resolved is None:
+        return ""
     try:
-        full = (target_path / file_path).resolve()
-        if not full.is_relative_to(target_path.resolve()):
-            return ""
-        with open(full, "r", errors="replace") as f:
+        with open(resolved, "r", errors="replace") as f:
             return f.read(512)
     except OSError:
         return ""

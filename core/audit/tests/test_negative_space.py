@@ -841,3 +841,76 @@ class TestDeadGapExclusion:
         ]
         fw = detect_framework(gaps)
         assert fw == ""
+
+
+class TestPostLoopHydration:
+    """Post-loop pattern-scan functions read source from disk via target_path."""
+
+    @staticmethod
+    def _gap(file, name, ls, le, source=""):
+        g = {"file": file, "name": name, "line_start": ls, "line_end": le}
+        if source:
+            g["source"] = source
+        return g
+
+    def test_resource_exhaustion_from_disk(self, tmp_path):
+        body = "parser = XMLParser(target)\n"
+        (tmp_path / "srv.py").write_text(body)
+        gap = self._gap("srv.py", "handle", 1, 1)
+        findings = check_resource_exhaustion([gap], target_path=tmp_path)
+        assert any(f.check_type == "resource_exhaustion" for f in findings)
+
+    def test_deployment_assumptions_from_disk(self, tmp_path):
+        body = "if '127.0.0.1' in trusted_allow_list:\n    skip_auth()\n"
+        (tmp_path / "cfg.py").write_text(body)
+        gap = self._gap("cfg.py", "check", 1, 2)
+        findings = check_deployment_assumptions([gap], target_path=tmp_path)
+        assert any(f.check_type == "deployment_assumption" for f in findings)
+
+    def test_lock_ordering_from_disk(self, tmp_path):
+        body = (
+            "pthread_mutex_lock(&mutex_a);\n"
+            "pthread_mutex_lock(&mutex_b);\n"
+            "do_work();\n"
+            "pthread_mutex_unlock(&mutex_b);\n"
+            "pthread_mutex_unlock(&mutex_a);\n"
+        )
+        (tmp_path / "locks.c").write_text(body)
+        gap = self._gap("locks.c", "work", 1, 5)
+        findings = check_lock_ordering([gap], target_path=tmp_path)
+        assert any(f.check_type == "lock_ordering" for f in findings)
+
+    def test_missing_app_features_from_disk(self, tmp_path):
+        body = "def index(req):\n    return render(req, 'index.html')\n"
+        (tmp_path / "views.py").write_text(body)
+        gap = self._gap("views.py", "index", 1, 2)
+        findings = check_missing_app_features([gap], target_path=tmp_path)
+        assert len(findings) > 0
+
+    def test_no_target_path_still_works(self):
+        gap = self._gap("x.py", "f", 1, 2)
+        findings = check_resource_exhaustion([gap])
+        assert findings == []
+
+    def test_gap_source_preferred_over_disk(self, tmp_path):
+        (tmp_path / "a.py").write_text("clean code\n")
+        body = "parser = XMLParser(target)\n"
+        gap = self._gap("a.py", "handle", 1, 1, source=body)
+        findings = check_resource_exhaustion([gap], target_path=tmp_path)
+        assert any(f.check_type == "resource_exhaustion" for f in findings)
+
+    def test_missing_app_features_early_exit(self, tmp_path):
+        """Once all features found, stops reading further gaps."""
+        from core.audit.negative_space import _APP_FEATURE_CHECKS
+
+        if not _APP_FEATURE_CHECKS:
+            return
+        body = "\n".join(
+            p.pattern
+            for check in _APP_FEATURE_CHECKS
+            for p in check.search_patterns[:1]
+        )
+        (tmp_path / "all.py").write_text(body)
+        gap = self._gap("all.py", "f", 1, body.count("\n") + 1)
+        findings = check_missing_app_features([gap], target_path=tmp_path)
+        assert findings == []

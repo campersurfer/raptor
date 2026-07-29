@@ -447,24 +447,8 @@ def _read_gap_source(
     """Read source text for a gap from disk using its line span."""
     if not target_path:
         return ""
-    file_rel = gap.get("file", "")
-    if not file_rel:
-        return ""
-    full_path = (target_path / file_rel).resolve()
-    if not full_path.is_relative_to(target_path.resolve()):
-        return ""
-    if not full_path.is_file():
-        return ""
-    ls = gap.get("line_start", 0) or 0
-    le = gap.get("line_end", 0) or 0
-    if ls <= 0 or le <= 0:
-        return ""
-    try:
-        text = full_path.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-        return "\n".join(lines[max(0, ls - 1):min(len(lines), le)])
-    except OSError:
-        return ""
+    from .gaps import read_gap_source
+    return read_gap_source(gap, target_path)
 
 
 _DB_WRITE_PATTERNS = [
