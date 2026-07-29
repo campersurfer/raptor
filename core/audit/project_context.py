@@ -138,7 +138,7 @@ def load_project_context(out_dir: Path) -> ProjectContext:
     for candidate in candidates:
         if candidate.exists():
             try:
-                with open(candidate) as f:
+                with open(candidate, encoding="utf-8") as f:
                     data = json.load(f)
                 learnings = []
                 for item in data.get("learnings", []):
@@ -190,7 +190,7 @@ def _atomic_write(ctx: ProjectContext, target: Path) -> Path:
         dir=str(target.parent), suffix=".tmp", prefix=".project-context-",
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(ctx.to_dict(), f, indent=2)
         os.replace(tmp_name, str(target))
     except BaseException:
