@@ -81,7 +81,7 @@ def import_validation_results(
     from .record import _compute_hash
 
     try:
-        with open(validation_report) as f:
+        with open(validation_report, encoding="utf-8") as f:
             report = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("failed to load validation report %s: %s", validation_report, exc)

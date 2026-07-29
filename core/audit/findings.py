@@ -79,7 +79,7 @@ def load_findings(out_dir: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError:
         logger.warning("corrupt findings.json at %s", path)
@@ -92,7 +92,7 @@ def write_findings(findings: List[Dict[str, Any]], out_dir: Path) -> Path:
     path = out_dir / "findings.json"
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(findings, f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:
