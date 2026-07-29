@@ -637,6 +637,10 @@ def review_one_function(
         except ImportError:
             pass
 
+    gap_with_source = gap
+    if not gap.get("source") and ctx.get("source"):
+        gap_with_source = {**gap, "source": ctx["source"]}
+
     try:
         from .spec_inference import infer_spec_mechanical
         summaries_for_spec = None
@@ -646,7 +650,7 @@ def review_one_function(
                 for s in ctx["callee_summaries"]
             }
         spec = infer_spec_mechanical(
-            gap, checklist=checklist,
+            gap_with_source, checklist=checklist,
             tests=discovered_tests or None,
             summaries=summaries_for_spec,
         )
@@ -677,11 +681,11 @@ def review_one_function(
             role_ctx.get("role") in ("entry_point", "sink")
             or gap.get("priority_score", 0) >= 0.7
         )
-        if is_high_value and gap.get("source"):
+        if is_high_value and gap_with_source.get("source"):
             try:
                 from .spec_inference import infer_spec_with_llm_sync
                 llm_spec = infer_spec_with_llm_sync(
-                    gap, mechanical_spec=ctx.get("inferred_spec"),
+                    gap_with_source, mechanical_spec=ctx.get("inferred_spec"),
                 )
                 if llm_spec and llm_spec.intent:
                     ctx["inferred_spec"] = llm_spec
