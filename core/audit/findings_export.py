@@ -196,7 +196,7 @@ def write_graded_findings(
     path = out_dir / "findings-graded.json"
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(export, f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:

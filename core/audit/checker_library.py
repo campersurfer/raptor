@@ -142,7 +142,7 @@ class CheckerLibrary:
             dir=str(self.library_dir), suffix=".tmp",
         )
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(entry.to_dict(), f, indent=2)
             os.replace(tmp, str(path))
         except BaseException:
