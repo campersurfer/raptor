@@ -2366,24 +2366,23 @@ def extract_items(filepath: str, language: str, content: str,
             and i.line_end is not None
             and i.line_end <= i.line_start
         }
-        if broken or True:
-            regex_ext = _REGEX_EXTRACTORS.get(language, GenericExtractor())
-            regex_funcs = regex_ext.extract(filepath, content)
-            regex_by_name = {f.name: f for f in regex_funcs if f.kind == KIND_FUNCTION}
-            for i, item in enumerate(items):
-                if item.kind == KIND_FUNCTION and item.name in broken:
-                    repair = regex_by_name.get(item.name)
-                    if repair and repair.line_end and repair.line_end > repair.line_start:
-                        items[i] = FunctionInfo(
-                            name=item.name,
-                            line_start=item.line_start,
-                            line_end=repair.line_end,
-                            signature=item.signature or repair.signature,
-                            metadata=item.metadata or repair.metadata,
-                        )
-            for name, rfn in regex_by_name.items():
-                if name not in ts_funcs:
-                    items.append(rfn)
+        regex_ext = _REGEX_EXTRACTORS.get(language, GenericExtractor())
+        regex_funcs = regex_ext.extract(filepath, content)
+        regex_by_name = {f.name: f for f in regex_funcs if f.kind == KIND_FUNCTION}
+        for i, item in enumerate(items):
+            if item.kind == KIND_FUNCTION and item.name in broken:
+                repair = regex_by_name.get(item.name)
+                if repair and repair.line_end and repair.line_end > repair.line_start:
+                    items[i] = FunctionInfo(
+                        name=item.name,
+                        line_start=item.line_start,
+                        line_end=repair.line_end,
+                        signature=item.signature or repair.signature,
+                        metadata=item.metadata or repair.metadata,
+                    )
+        for name, rfn in regex_by_name.items():
+            if name not in ts_funcs:
+                items.append(rfn)
 
     # C/C++ macro extraction (regex — tree-sitter doesn't parse preprocessor)
     if language in ("c", "cpp"):
