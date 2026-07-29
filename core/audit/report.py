@@ -143,7 +143,7 @@ def write_markdown_report(
         lines.append("")
         lines.append("| Tool | Available |")
         lines.append("|---|---|")
-        for tool in sorted(capabilities.keys()):
+        for tool in sorted(capabilities):
             avail = "Yes" if capabilities[tool] else "No"
             lines.append(f"| {tool} | {avail} |")
         lines.append("")
