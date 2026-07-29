@@ -66,8 +66,8 @@ def generate_report(
         try:
             eval_data = json.loads(eval_path.read_text())
             report["evaluation"] = eval_data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("failed to load evaluation results from %s: %s", eval_path, e)
 
     report["summary"] = _format_summary(report)
     return report
@@ -82,7 +82,7 @@ def write_report(report: Dict[str, Any], out_dir: Path) -> Path:
     """Write the report to audit-report.json."""
     path = out_dir / "audit-report.json"
     serializable = {k: v for k, v in report.items() if k != "summary"}
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(serializable, f, indent=2)
     return path
 
@@ -342,7 +342,7 @@ def _load_findings(out_dir: Path) -> List[Dict[str, Any]]:
     path = out_dir / "findings.json"
     if not path.exists():
         return []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     return data if isinstance(data, list) else data.get("findings", [])
 
@@ -351,7 +351,7 @@ def _load_gaps(out_dir: Path) -> Dict[str, Any]:
     path = out_dir / "gaps.json"
     if not path.exists():
         return {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -419,7 +419,7 @@ def _find_unrecorded_reads(
         return []
 
     try:
-        with open(checklist_path) as f:
+        with open(checklist_path, encoding="utf-8") as f:
             checklist = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []

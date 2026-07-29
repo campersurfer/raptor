@@ -232,7 +232,7 @@ def run_rule(
             # subprocess_runner.
             fd, tmp_name = tempfile.mkstemp(suffix=".cocci", prefix="raptor-cocci-")
             try:
-                with os.fdopen(fd, "w") as fh:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(injected)
                 harnessed_rule_path = Path(tmp_name)
             except OSError:

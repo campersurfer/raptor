@@ -260,7 +260,7 @@ def record_boost(
     """
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        with (out_dir / "boost-evidence.jsonl").open("a") as f:
+        with (out_dir / "boost-evidence.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(evidence.to_dict()) + "\n")
     except OSError as e:
         logger.debug("safety_contract: failed to write boost record: %s", e)

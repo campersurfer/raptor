@@ -287,5 +287,5 @@ class Collector:
     def _flush_audit_log(self) -> None:
         log_path = self.out_dir / ".audit-log.jsonl"
         lines = [json.dumps(e, separators=(",", ":")) for e in self._log_entries]
-        with open(log_path, "a") as f:
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

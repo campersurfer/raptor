@@ -399,7 +399,7 @@ def write_disagreements(
 
     fd, tmp = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:
@@ -426,7 +426,7 @@ def write_observation_records(
 
     fd, tmp = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:

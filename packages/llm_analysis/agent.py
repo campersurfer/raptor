@@ -2660,7 +2660,7 @@ class AutonomousSecurityAgentV2:
                                 ):
                                     sage_fp_stored += 1
                     except Exception:
-                        pass
+                        logger.debug("SAGE verdict storage failed", exc_info=True)
 
                 # Always include finding in results (with or without LLM analysis)
                 results.append(vuln.to_dict())

@@ -381,8 +381,7 @@ def import_project(zip_path: Path, projects_dir: Path,
             orphaned_output = None
             if existing and force:
                 old_output_path = Path(existing.output_dir).resolve()
-                if output_dir.exists():
-                    shutil.rmtree(output_dir)
+                shutil.rmtree(output_dir, ignore_errors=True)
                 mgr.delete(project_name, purge=False)
                 if old_output_path != output_dir.resolve() and old_output_path.exists():
                     orphaned_output = str(old_output_path)
@@ -477,8 +476,7 @@ def import_project(zip_path: Path, projects_dir: Path,
                         )
             except Exception:
                 # Clean up partial extraction
-                if output_dir.exists():
-                    shutil.rmtree(output_dir)
+                shutil.rmtree(output_dir, ignore_errors=True)
                 raise
 
     except zipfile.BadZipFile:

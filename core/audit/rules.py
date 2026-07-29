@@ -204,7 +204,7 @@ def _load_manifest(out_dir: Path) -> Dict[str, Any]:
     if not manifest_path.exists():
         return {}
     try:
-        with open(manifest_path) as f:
+        with open(manifest_path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
@@ -215,7 +215,7 @@ def _save_manifest(out_dir: Path, manifest: Dict[str, Any]) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(manifest_path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
         os.replace(tmp, str(manifest_path))
     except BaseException:

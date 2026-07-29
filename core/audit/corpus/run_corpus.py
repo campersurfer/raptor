@@ -124,7 +124,7 @@ def _build_checklist(
             [sys.executable,
              str(raptor_dir / "libexec" / "raptor-build-checklist"),
              str(target_dir), "--out", str(out_dir)],
-            env=env, capture_output=True, text=True,
+            env=env, capture_output=True, text=True, timeout=300,
         )
         if cp.returncode != 0:
             print(f"  checklist build failed: {cp.stderr.strip()[:200]}",
@@ -142,7 +142,7 @@ def _poll_progress(
     """Print new audit-log entries since last poll.  Returns new seen count."""
     if not log_path.exists():
         return seen
-    with open(log_path) as f:
+    with open(log_path, encoding="utf-8") as f:
         lines = f.readlines()
     new_count = len(lines)
     if new_count <= seen:
@@ -315,7 +315,7 @@ def _run_audit_on_target(
 
     outcomes_by_id: Dict[str, Dict[str, Any]] = {}
     if log_path.exists():
-        with open(log_path) as f:
+        with open(log_path, encoding="utf-8") as f:
             for raw in f:
                 raw = raw.strip()
                 if not raw:
@@ -342,7 +342,7 @@ def _write_csv(
         "function_id", "bug_class", "expected", "actual",
         "match", "hypothesis", "evidence_tool", "model",
     ]
-    with open(output, "w", newline="") as f:
+    with open(output, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in results:

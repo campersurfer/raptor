@@ -101,7 +101,7 @@ def load_constraints(out_dir: Path) -> List[Constraint]:
     if not path.exists():
         return []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
             return []
@@ -120,7 +120,7 @@ def save_constraints(
     data = [c.to_dict() for c in constraints]
     fd, tmp = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, path)
     except BaseException:

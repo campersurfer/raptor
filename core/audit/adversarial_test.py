@@ -411,7 +411,7 @@ def write_matrix(
 
     fd, tmp = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(matrix.to_dict(), f, indent=2)
         os.replace(tmp, str(path))
     except BaseException:

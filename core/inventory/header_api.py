@@ -142,7 +142,7 @@ def scan_public_api(
             try:
                 if fpath.stat().st_size > 1_048_576:  # 1 MB cap
                     continue
-                with open(fpath, errors="replace") as f:
+                with open(fpath, encoding="utf-8", errors="replace") as f:
                     content = f.read()
             except OSError:
                 continue

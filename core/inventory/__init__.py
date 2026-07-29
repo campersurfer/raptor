@@ -145,7 +145,7 @@ class _checklist_lock:
             | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         )
         fd = os.open(self._lock_path, flags, 0o600)
-        self._lock_file = os.fdopen(fd, "w")
+        self._lock_file = os.fdopen(fd, "w", encoding="utf-8")
         try:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX)
         except OSError:

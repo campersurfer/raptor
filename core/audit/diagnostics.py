@@ -132,7 +132,7 @@ def write_tier_diagnostics(
         if tc.cpg_build_s > 0:
             data[name]["cpg_build_s"] = round(tc.cpg_build_s, 2)
     path = out_dir / "tier-diagnostics.json"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 

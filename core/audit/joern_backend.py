@@ -479,7 +479,7 @@ def import_sibling_joern_flows(
         manifest_path = sibling_dir / ".raptor-run.json"
         if manifest_path.exists():
             try:
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding="utf-8") as f:
                     manifest = json.load(f)
                 sibling_hash = manifest.get("content_hash", "")
                 if sibling_hash:
@@ -487,7 +487,7 @@ def import_sibling_joern_flows(
             except (json.JSONDecodeError, OSError):
                 pass
         try:
-            with open(flows_path) as f:
+            with open(flows_path, encoding="utf-8") as f:
                 flows_data = json.load(f)
             for key, flows in flows_data.items():
                 imported.setdefault(key, []).extend(flows)
@@ -514,7 +514,7 @@ def sibling_run_dirs(
             manifest = child / ".raptor-run.json"
             if manifest.exists():
                 try:
-                    with open(manifest) as f:
+                    with open(manifest, encoding="utf-8") as f:
                         m = json.load(f)
                     sibling_target = m.get("target_path") or m.get("target", "")
                     if sibling_target and Path(sibling_target).resolve() != Path(target_path).resolve():
