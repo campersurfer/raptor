@@ -376,7 +376,7 @@ def render_markdown(report: ReplayReport) -> str:
                 per_model_beta.setdefault(r["model"], []).append(r["beta"])
         lines.append("| model | mean α | mean β | n classes |")
         lines.append("|---|---:|---:|---:|")
-        for model in sorted(per_model_alpha.keys()):
+        for model in sorted(per_model_alpha):
             alphas = per_model_alpha[model]
             betas = per_model_beta[model]
             lines.append(
