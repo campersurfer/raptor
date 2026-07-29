@@ -795,6 +795,24 @@ def _coerce_to_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str,
         elif field_type == "string" and value is None:
             coerced[field_name] = ""
 
+        # Recurse into nested objects
+        if field_type == "object" and "properties" in field_spec and isinstance(value, dict):
+            coerced[field_name] = _coerce_to_schema(value, field_spec)
+
+        # Recurse into array items that are objects
+        if (
+            field_type == "array"
+            and isinstance(value, list)
+            and "items" in field_spec
+            and isinstance(field_spec["items"], dict)
+            and "properties" in field_spec["items"]
+        ):
+            coerced[field_name] = [
+                _coerce_to_schema(item, field_spec["items"])
+                if isinstance(item, dict) else item
+                for item in value
+            ]
+
     return coerced
 
 
@@ -903,7 +921,7 @@ def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']]):
+def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']], _model_name: str = 'DynamicSchema'):
     """
     Convert dict schema or Pydantic model to Pydantic model class.
 
@@ -972,9 +990,24 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']]):
             field_type = non_null[0] if non_null else "string"
 
         enum_values = field_spec.get("enum")
-        if enum_values and field_type == "string":
+        if enum_values:
             from typing import Literal
             python_type = Literal[tuple(enum_values)]
+        elif field_type == "object" and "properties" in field_spec:
+            nested_name = f"{_model_name}_{field_name.title().replace('_', '')}"
+            python_type = _dict_schema_to_pydantic(field_spec, _model_name=nested_name)
+        elif field_type == "array":
+            items_spec = field_spec.get("items", {})
+            if items_spec.get("type") == "object" and "properties" in items_spec:
+                item_name = f"{_model_name}_{field_name.title().replace('_', '')}Item"
+                item_type = _dict_schema_to_pydantic(items_spec, _model_name=item_name)
+            elif items_spec.get("enum"):
+                from typing import Literal
+                item_type = Literal[tuple(items_spec["enum"])]
+            else:
+                item_type = type_map.get(items_spec.get("type", "string"), str)
+            from typing import List
+            python_type = List[item_type]
         else:
             python_type = type_map.get(field_type, str)
 
@@ -1014,7 +1047,7 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']]):
             field_definitions[field_name] = (python_type, default_value)
 
     # Create and return Pydantic model
-    model = create_model('DynamicSchema', **field_definitions)
+    model = create_model(_model_name, **field_definitions)
     return model
 
 

@@ -1113,7 +1113,7 @@ class LLMClient:
 
     # Bump when schema-to-Pydantic conversion changes behaviour so
     # cached results validated under old rules are not replayed.
-    _STRUCTURED_CACHE_VERSION = 2  # v2: enum enforcement (Literal)
+    _STRUCTURED_CACHE_VERSION = 3  # v3: nested schema recursion
 
     def _get_structured_cache_key(
         self, prompt: str, system_prompt: Optional[str],
