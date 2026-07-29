@@ -157,7 +157,7 @@ class OrchestratorConfig:
     target_path: Path
     out_dir: Path
     budget: Optional[int] = None
-    scope: Optional[str] = None
+    scope: Optional[str | list[str]] = None
     strategy_filter: Optional[str] = None
     models: List[str] = field(default_factory=lambda: ["default"])
     multi_model: bool = False
@@ -4674,6 +4674,7 @@ def _sweep_validate(
                 outcome.file, outcome.function, exc_info=True,
             )
 
+    outcome.evidence_tool = evidence_tool
     return outcome
 
 
@@ -4969,6 +4970,7 @@ def _proactive_validate(
         tool_label = "+".join(confirmed_tools)
         return _stamp_evidence(outcome, tool_label)
 
+    outcome.evidence_tool = evidence_tool
     return outcome
 
 

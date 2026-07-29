@@ -178,6 +178,29 @@ class TestMakeReviewFn:
         assert outcome.hypotheses[1]["confidence"] == "low"
         assert outcome.hypotheses[1]["counter"] == "src and dst may not alias"
 
+    def test_evidence_tool_sanitised(self, tmp_path: Path):
+        """LLM-claimed tool names get llm-claimed: prefix, not passed raw."""
+        client = FakeLLMClient({
+            "status": "finding",
+            "body": "overflow",
+            "hypothesis": "buffer overflow",
+            "evidence_tool": "semgrep",
+        })
+        review_fn = make_review_fn(client)
+        outcome = review_fn(self._ctx(), self._config(tmp_path))
+        assert outcome.evidence_tool == "llm-claimed:semgrep"
+
+    def test_evidence_tool_manual_cleared(self, tmp_path: Path):
+        """LLM saying 'manual' produces empty evidence_tool."""
+        client = FakeLLMClient({
+            "status": "clean",
+            "body": "ok",
+            "evidence_tool": "manual code review",
+        })
+        review_fn = make_review_fn(client)
+        outcome = review_fn(self._ctx(), self._config(tmp_path))
+        assert outcome.evidence_tool == ""
+
     def test_hypotheses_empty_when_not_provided(self, tmp_path: Path):
         client = FakeLLMClient({
             "status": "clean",

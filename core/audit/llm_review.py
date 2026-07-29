@@ -571,9 +571,8 @@ _LLM_ONLY_EVIDENCE = frozenset({
 
 
 def _normalize_evidence_tool(raw: str) -> str:
-    if raw.lower().strip() in _LLM_ONLY_EVIDENCE:
-        return "llm"
-    return raw
+    from .evidence_grade import sanitize_llm_evidence_tool
+    return sanitize_llm_evidence_tool(raw)
 
 
 _DISMISSIVE_COUNTER = frozenset({
