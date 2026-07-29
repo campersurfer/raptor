@@ -66,7 +66,7 @@ class WebClient:
             maxlen=_MAX_REQUEST_HISTORY,
         )
 
-        logger.info(f"Web client initialized for {base_url} (verify_ssl={verify_ssl})")
+        logger.info("Web client initialized for %s (verify_ssl=%s)", base_url, verify_ssl)
 
     def _origin(self, url: str) -> tuple:
         """Return normalized (scheme, host, port) tuple for URL scope checks."""
@@ -163,7 +163,7 @@ class WebClient:
             'timestamp': time.time(),
         })
 
-        logger.debug(f"{method} {log_url} -> {response.status_code} ({duration:.2f}s)")
+        logger.debug("%s %s -> %s (%.2fs)", method, log_url, response.status_code, duration)
 
     def _send_scoped_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Send a request while enforcing target scope across redirects."""
@@ -300,10 +300,10 @@ class WebClient:
             return response
 
         except requests.exceptions.Timeout:
-            logger.warning(f"Timeout on GET {self._redact_for_logging(url)}")
+            logger.warning("Timeout on GET %s", self._redact_for_logging(url))
             raise
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed: {self._redact_for_logging(e)}")
+            logger.error("Request failed: %s", self._redact_for_logging(e))
             raise
 
     def post(self, path: str, data: Optional[Dict] = None,
@@ -330,13 +330,13 @@ class WebClient:
             return response
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"POST request failed: {self._redact_for_logging(e)}")
+            logger.error("POST request failed: %s", self._redact_for_logging(e))
             raise
 
     def set_auth(self, username: str, password: str) -> None:
         """Set basic authentication."""
         self.session.auth = (username, password)
-        logger.info(f"Authentication set for user: {username}")
+        logger.info("Authentication set for user: %s", username)
 
     def set_bearer_token(self, token: str) -> None:
         """Set bearer token authentication."""
