@@ -97,7 +97,7 @@ def _materialise_threat_model_phase(
                 summary["skipped_reason"] = reason or "understand pre-pass did not produce context-map.json"
                 return summary
         except Exception as e:
-            logger.debug(f"Threat model fallback lookup failed: {e}")
+            logger.debug("Threat model fallback lookup failed: %s", e)
             summary["skipped_reason"] = reason or "understand pre-pass did not produce context-map.json"
             return summary
     else:
@@ -166,12 +166,12 @@ def _materialise_threat_model_phase(
             summary["model_refreshed"] = True
             summary["model_migrated"] = False
     except RuntimeError as e:
-        logger.warning(f"Threat model save refused (concurrent writer?): {e}")
+        logger.warning("Threat model save refused (concurrent writer?): %s", e)
         model = existing_model or from_context_map(project, context_map)
         summary["model_preserved"] = existing_model is not None
         summary["model_refreshed"] = existing_model is None
     except Exception as e:
-        logger.warning(f"Threat model construction failed: {e}")
+        logger.warning("Threat model construction failed: %s", e)
         model = existing_model or from_context_map(project, context_map)
         summary["model_preserved"] = existing_model is not None
         summary["model_refreshed"] = existing_model is None
@@ -196,9 +196,9 @@ def _materialise_threat_model_phase(
                 expected_mtime=outcomes_mtime,
             )
     except RuntimeError as e:
-        logger.warning(f"Threat model save refused (concurrent writer?): {e}")
+        logger.warning("Threat model save refused (concurrent writer?): %s", e)
     except Exception as e:
-        logger.debug(f"Threat model verified-outcome linking skipped: {e}")
+        logger.debug("Threat model verified-outcome linking skipped: %s", e)
 
     if mgr is not None and hasattr(project, "name") and hasattr(project, "to_dict"):
         try:
@@ -206,7 +206,7 @@ def _materialise_threat_model_phase(
             project.threat_model_updated = model.updated_at
             save_json(mgr.projects_dir / f"{project.name}.json", project.to_dict())
         except Exception as e:
-            logger.debug(f"Threat model project metadata update skipped: {e}")
+            logger.debug("Threat model project metadata update skipped: %s", e)
 
     candidate_sarif = out_dir / "threat-model-candidates.sarif"
     candidate_count = _write_threat_model_candidate_sarif(context_map, candidate_sarif)
@@ -421,7 +421,7 @@ def run_command_streaming(
     """
     import threading
 
-    logger.info(f"Running: {description}")
+    logger.info("Running: %s", description)
     print(f"\n[*] {description}...")
 
     def stream_output(pipe, storage, prefix=""):
@@ -477,8 +477,9 @@ def run_command_streaming(
             child_pass_fds.append(token_fd)
         except Exception as exc:
             logger.warning(
-                f"credential-isolation relay to grandchild failed, "
-                f"falling back to env-direct: {exc}"
+                "credential-isolation relay to grandchild failed, "
+                "falling back to env-direct: %s",
+                exc,
             )
             token_fd = None
     else:
@@ -575,7 +576,7 @@ def run_command_streaming(
         return process.returncode, stdout, stderr
 
     except subprocess.TimeoutExpired:
-        logger.error(f"Command timed out: {description}")
+        logger.error("Command timed out: %s", description)
         # Reap properly: kill THEN wait. Pre-fix `process.kill()`
         # alone left the child as a zombie until the OS reaped it
         # via SIGCHLD (or until our parent process exited),
@@ -587,8 +588,9 @@ def run_command_streaming(
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             logger.warning(
-                f"Process {process.pid} did not exit within 5s of SIGKILL — "
-                f"leaving as zombie (OS will reap on parent exit)"
+                "Process %d did not exit within 5s of SIGKILL — "
+                "leaving as zombie (OS will reap on parent exit)",
+                process.pid,
             )
         # Bounded thread join after kill so we don't hang on the
         # pipe-reader threads — same rationale as the success path.
@@ -596,7 +598,7 @@ def run_command_streaming(
         stderr_thread.join(timeout=5)
         return -1, "", "Timeout"
     except Exception as e:
-        logger.error(f"Command failed: {e}")
+        logger.error("Command failed: %s", e)
         try:
             process.kill()
             process.wait(timeout=5)
@@ -1546,7 +1548,7 @@ Examples:
     if not git_dir.exists():
         print(f"\n  No .git directory found in {repo_path}")
         print("    Semgrep requires a git repository. Creating a temporary copy...")
-        logger.info(f"Target {repo_path} is not a git repo — creating temp copy")
+        logger.info("Target %s is not a git repo — creating temp copy", repo_path)
 
         try:
             import atexit
@@ -1571,8 +1573,7 @@ Examples:
                 # shutdown — cleanup failures are visible to the
                 # operator even on Ctrl-C.
                 try:
-                    if p.exists():
-                        shutil.rmtree(str(p))
+                    shutil.rmtree(str(p))
                 except OSError as e:
                     try:
                         sys.stderr.write(
@@ -1637,10 +1638,10 @@ Examples:
             if result.returncode == 0:
                 repo_path = temp_repo
                 print("  Temporary git repo created for scanning")
-                logger.debug(f"Using temp git repo: {temp_repo}")
+                logger.debug("Using temp git repo: %s", temp_repo)
             else:
                 print(f"  ✗ Failed to initialize git repository: {result.stderr}", file=sys.stderr)
-                logger.error(f"Git init failed: {result.stderr}")
+                logger.error("Git init failed: %s", result.stderr)
                 sys.exit(1)
 
         except SandboxSetupError:
@@ -1657,7 +1658,7 @@ Examples:
             sys.exit(1)
         except Exception as e:
             print(f"  ✗ Error initializing git: {e}", file=sys.stderr)
-            logger.error(f"Git init error: {e}")
+            logger.error("Git init error: %s", e)
             sys.exit(1)
 
     # Generate output directory with repository name and timestamp
@@ -1677,25 +1678,25 @@ Examples:
         args, run_dir=str(out_dir), export_env=True,
     )
     if _sc is not None:
-        logger.info(f"Sanitizer-cut mode: {_sc.mode}")
+        logger.info("Sanitizer-cut mode: %s", _sc.mode)
 
     try:
         from core.run import start_run
         start_run(out_dir, "agentic", target=str(original_repo_path))
     except Exception as e:
-        logger.debug(f"Run metadata: {e}")  # Optional — don't fail the pipeline
+        logger.debug("Run metadata: %s", e)  # Optional — don't fail the pipeline
 
     logger.info("=" * 70)
     logger.info("RAPTOR AGENTIC WORKFLOW STARTED")
     logger.info("=" * 70)
-    logger.info(f"Repository: {repo_name}")
-    logger.info(f"Full path: {original_repo_path}")
-    logger.info(f"Output: {out_dir}")
-    logger.info(f"Policy groups: {args.policy_groups}")
-    logger.info(f"Max findings: {args.max_findings}")
-    logger.info(f"Mode: {args.mode}")
+    logger.info("Repository: %s", repo_name)
+    logger.info("Full path: %s", original_repo_path)
+    logger.info("Output: %s", out_dir)
+    logger.info("Policy groups: %s", args.policy_groups)
+    logger.info("Max findings: %s", args.max_findings)
+    logger.info("Mode: %s", args.mode)
     if args.binary:
-        logger.info(f"Target binary(s): {args.binary}")
+        logger.info("Target binary(s): %s", args.binary)
     # All ``--binary`` / ``--binary-auto`` / ``--binary-edges`` plumbing
     # — path validation, auto-detect walk, active-project binary
     # layering, RaptorConfig mutation, and the no-leak-across-runs
@@ -1780,13 +1781,13 @@ Examples:
             else:
                 print("\nMitigation check passed - exploitation may be feasible")
 
-            logger.info(f"Mitigation analysis complete: {verdict}")
+            logger.info("Mitigation analysis complete: %s", verdict)
 
         except ImportError:
             print("Mitigation analysis module not available")
         except Exception as e:
             print(f"⚠️  Mitigation check failed: {e}", file=sys.stderr)
-            logger.error(f"Mitigation check error: {e}")
+            logger.error("Mitigation check error: %s", e)
 
     # ========================================================================
     # PRE-SCAN: Check target repo for malicious Claude Code settings
@@ -1805,9 +1806,9 @@ Examples:
         from core.inventory import build_inventory
         if not (out_dir / "checklist.json").exists():
             build_inventory(str(original_repo_path), str(out_dir))
-            logger.debug(f"Inventory checklist built: {out_dir / 'checklist.json'}")
+            logger.debug("Inventory checklist built: %s", out_dir / "checklist.json")
     except Exception as e:
-        logger.warning(f"Inventory build failed (continuing without metadata): {e}")
+        logger.warning("Inventory build failed (continuing without metadata): %s", e)
 
     # ========================================================================
     # PRE-PASS: /understand --map (opt-in via --understand)
@@ -1829,12 +1830,15 @@ Examples:
             block_cc_dispatch=block_cc_dispatch,
         )
         if prepass_result.ran:
-            logger.info(f"Pre-pass wrote {prepass_result.context_map_path} "
-                        f"in {prepass_result.understand_dir} "
-                        f"(checklist enriched: {prepass_result.checklist_enriched}, "
-                        f"took {prepass_result.duration_s:.1f}s)")
+            logger.info(
+                "Pre-pass wrote %s in %s (checklist enriched: %s, took %.1fs)",
+                prepass_result.context_map_path,
+                prepass_result.understand_dir,
+                prepass_result.checklist_enriched,
+                prepass_result.duration_s,
+            )
         else:
-            logger.warning(f"Pre-pass skipped: {prepass_result.skipped_reason}")
+            logger.warning("Pre-pass skipped: %s", prepass_result.skipped_reason)
 
     if args.threat_model:
         try:
@@ -1846,7 +1850,7 @@ Examples:
                 allow_stale=args.threat_model_use_stale,
             )
         except Exception as e:
-            logger.error(f"Threat model phase failed: {e}")
+            logger.error("Threat model phase failed: %s", e)
             threat_model_phase = {"enabled": True, "completed": False, "skipped_reason": str(e)}
         _print_threat_model_phase(threat_model_phase)
 
@@ -1887,13 +1891,13 @@ Examples:
                     from core.run import fail_run
                     fail_run(out_dir, threat_model_phase.get("skipped_reason") or "threat model phase did not complete")
             except Exception as e:
-                logger.debug(f"Run metadata: {e}")
+                logger.debug("Run metadata: %s", e)
             if _git_temp_dir and _git_temp_dir.exists():
                 import shutil
                 try:
                     shutil.rmtree(str(_git_temp_dir))
                 except Exception as e:
-                    logger.debug(f"Failed to clean temp git dir: {e}")
+                    logger.debug("Failed to clean temp git dir: %s", e)
             completed = threat_model_phase.get("completed", False)
             print(f"\nThreat model only {'complete' if completed else 'skipped'}.")
             print(f"   Report: {report_file}")
@@ -2184,7 +2188,7 @@ Examples:
             # the coverage records — are first-class run artifacts. No transient
             # dir to discover, no copy.
             actual_scan_dir = out_dir / "scan"
-            logger.debug(f"Semgrep output in run dir: {actual_scan_dir}")
+            logger.debug("Semgrep output in run dir: %s", actual_scan_dir)
 
             scan_metrics_file = actual_scan_dir / "scan_metrics.json"
             if scan_metrics_file.exists():
@@ -2264,7 +2268,7 @@ Examples:
                     "Pass --languages cpp,python,javascript,go (or a subset) "
                     "to bypass auto-detection."
                 )
-            logger.warning(f"CodeQL scan failed - rc={rc}")
+            logger.warning("CodeQL scan failed - rc=%d", rc)
             if args.codeql_only:
                 print("✗ CodeQL-only mode failed", file=sys.stderr)
                 sys.exit(1)
@@ -2378,11 +2382,11 @@ Examples:
                 except Exception:
                     logger.debug("SAGE SCA store skipped", exc_info=True)
             else:
-                logger.warning(f"SCA failed (rc={rc}) — continuing without dep findings")
+                logger.warning("SCA failed (rc=%d) — continuing without dep findings", rc)
                 sca_findings_count = 0
         except Exception as e:
             print(f"⚠️  SCA failed: {e}", file=sys.stderr)
-            logger.warning(f"SCA failed — continuing without dep findings: {e}")
+            logger.warning("SCA failed — continuing without dep findings: %s", e)
             sca_findings_count = 0
     else:
         sca_findings_count = 0
@@ -2737,7 +2741,7 @@ Examples:
             print("⚠️  Analysis failed or produced no output", file=sys.stderr)
             if stderr:
                 print(f"    Error: {stderr[:500]}", file=sys.stderr)
-            logger.warning(f"Phase 3 failed - rc={rc}, stderr={stderr[:200]}")
+            logger.warning("Phase 3 failed - rc=%d, stderr=%s", rc, stderr[:200])
             analysis = {}
 
     # ========================================================================
@@ -2819,10 +2823,13 @@ Examples:
             allow_unreachable=getattr(args, "allow_unreachable", False),
         )
         if postpass_result.ran:
-            logger.info(f"Post-pass validated {postpass_result.selected_count} findings "
-                        f"(took {postpass_result.duration_s:.1f}s)")
+            logger.info(
+                "Post-pass validated %d findings (took %.1fs)",
+                postpass_result.selected_count,
+                postpass_result.duration_s,
+            )
         else:
-            logger.warning(f"Post-pass skipped: {postpass_result.skipped_reason}")
+            logger.warning("Post-pass skipped: %s", postpass_result.skipped_reason)
 
     # ========================================================================
     # FINAL REPORT
@@ -3031,9 +3038,9 @@ Examples:
                                 f"{crash_outputs['findings']}"
                             )
                         except Exception as e:
-                            logger.debug(f"Crash → validate handoff failed: {e}")
+                            logger.debug("Crash → validate handoff failed: %s", e)
             except Exception as e:
-                logger.error(f"Fuzz phase failed: {e}", exc_info=True)
+                logger.error("Fuzz phase failed: %s", e, exc_info=True)
                 print(f"\n  ✗ Fuzz phase error: {e}", file=sys.stderr)
 
     print("\n📊 Summary:")
@@ -3508,16 +3515,16 @@ Examples:
             reanalyze_dir=getattr(args, "reanalyze", None),
         ))
     except Exception as e:
-        logger.debug(f"Run metadata: {e}")  # Optional — don't fail the pipeline
+        logger.debug("Run metadata: %s", e)  # Optional — don't fail the pipeline
 
     # Clean up temporary git copy (if we created one for a non-git target)
     if _git_temp_dir and _git_temp_dir.exists():
         import shutil
         try:
             shutil.rmtree(str(_git_temp_dir))
-            logger.debug(f"Cleaned up temp git dir: {_git_temp_dir}")
+            logger.debug("Cleaned up temp git dir: %s", _git_temp_dir)
         except Exception as e:
-            logger.debug(f"Failed to clean temp git dir: {e}")
+            logger.debug("Failed to clean temp git dir: %s", e)
 
 
 def _build_threat_model_report_section(summary):

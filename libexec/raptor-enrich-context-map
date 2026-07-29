@@ -170,8 +170,8 @@ def main() -> int:
                 iris_sinks = get_project_sinks(out_dir=understand_dir)
                 if iris_sinks:
                     extra_sinks = iris_sinks
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                logger.debug("IRIS sink fetch failed: %s", e)
             n_sinks = enrich_with_sink_discovery(
                 context_map, Path(target_path), extra_sinks=extra_sinks,
             )

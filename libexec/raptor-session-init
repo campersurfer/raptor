@@ -97,8 +97,8 @@ def warm_sage_embeddings():
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"SAGE warmup launch failed: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

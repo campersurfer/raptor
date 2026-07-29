@@ -46,6 +46,7 @@ Examples:
 """
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
@@ -498,8 +499,8 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
                 if record:
                     write_record(out_dir, record, tool_name="codeql")
                     break
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug("SARIF record write failed: %s", e)
 
 
     if rc == 0:
@@ -516,8 +517,8 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
                 summary = render_run_coverage(out_dir)
                 if summary:
                     print("\n" + summary)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.getLogger(__name__).debug("coverage summary skipped: %s", e)
     else:
         fail_run(out_dir, error=f"exit code {rc}")
     return rc

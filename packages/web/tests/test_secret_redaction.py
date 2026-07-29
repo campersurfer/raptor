@@ -354,17 +354,20 @@ class RecordingLogger:
     def __init__(self):
         self.messages = []
 
-    def info(self, message, **kwargs):
-        self.messages.append(message)
+    def _record(self, message, *args, **kwargs):
+        self.messages.append(message % args if args else message)
 
-    def warning(self, message, **kwargs):
-        self.messages.append(message)
+    def info(self, message, *args, **kwargs):
+        self._record(message, *args, **kwargs)
 
-    def error(self, message, **kwargs):
-        self.messages.append(message)
+    def warning(self, message, *args, **kwargs):
+        self._record(message, *args, **kwargs)
 
-    def debug(self, message, **kwargs):
-        self.messages.append(message)
+    def error(self, message, *args, **kwargs):
+        self._record(message, *args, **kwargs)
+
+    def debug(self, message, *args, **kwargs):
+        self._record(message, *args, **kwargs)
 
 
 def test_web_client_redacts_timeout_urls_in_logs(monkeypatch):

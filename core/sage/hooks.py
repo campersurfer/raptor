@@ -375,7 +375,7 @@ def recall_context_for_codeql_build(
         _metric_inc("recall_hits", len(merged))
         return merged
     except Exception as e:
-        logger.debug(f"SAGE codeql recall failed: {e}")
+        logger.debug("SAGE codeql recall failed: %s", e)
         return []
 
 
@@ -409,7 +409,7 @@ def store_codeql_build_reliability(
             tags=["codeql", "build", auto_detect_outcome],
         )
     except Exception as e:
-        logger.debug(f"SAGE codeql reliability store failed: {e}")
+        logger.debug("SAGE codeql reliability store failed: %s", e)
 
 
 def infer_codeql_build_from_sage_recall_row(
@@ -490,7 +490,7 @@ def recall_context_for_fuzzing_strategy(
         _metric_inc("recall_hits", len(merged))
         return merged
     except Exception as e:
-        logger.debug(f"SAGE fuzzing recall failed: {e}")
+        logger.debug("SAGE fuzzing recall failed: %s", e)
         return []
 
 
@@ -524,7 +524,7 @@ def store_fuzzing_strategy_outcome(
             tags=["fuzzing", "strategy", strategy_id],
         )
     except Exception as e:
-        logger.debug(f"SAGE fuzzing strategy store failed: {e}")
+        logger.debug("SAGE fuzzing strategy store failed: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1027,11 +1027,11 @@ def recall_context_for_sca(
         _metric_inc("recall_hits", len(merged))
         if merged:
             logger.info(
-                f"SAGE: Recalled {len(merged)} SCA memories for context"
+                "SAGE: Recalled %d SCA memories for context", len(merged)
             )
         return merged
     except Exception as e:
-        logger.debug(f"SAGE SCA recall failed: {e}")
+        logger.debug("SAGE SCA recall failed: %s", e)
         return []
 
 
@@ -1116,11 +1116,11 @@ def store_sca_outcomes(
             _throttle()
         except Exception as e:
             logger.debug(
-                f"SAGE SCA store failed for {outcome.get('package_name', '?')}: {e}"
+                "SAGE SCA store failed for %s: %s", outcome.get('package_name', '?'), e
             )
 
     if stored:
-        logger.info(f"SAGE: stored {stored} SCA outcomes for {repo_name}")
+        logger.info("SAGE: stored %d SCA outcomes for %s", stored, repo_name)
     return stored
 
 
@@ -1258,11 +1258,11 @@ def store_study_concepts(
                 stored += 1
             _throttle()
         except Exception as e:
-            logger.debug(f"SAGE concept store failed for {concept.id}: {e}")
+            logger.debug("SAGE concept store failed for %s: %s", concept.id, e)
 
     if stored:
         logger.info(
-            f"SAGE: stored {stored} concepts from study of {scope_label}"
+            "SAGE: stored %d concepts from study of %s", stored, scope_label
         )
     return stored
 
@@ -1428,7 +1428,7 @@ def recall_concepts_for_teach(
         _metric_inc("recall_hits", len(out))
         return out
     except Exception as e:
-        logger.debug(f"SAGE teach recall failed: {e}")
+        logger.debug("SAGE teach recall failed: %s", e)
         return []
 
 
@@ -1469,14 +1469,14 @@ def recall_concepts_for_study(
             )
             return (name, rows)
         except Exception as e:
-            logger.debug(f"SAGE study recall failed for {name}: {e}")
+            logger.debug("SAGE study recall failed for %s: %s", name, e)
             return (name, None)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     total = len(identifiers)
     workers = _recall_workers()
-    logger.info(f"SAGE: recalling prior concepts for {total} identifiers ({workers} workers)")
+    logger.info("SAGE: recalling prior concepts for %d identifiers (%d workers)", total, workers)
     done = 0
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1489,12 +1489,12 @@ def recall_concepts_for_study(
                 _metric_inc("recall_hits", len(rows))
                 result[name] = rows
             if done % 20 == 0 or done == total:
-                logger.info(f"SAGE: recall {done}/{total} ({len(result)} hits)")
+                logger.info("SAGE: recall %d/%d (%d hits)", done, total, len(result))
 
     if result:
         logger.info(
-            f"SAGE: recalled prior concepts for "
-            f"{len(result)}/{total} identifiers"
+            "SAGE: recalled prior concepts for %d/%d identifiers",
+            len(result), total
         )
     return result
 

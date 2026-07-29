@@ -152,10 +152,10 @@ class SageFuzzingMemory(FuzzingMemory):
                     stored += 1
                 _throttle()
             except Exception as e:
-                logger.debug(f"SAGE sync failed for {key}: {e}")
+                logger.debug("SAGE sync failed for %s: %s", key, e)
 
         if stored > 0:
-            logger.debug(f"Synced {stored}/{len(self.knowledge)} knowledge entries to SAGE")
+            logger.debug("Synced %d/%d knowledge entries to SAGE", stored, len(self.knowledge))
 
     def remember(self, knowledge: FuzzingKnowledge):
         """Store knowledge locally and in SAGE."""
@@ -172,7 +172,7 @@ class SageFuzzingMemory(FuzzingMemory):
                 confidence=knowledge.confidence,
             )
         except Exception as e:
-            logger.debug(f"SAGE remember failed: {e}")
+            logger.debug("SAGE remember failed: %s", e)
 
     def record_campaign(self, campaign_data: Dict):
         """Record campaign locally and in SAGE."""
@@ -189,7 +189,7 @@ class SageFuzzingMemory(FuzzingMemory):
                 confidence=0.85,
             )
         except Exception as e:
-            logger.debug(f"SAGE campaign store failed: {e}")
+            logger.debug("SAGE campaign store failed: %s", e)
 
     # ------------------------------------------------------------------
     # Semantic recall from SAGE

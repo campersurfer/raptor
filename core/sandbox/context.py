@@ -1459,7 +1459,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         cmd_display = escape_nonprintable(
             " ".join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or "<empty cmd>"
         )
-        logger.debug(f"Sandbox ({'+'.join(layers)}): {cmd_display}")
+        logger.debug("Sandbox (%s): %s", "+".join(layers), cmd_display)
 
         if need_unshare:
             # --pid --fork: new PID namespace hides host processes from

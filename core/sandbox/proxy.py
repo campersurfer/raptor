@@ -1142,7 +1142,7 @@ class EgressProxy:
         # no peer IP — they're trusted because bind_unix() restricts
         # the socket file to mode 0600.
         if client_ip not in ("127.0.0.1", "::1", "unix"):
-            logger.warning(f"egress proxy: rejecting non-loopback peer {client_ip}")
+            logger.warning("egress proxy: rejecting non-loopback peer %s", client_ip)
             writer.close()
             return
 
@@ -1387,7 +1387,7 @@ class EgressProxy:
                 )
             except (asyncio.TimeoutError, asyncio.IncompleteReadError,
                     ConnectionError) as e:
-                logger.warning(f"egress proxy: upstream CONNECT failed: {e}")
+                logger.warning("egress proxy: upstream CONNECT failed: %s", e)
                 up_writer.close()
                 event.update(result="upstream_failed",
                              reason=f"upstream CONNECT handshake: {e.__class__.__name__}",

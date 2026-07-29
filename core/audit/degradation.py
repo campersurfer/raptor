@@ -206,7 +206,7 @@ def format_capabilities_table(
         "| Tool | Available | Fallback |",
         "|---|---|---|",
     ]
-    for tool in sorted(capabilities.keys()):
+    for tool in sorted(capabilities):
         avail = "Yes" if capabilities[tool] else "No"
         fallback = ""
         if not capabilities[tool]:

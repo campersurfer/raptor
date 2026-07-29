@@ -240,10 +240,10 @@ def export_project(project_output_dir: Path, dest_path: Path,
             for fname in filenames:
                 item = Path(dirpath, fname)
                 if item.is_symlink():
-                    logger.debug(f"Skipping symlink in export: {item}")
+                    logger.debug("Skipping symlink in export: %s", item)
                     continue
                 if _is_transient_artefact(item):
-                    logger.debug(f"Skipping transient artefact: {item}")
+                    logger.debug("Skipping transient artefact: %s", item)
                     continue
                 arcname = f"{project_output_dir.name}/{item.relative_to(project_output_dir)}"
                 zf.write(item, arcname)
@@ -252,7 +252,7 @@ def export_project(project_output_dir: Path, dest_path: Path,
             zf.write(project_json_path, f"{project_output_dir.name}/.project.json")
 
     sha256 = sha256_file(dest_path)
-    logger.info(f"Exported project to {dest_path} (sha256: {sha256})")
+    logger.info("Exported project to %s (sha256: %s)", dest_path, sha256)
     return {"path": str(dest_path), "sha256": sha256}
 
 
@@ -385,7 +385,7 @@ def import_project(zip_path: Path, projects_dir: Path,
                 mgr.delete(project_name, purge=False)
                 if old_output_path != output_dir.resolve() and old_output_path.exists():
                     orphaned_output = str(old_output_path)
-                logger.info(f"Removed existing project '{project_name}' (force=True)")
+                logger.info("Removed existing project '%s' (force=True)", project_name)
 
             # --- Extract output data ---
             #
@@ -494,7 +494,7 @@ def import_project(zip_path: Path, projects_dir: Path,
     if notes:
         mgr.update_notes(project_name, notes)
 
-    logger.info(f"Imported project '{project_name}' to {output_dir}")
+    logger.info("Imported project '%s' to %s", project_name, output_dir)
     result = {"name": project_name, "output_dir": str(output_dir)}
     if orphaned_output:
         result["orphaned_output"] = orphaned_output

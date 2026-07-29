@@ -265,11 +265,12 @@ def _clear_generated_findings_dir(findings_dir: Path) -> None:
     """Remove prior generated per-finding artifacts without following symlinks."""
     import shutil
 
-    if findings_dir.is_symlink() or findings_dir.is_file():
-        findings_dir.unlink()
-        return
-    if findings_dir.is_dir():
+    try:
         shutil.rmtree(findings_dir)
+    except NotADirectoryError:
+        findings_dir.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
 
 
 def export_findings_directory(

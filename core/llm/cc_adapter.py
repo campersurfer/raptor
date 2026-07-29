@@ -150,7 +150,7 @@ def extract_envelope_metadata(envelope: dict, into: dict) -> None:
         # tracking when multiple models are summed under one name.
         # Sort for deterministic output (envelope dict ordering is
         # CC's choice, may vary across CC versions).
-        into["analysed_by"] = ",".join(sorted(model_usage.keys()))
+        into["analysed_by"] = ",".join(sorted(model_usage))
     elif "analysed_by" not in into:
         # Pre-fix this branch unconditionally set
         # `into["analysed_by"] = "claude-code"`, clobbering any

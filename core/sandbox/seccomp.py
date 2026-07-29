@@ -306,7 +306,7 @@ def check_seccomp_available() -> bool:
             _ = lib.seccomp_release
             _ = lib.seccomp_syscall_resolve_name
         except (OSError, AttributeError) as e:
-            logger.debug(f"Sandbox: libseccomp load failed: {e}")
+            logger.debug("Sandbox: libseccomp load failed: %s", e)
             state._libseccomp_cache = 0
             return False
         # Functional self-test (see _seccomp_functional_selftest): loadable

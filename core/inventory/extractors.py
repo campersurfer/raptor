@@ -147,7 +147,7 @@ class PythonExtractor:
             self._walk(tree, functions, class_name=None)
             functions.extend(self._top_level_items(tree))
         except SyntaxError as e:
-            logger.warning(f"Failed to parse {filepath}: {e}")
+            logger.warning("Failed to parse %s: %s", filepath, e)
             functions = self._regex_fallback(content)
 
         return functions
@@ -1358,7 +1358,7 @@ class TreeSitterExtractor:
             try:
                 _tree = self.parser.parse(content.encode())
             except Exception as e:
-                logger.warning(f"tree-sitter parse failed for {filepath}: {e}")
+                logger.warning("tree-sitter parse failed for %s: %s", filepath, e)
                 return []  # Caller will fall back to regex extractor
         self._source_lines = content.splitlines(True)
         functions = []
@@ -1621,7 +1621,7 @@ class TreeSitterExtractor:
                     if fi:
                         functions.append(fi)
                 except Exception as e:
-                    logger.debug(f"tree-sitter: failed to extract function at line {child.start_point[0]+1}: {e}")
+                    logger.debug("tree-sitter: failed to extract function at line %d: %s", child.start_point[0]+1, e)
                 self._walk(child, functions, class_name=class_name,
                            class_attributes=class_attributes)
             elif child.type == "decorated_definition":
