@@ -440,6 +440,33 @@ class TaintFinding:
         return d
 
 
+def _read_gap_source(
+    gap: Dict[str, Any],
+    target_path: Optional[Path],
+) -> str:
+    """Read source text for a gap from disk using its line span."""
+    if not target_path:
+        return ""
+    file_rel = gap.get("file", "")
+    if not file_rel:
+        return ""
+    full_path = (target_path / file_rel).resolve()
+    if not full_path.is_relative_to(target_path.resolve()):
+        return ""
+    if not full_path.is_file():
+        return ""
+    ls = gap.get("line_start", 0) or 0
+    le = gap.get("line_end", 0) or 0
+    if ls <= 0 or le <= 0:
+        return ""
+    try:
+        text = full_path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        return "\n".join(lines[max(0, ls - 1):min(len(lines), le)])
+    except OSError:
+        return ""
+
+
 _DB_WRITE_PATTERNS = [
     re.compile(r"\b(?:INSERT|UPDATE|REPLACE)\b", re.I),
     re.compile(r"\.(?:save|create|update|put|set|write|insert)\s*\(", re.I),
@@ -483,6 +510,8 @@ def _extract_storage_names(source: str) -> Set[str]:
 
 def check_stored_taint(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[TaintFinding]:
     """Detect persistence-layer taint gaps across function boundaries.
 
@@ -493,9 +522,10 @@ def check_stored_taint(
     readers: List[Dict[str, Any]] = []
     writer_names: Dict[str, Set[str]] = {}
     reader_names: Dict[str, Set[str]] = {}
+    resolved_source: Dict[str, str] = {}
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or _read_gap_source(gap, target_path)
         if not source:
             continue
 
@@ -509,6 +539,8 @@ def check_stored_taint(
         if is_reader:
             readers.append(gap)
             reader_names[key] = _extract_storage_names(source)
+        if is_writer or is_reader:
+            resolved_source[key] = source
 
     if not writers or not readers:
         return []
@@ -519,7 +551,8 @@ def check_stored_taint(
 
     findings: List[TaintFinding] = []
     for reader in readers:
-        source = reader.get("source", "")
+        rkey = f"{reader.get('file', '')}:{reader.get('name', '')}"
+        source = resolved_source.get(rkey, "")
         has_sanitizer = bool(re.search(
             r"\b(?:escape|sanitiz|sanitise|html_escape|quote|param)\b",
             source, re.I,
@@ -592,12 +625,14 @@ _SECURITY_DECISION_PATTERNS = [
 
 def check_config_dependent(
     gaps: Sequence[Dict[str, Any]],
+    *,
+    target_path: Optional[Path] = None,
 ) -> List[TaintFinding]:
     """Detect security decisions controlled by external configuration."""
     findings: List[TaintFinding] = []
 
     for gap in gaps:
-        source = gap.get("source", "")
+        source = gap.get("source", "") or _read_gap_source(gap, target_path)
         if not source:
             continue
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from core.audit.taint_specs import (
     TaintRole,
@@ -397,3 +398,89 @@ class TestConfigDependent:
             },
         ]
         assert check_config_dependent(gaps) == []
+
+
+class TestStoredTaintFromDisk:
+    """check_stored_taint reads source from disk when gaps lack source."""
+
+    def test_hydrates_from_target_path(self, tmp_path: Path):
+        writer = tmp_path / "profile.py"
+        writer.write_text(
+            "def save_bio(bio):\n"
+            "    db.execute('UPDATE users SET bio = %s', (bio,))\n"
+        )
+        reader = tmp_path / "views.py"
+        reader.write_text(
+            "def show_profile(uid):\n"
+            "    row = db.get(uid)\n"
+            "    return render(row['bio'])\n"
+        )
+        gaps = [
+            {"name": "save_bio", "file": "profile.py", "line_start": 1, "line_end": 2},
+            {"name": "show_profile", "file": "views.py", "line_start": 1, "line_end": 3},
+        ]
+        findings = check_stored_taint(gaps, target_path=tmp_path)
+        assert len(findings) == 1
+        assert findings[0].cwe == "CWE-79"
+
+    def test_skips_when_no_target_path(self):
+        gaps = [
+            {"name": "save_bio", "file": "profile.py", "line_start": 1, "line_end": 2},
+            {"name": "show_profile", "file": "views.py", "line_start": 1, "line_end": 3},
+        ]
+        assert check_stored_taint(gaps) == []
+
+    def test_skips_missing_file(self, tmp_path: Path):
+        gaps = [
+            {"name": "save_bio", "file": "nonexistent.py", "line_start": 1, "line_end": 2},
+        ]
+        assert check_stored_taint(gaps, target_path=tmp_path) == []
+
+    def test_skips_when_line_end_is_none(self, tmp_path: Path):
+        (tmp_path / "a.py").write_text("db.execute('INSERT INTO t VALUES (%s)', (x,))\n")
+        gaps = [
+            {"name": "w", "file": "a.py", "line_start": 1, "line_end": None},
+        ]
+        assert check_stored_taint(gaps, target_path=tmp_path) == []
+
+    def test_skips_path_traversal(self, tmp_path: Path):
+        secret = tmp_path / "outside" / "secret.py"
+        secret.parent.mkdir()
+        secret.write_text("db.execute('INSERT INTO t VALUES (%s)', (x,))\n")
+        target = tmp_path / "project"
+        target.mkdir()
+        gaps = [
+            {"name": "w", "file": "../outside/secret.py", "line_start": 1, "line_end": 1},
+        ]
+        assert check_stored_taint(gaps, target_path=target) == []
+
+
+class TestConfigDependentFromDisk:
+    """check_config_dependent reads source from disk when gaps lack source."""
+
+    def test_hydrates_from_target_path(self, tmp_path: Path):
+        src = tmp_path / "auth.py"
+        src.write_text(
+            "def check_auth():\n"
+            "    debug = os.environ.get('DEBUG')\n"
+            "    if debug: skip_auth = True\n"
+        )
+        gaps = [
+            {"name": "check_auth", "file": "auth.py", "line_start": 1, "line_end": 3},
+        ]
+        findings = check_config_dependent(gaps, target_path=tmp_path)
+        assert len(findings) == 1
+        assert findings[0].check == "config_dependent"
+
+    def test_skips_when_no_target_path(self):
+        gaps = [
+            {"name": "check_auth", "file": "auth.py", "line_start": 1, "line_end": 3},
+        ]
+        assert check_config_dependent(gaps) == []
+
+    def test_skips_when_line_end_is_none(self, tmp_path: Path):
+        (tmp_path / "a.py").write_text("debug = os.environ.get('DEBUG')\nif debug: skip_auth = True\n")
+        gaps = [
+            {"name": "f", "file": "a.py", "line_start": 1, "line_end": None},
+        ]
+        assert check_config_dependent(gaps, target_path=tmp_path) == []

@@ -2545,39 +2545,41 @@ def _run_audit_body(
         except Exception:
             logger.debug("attacker synthesis failed", exc_info=True)
 
+    post_loop_findings: list[dict] = []
+    generated: list = []
+
     try:
-        post_loop_findings: list[dict] = []
-
         from .taint_specs import check_stored_taint, check_config_dependent
-        for tf in check_stored_taint(gaps):
+        for tf in check_stored_taint(gaps, target_path=config.target_path):
             post_loop_findings.append(tf.to_dict())
-        for tf in check_config_dependent(gaps):
+        for tf in check_config_dependent(gaps, target_path=config.target_path):
             post_loop_findings.append(tf.to_dict())
+    except Exception:
+        logger.debug("taint-spec post-loop checks failed", exc_info=True)
 
-        try:
-            from core.iris.synthesise import stored_taint_assumptions, config_provenance_assumptions
-            heuristic_assumptions = stored_taint_assumptions(gaps) + config_provenance_assumptions(gaps)
-            # Only pass assumptions that have enforcers — without enforced_by,
-            # detect_bypasses flags every caller as "unsafe" (false positive flood).
-            heuristic_with_enforcers = [a for a in heuristic_assumptions if a.enforced_by]
-            if heuristic_with_enforcers and bypass_runner is not None:
-                heuristic_bypasses = bypass_runner(heuristic_with_enforcers)
-                for bf in heuristic_bypasses:
-                    post_loop_findings.append({
-                        "check": f"iris_{bf.assumption.bug_class or 'bypass'}",
-                        "title": f"IRIS bypass: {bf.caller_function} skips {bf.missing_enforcer}",
-                        "description": (
-                            f"Caller {bf.caller_file}:{bf.caller_function} reaches "
-                            f"{bf.assumption.target} without {bf.missing_enforcer}"
-                        ),
-                        "file": bf.caller_file,
-                        "function": bf.caller_function,
-                        "cwe": bf.assumption.bug_class or "",
-                        "confidence": "medium",
-                    })
-        except Exception:
-            logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
+    try:
+        from core.iris.synthesise import stored_taint_assumptions, config_provenance_assumptions
+        heuristic_assumptions = stored_taint_assumptions(gaps) + config_provenance_assumptions(gaps)
+        heuristic_with_enforcers = [a for a in heuristic_assumptions if a.enforced_by]
+        if heuristic_with_enforcers and bypass_runner is not None:
+            heuristic_bypasses = bypass_runner(heuristic_with_enforcers)
+            for bf in heuristic_bypasses:
+                post_loop_findings.append({
+                    "check": f"iris_{bf.assumption.bug_class or 'bypass'}",
+                    "title": f"IRIS bypass: {bf.caller_function} skips {bf.missing_enforcer}",
+                    "description": (
+                        f"Caller {bf.caller_file}:{bf.caller_function} reaches "
+                        f"{bf.assumption.target} without {bf.missing_enforcer}"
+                    ),
+                    "file": bf.caller_file,
+                    "function": bf.caller_function,
+                    "cwe": bf.assumption.bug_class or "",
+                    "confidence": "medium",
+                })
+    except Exception:
+        logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
 
+    try:
         from .negative_space import (
             check_deployment_assumptions,
             check_lock_ordering,
@@ -2607,7 +2609,10 @@ def _run_audit_body(
             post_loop_findings.append(nf.to_dict())
         for nf in check_lock_ordering(gaps):
             post_loop_findings.append(nf.to_dict())
+    except Exception:
+        logger.debug("negative-space post-loop checks failed", exc_info=True)
 
+    try:
         from .postcondition_verify import verify_postconditions
         pc_result = verify_postconditions(
             gaps, taint_summary_results or {},
@@ -2619,78 +2624,77 @@ def _run_audit_body(
                 "postcondition: %d violations from %d postconditions",
                 len(pc_result.violations), pc_result.functions_with_postconditions,
             )
+    except Exception:
+        logger.debug("postcondition verification failed", exc_info=True)
 
+    try:
         from .triage import detect_generated_files
         generated = detect_generated_files(gaps)
+    except Exception:
+        logger.debug("generated-file detection failed", exc_info=True)
 
-        if post_loop_findings:
-            logger.info(
-                "Post-loop pattern checks: %d findings", len(post_loop_findings),
-            )
-        if generated:
-            logger.info(
-                "%d generated files detected — review depth reduced",
-                len(generated),
-            )
+    if post_loop_findings:
+        logger.info(
+            "Post-loop pattern checks: %d findings", len(post_loop_findings),
+        )
+    if generated:
+        logger.info(
+            "%d generated files detected — review depth reduced",
+            len(generated),
+        )
 
-        if config.out_dir and (post_loop_findings or generated):
+    if config.out_dir and (post_loop_findings or generated):
+        try:
             pl_path = config.out_dir / "post-loop-findings.json"
             pl_path.write_text(json.dumps({
                 "findings": post_loop_findings,
                 "generated_files": generated,
                 "finding_count": len(post_loop_findings),
             }, indent=2))
+        except Exception:
+            logger.debug("post-loop findings write failed", exc_info=True)
 
-        for plf in post_loop_findings:
-            plf_file = plf.get("file", "")
-            plf_func = plf.get("function", "")
-            if plf_file and plf_func:
-                plf_status = "suspicious"
-                # Emit a lightweight journal entry so post-loop
-                # mechanical findings enter the review-journal +
-                # coverage-store paths alongside LLM reviews. The
-                # rich record still lives in post-loop-findings.json;
-                # this journal entry is coverage evidence (the
-                # function was examined) with a compact reference
-                # verdict.
-                try:
-                    from .collector import append_journal_for_outcome
-                    class _PlfOutcome:
-                        pass
-                    _o = _PlfOutcome()
-                    _o.file = plf_file
-                    _o.function = plf_func
-                    _o.status = plf_status
-                    _o.body = f"[mechanical] {plf.get('description', '')}"
-                    _o.model = None
-                    _o.hypothesis = None
-                    _o.hypotheses = None
-                    _o.evidence_tool = None
-                    _o.tools_dispatched = None
-                    _o.review_result = {"cwe": plf.get("cwe", "")}
-                    _o.cost_usd = None
-                    _o.duration_s = None
-                    append_journal_for_outcome(
-                        out_dir=config.out_dir,
-                        target_path=config.target_path,
-                        run_id=(
-                            config.out_dir.name if config.out_dir else ""
-                        ),
-                        outcome=_o,
-                        gap={
-                            "line_start": plf.get("line_start", 0),
-                            "line_end": plf.get("line_end"),
-                            "strategies": ["post-loop-mechanical"],
-                        },
-                        checked_by=["audit:post-loop"],
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "post-loop journal append failed for %s:%s",
-                        plf_file, plf_func, exc_info=True,
-                    )
-    except Exception:
-        logger.debug("post-loop pattern checks failed", exc_info=True)
+    for plf in post_loop_findings:
+        plf_file = plf.get("file", "")
+        plf_func = plf.get("function", "")
+        if plf_file and plf_func:
+            plf_status = "suspicious"
+            try:
+                from .collector import append_journal_for_outcome
+                class _PlfOutcome:
+                    pass
+                _o = _PlfOutcome()
+                _o.file = plf_file
+                _o.function = plf_func
+                _o.status = plf_status
+                _o.body = f"[mechanical] {plf.get('description', '')}"
+                _o.model = None
+                _o.hypothesis = None
+                _o.hypotheses = None
+                _o.evidence_tool = None
+                _o.tools_dispatched = None
+                _o.review_result = {"cwe": plf.get("cwe", "")}
+                _o.cost_usd = None
+                _o.duration_s = None
+                append_journal_for_outcome(
+                    out_dir=config.out_dir,
+                    target_path=config.target_path,
+                    run_id=(
+                        config.out_dir.name if config.out_dir else ""
+                    ),
+                    outcome=_o,
+                    gap={
+                        "line_start": plf.get("line_start", 0),
+                        "line_end": plf.get("line_end"),
+                        "strategies": ["post-loop-mechanical"],
+                    },
+                    checked_by=["audit:post-loop"],
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "post-loop journal append failed for %s:%s",
+                    plf_file, plf_func, exc_info=True,
+                )
 
     if config.validate and result.findings > 0:
         from .validate import validate_findings

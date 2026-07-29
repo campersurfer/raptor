@@ -171,7 +171,7 @@ def classify_all(
 
     for gap in gaps:
         key = f"{gap['file']}:{gap['name']}"
-        sloc = gap.get("sloc", gap.get("line_end", 0) - gap.get("line_start", 0))
+        sloc = gap.get("sloc", (gap.get("line_end", 0) or 0) - (gap.get("line_start", 0) or 0))
         caller_count = len(gap.get("callers", []))
 
         results[key] = classify_function(

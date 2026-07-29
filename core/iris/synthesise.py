@@ -229,7 +229,7 @@ def _read_candidate_source(
     try:
         text = full_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
-        if cand.line_start > 0 and cand.line_end > 0:
+        if (cand.line_start or 0) > 0 and (cand.line_end or 0) > 0:
             start = max(0, cand.line_start - 1)
             end = min(len(lines), cand.line_end)
             lines = lines[start:end]
