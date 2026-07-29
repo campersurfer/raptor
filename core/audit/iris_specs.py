@@ -69,6 +69,8 @@ class CandidateFunction:
     reason: str = ""
     callee_of_taint_chain: bool = False
     has_security_name: bool = False
+    line_start: int = 0
+    line_end: int = 0
 
 
 def identify_candidates(
@@ -106,6 +108,8 @@ def identify_candidates(
                 reason="taint chain callee" if is_chain_callee else f"name matches: {name_lower}",
                 callee_of_taint_chain=is_chain_callee,
                 has_security_name=has_sec_name,
+                line_start=gap.get("line_start", 0),
+                line_end=gap.get("line_end", 0),
             ))
 
     return candidates
