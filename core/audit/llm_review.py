@@ -453,7 +453,7 @@ REVIEW_SCHEMA_BLIND = {
 }
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are a security auditor reviewing C and Python code. "
+    "You are a security auditor reviewing code. "
     "Do NOT ask 'is there a vulnerability here?' — that invites "
     "pattern matching. Reason from first principles about assumptions.\n\n"
     "For each function, work through these steps:\n\n"

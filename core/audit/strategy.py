@@ -21,6 +21,7 @@ STRATEGY_MEMORY = "memory"
 STRATEGY_AUTH = "auth"
 STRATEGY_CRYPTO = "crypto"
 STRATEGY_ALIASING = "aliasing"
+STRATEGY_INTEGER = "integer"
 
 ALL_STRATEGIES = frozenset({
     STRATEGY_GENERAL,
@@ -30,24 +31,32 @@ ALL_STRATEGIES = frozenset({
     STRATEGY_AUTH,
     STRATEGY_CRYPTO,
     STRATEGY_ALIASING,
+    STRATEGY_INTEGER,
 })
 
 _PATH_SIGNALS: Dict[str, List[str]] = {
     STRATEGY_INPUT: [
         "parse", "decode", "deserial", "proto", "codec", "format",
         "packet", "frame", "message", "request", "handler",
+        "scanner", "reader", "tokenize", "upload", "middleware",
+        "servlet", "unmarshal",
     ],
     STRATEGY_CONCURRENCY: [
         "lock", "mutex", "sync", "thread", "atomic", "rcu",
         "spinlock", "rwlock", "semaphore", "concurrent",
+        "worker", "executor", "scheduler", "channel",
+        "async", "futures",
     ],
     STRATEGY_MEMORY: [
         "alloc", "pool", "slab", "cache", "refcount", "kref",
         "buffer", "arena", "heap",
+        "gc", "destructor", "disposable",
     ],
     STRATEGY_AUTH: [
         "auth", "permission", "acl", "credential", "privilege",
         "capability", "security", "policy", "access", "login",
+        "oauth", "saml", "jwt", "rbac", "certificate", "pki",
+        "keystore",
     ],
     STRATEGY_CRYPTO: [
         "crypto", "cipher", "hash", "hmac", "aes", "rsa", "ssl",
@@ -58,6 +67,10 @@ _PATH_SIGNALS: Dict[str, List[str]] = {
         "sk_buff", "skb", "page_cache", "pagecache", "sendfile",
         "scatterlist", "sg_", "aead", "frag", "page_pool",
         "pipe_buf", "vmsplice", "copy_page", "kmap",
+    ],
+    STRATEGY_INTEGER: [
+        "overflow", "truncat", "cast", "convert", "spec_opts",
+        "oci", "numeric", "arithmetic",
     ],
 }
 
@@ -87,30 +100,112 @@ _INCLUDE_SIGNALS: Dict[str, List[str]] = {
     STRATEGY_CONCURRENCY: [
         "pthread.h", "mutex.h", "spinlock.h", "rwlock.h",
         "threading", "asyncio", "concurrent",
+        "java.util.concurrent", "tokio::", "rayon::",
     ],
     STRATEGY_CRYPTO: [
         "openssl", "crypto.h", "gcrypt", "mbedtls",
         "hashlib", "hmac", "cryptography",
+        "javax.crypto", "java.security", "ring::", "rustls::",
+    ],
+    STRATEGY_INPUT: [
+        "serde", "encoding/json", "jackson",
+        "javax.servlet", "flask", "express",
     ],
 }
 
 _SOURCE_SIGNALS: Dict[str, List[str]] = {
     STRATEGY_CONCURRENCY: [
+        # C/kernel
         "rcu_read_lock", "rcu_read_unlock", "rcu_dereference",
         "spin_lock", "spin_unlock", "mutex_lock", "mutex_unlock",
         "task_lock", "task_unlock", "lock_sock", "release_sock",
         "down_read", "up_read", "down_write", "up_write",
         "atomic_inc", "atomic_dec", "atomic_set",
         "READ_ONCE", "WRITE_ONCE", "smp_rmb", "smp_wmb",
+        # Go
+        "sync.Mutex", ".Lock()", "go func", " chan ",
+        "sync.RWMutex", ".RLock()",
+        # Python
+        "threading.Lock", "threading.RLock",
+        # Rust
+        "Mutex::new", "RwLock", "Arc::new", "AtomicBool", "Ordering::",
+        # Java
+        "synchronized", "ReentrantLock", "AtomicInteger",
+        "volatile ", "CountDownLatch",
+        # JS
+        "Promise.all",
+        # PHP
+        "flock(", "sem_acquire",
     ],
     STRATEGY_MEMORY: [
+        # C/kernel
         "kfree", "kmalloc", "kzalloc", "vmalloc", "vfree",
         "refcount_inc", "refcount_dec", "kref_put", "kref_get",
         "free(", "malloc(", "calloc(", "realloc(",
+        # Rust
+        "unsafe {", "ManuallyDrop", "Box::from_raw",
+        "std::ptr", "std::mem::forget", "Pin<",
+        # Java
+        "finalize()", "WeakReference",
     ],
     STRATEGY_ALIASING: [
         "sg_chain", "sg_init_table", "scatterlist",
         "memcpy_sglist", "skb_cow_data",
+    ],
+    STRATEGY_INTEGER: [
+        # C/kernel
+        "size_t", "ssize_t", "uint32_t", "check_mul_overflow",
+        # Go
+        "strconv.Atoi", "uint32(", "math.MaxInt",
+        # Rust
+        "as u32", "as u16", ".wrapping_add", ".checked_add",
+        ".saturating_add",
+        # Java
+        "Integer.parseInt", "Integer.MAX_VALUE", "Math.toIntExact",
+        "(int)", "(short)", "(byte)",
+        # Python
+        "ctypes.c_uint",
+        # PHP
+        "intval(",
+    ],
+    STRATEGY_AUTH: [
+        "password", "credential", "session", "bearer",
+        ".Host", ".Header", "headers[",
+        # Java
+        "@PreAuthorize", "@Secured", "SecurityContext",
+        "AuthenticationManager", "ROLE_",
+        # PHP
+        "password_verify", "password_hash", "$_SESSION",
+        "$_COOKIE", "setcookie",
+        # JS
+        "req.session", "req.cookies", "jwt.verify",
+        "passport.", "bcrypt.",
+        # Rust
+        "Authorization", "set_cookie",
+    ],
+    STRATEGY_INPUT: [
+        "Deserialize", "fromJson", "JSON.parse", "json_decode",
+        "ObjectInputStream", "pickle.load", "yaml.load",
+        "unserialize", "unmarshal",
+        # PHP
+        "$_GET", "$_POST", "$_REQUEST", "$_SERVER", "filter_input",
+        # Java
+        "getParameter", "getHeader", "PreparedStatement", "createQuery",
+        # JS
+        "innerHTML", "document.write", "child_process",
+        # Rust
+        "from_utf8_unchecked", "transmute",
+    ],
+    STRATEGY_CRYPTO: [
+        # Rust
+        "ring::", "rustls::", "aes::", "sha2::",
+        # Java
+        "Cipher.getInstance", "MessageDigest", "SecretKey",
+        "KeyGenerator", "SecureRandom",
+        # JS
+        "crypto.createHash", "crypto.createCipher",
+        # PHP
+        "openssl_encrypt", "mcrypt_", "random_bytes",
     ],
 }
 
@@ -388,6 +483,40 @@ STRATEGY_PRIMERS: Dict[str, str] = {
         "spinlock and calling kmalloc(GFP_KERNEL), copy_from_user, "
         "mutex_lock). Look for: spinlock_t + GFP_KERNEL; "
         "spin_lock_irqsave + copy_from_user."
+    ),
+    "integer": (
+        "INTEGER VULNERABILITY PRIMER\n"
+        "\n"
+        "1. WRAPAROUND / OVERFLOW: Unsigned arithmetic wraps silently "
+        "(uint32 0xFFFFFFFF + 1 = 0). Signed overflow is UB in C. "
+        "Look for: size calculations (nmemb * size), counter increments "
+        "near max, user-controlled values in arithmetic without "
+        "overflow checks (check_mul_overflow, checked_add).\n"
+        "\n"
+        "2. TRUNCATION: Assigning a wider type to a narrower one "
+        "silently drops high bits. Look for: uint64 → uint32, "
+        "int → short/byte, size_t → int, strconv.Atoi → uint32(), "
+        "'as u32' / 'as u16' in Rust, (int) casts in Java. "
+        "The critical case: a UID/GID stored as uint32 where "
+        "the input is a wider type — truncation to 0 means root.\n"
+        "\n"
+        "3. SIGNEDNESS: Signed/unsigned comparison or assignment. "
+        "A negative signed value becomes a huge unsigned value. "
+        "Look for: signed length compared against unsigned bound, "
+        "ssize_t used where size_t expected, negative return codes "
+        "used as array indices.\n"
+        "\n"
+        "4. OFF-BY-ONE: Counter or index off by exactly one. "
+        "Look for: <= vs <, post-increment vs pre-increment, "
+        "fence-post errors in size calculations, line/column "
+        "counters that overflow before the data ends.\n"
+        "\n"
+        "5. PRIVILEGE / IDENTITY CONTEXT: Integer bugs in UID, GID, "
+        "PID, or capability values have direct security impact. "
+        "Truncation of a UID to 0 = root. Overflow of a capability "
+        "mask = grant-all. Look for: type casts on identity values, "
+        "arithmetic on permission masks, comparisons that can be "
+        "bypassed via overflow."
     ),
     "input_handling": (
         "INPUT HANDLING VULNERABILITY PRIMER\n"
