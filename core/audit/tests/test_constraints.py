@@ -7,7 +7,6 @@ from pathlib import Path
 
 from core.audit.constraints import (
     Constraint,
-    check_constraint_freshness,
     extract_constraints_from_review,
     load_constraints,
     merge_constraint,
@@ -150,22 +149,6 @@ class TestOpenConstraints:
         assert len(result) == 2
         targets = {c.target for c in result}
         assert targets == {"len", "b"}
-
-
-class TestCheckFreshness:
-    def test_no_hash(self, tmp_path: Path):
-        c = _constraint(source_hash="")
-        assert check_constraint_freshness(c, tmp_path) == "unknown"
-
-    def test_deleted_file(self, tmp_path: Path):
-        c = _constraint(source_hash="abc123")
-        assert check_constraint_freshness(c, tmp_path) == "stale"
-
-    def test_existing_file(self, tmp_path: Path):
-        (tmp_path / "src").mkdir()
-        (tmp_path / "src" / "packet.c").write_text("int f() {}\n")
-        c = _constraint(source_hash="abc123")
-        assert check_constraint_freshness(c, tmp_path) == "fresh"
 
 
 class TestRefreshStatuses:

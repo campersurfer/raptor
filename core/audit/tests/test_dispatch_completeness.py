@@ -7,7 +7,6 @@ import pytest
 from core.audit.dispatch_completeness import (
     DispatchGap,
     _shares_affix,
-    check_enum_completeness,
     find_dispatch_gaps,
 )
 
@@ -339,28 +338,6 @@ class TestSharesAffix:
     def test_exactly_at_threshold(self):
         # 3-char shared prefix "abc" meets the default min_affix=3
         assert _shares_affix("abcX", {"abcY"})
-
-
-# ---------------------------------------------------------------------------
-# Test: check_enum_completeness
-# ---------------------------------------------------------------------------
-
-
-class TestCheckEnumCompleteness:
-    def test_missing_values(self):
-        declared = {"open", "closed", "pending"}
-        used = {"open", "closed", "pending", "cancelled", "archived"}
-        missing = check_enum_completeness(declared, used)
-        assert missing == {"cancelled", "archived"}
-
-    def test_no_missing(self):
-        declared = {"a", "b", "c"}
-        used = {"a", "b"}
-        assert check_enum_completeness(declared, used) == set()
-
-    def test_empty_sets(self):
-        assert check_enum_completeness(set(), set()) == set()
-        assert check_enum_completeness(set(), {"x"}) == {"x"}
 
 
 # ---------------------------------------------------------------------------

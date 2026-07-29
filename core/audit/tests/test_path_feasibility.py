@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from core.audit.path_feasibility import (
     PathCondition,
-    check_all_flow_traces,
     check_flow_trace_feasibility,
     check_path_feasibility,
     extract_conditions_from_annotation,
@@ -258,42 +257,3 @@ class TestCheckFlowTraceFeasibility:
         }
         result = check_flow_trace_feasibility(trace)
         assert result.feasible is True
-
-
-class TestCheckAllFlowTraces:
-    def test_filters_empty_traces(self):
-        traces = [
-            {"id": "t1", "steps": [{"file": "a.c"}]},
-            {"id": "t2", "steps": [{"file": "b.c"}]},
-        ]
-        results = check_all_flow_traces(traces)
-        assert results == {}
-
-    def test_returns_by_id(self, monkeypatch):
-        from core.audit import sweep
-        from core.audit.sweep import SweepResult
-
-        def mock_sweep(*, file_path, function_name, verb, smt_args):
-            return SweepResult(
-                tool="smt",
-                file_path=file_path,
-                function_name=function_name,
-                outcome="confirmed",
-            )
-
-        monkeypatch.setattr(sweep, "run_smt_sweep", mock_sweep)
-
-        traces = [
-            {
-                "id": "flow-1",
-                "steps": [{"file": "a.c", "path_conditions": ["x > 0"]}],
-            },
-            {
-                "id": "flow-2",
-                "steps": [{"file": "b.c"}],
-            },
-        ]
-        results = check_all_flow_traces(traces)
-        assert "flow-1" in results
-        assert "flow-2" not in results
-        assert results["flow-1"].feasible is True

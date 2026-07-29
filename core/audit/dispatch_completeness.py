@@ -597,20 +597,3 @@ def _get_source(
             return f.read()
     except OSError:
         return None
-
-
-# ---------------------------------------------------------------------------
-# Enum completeness (simpler, set-based)
-# ---------------------------------------------------------------------------
-
-
-def check_enum_completeness(
-    declared: Set[str],
-    used: Set[str],
-) -> Set[str]:
-    """Return values that are *used* but not *declared*.
-
-    This is the simplest form of dispatch-gap detection: the caller
-    provides the two sets directly, and we return ``used - declared``.
-    """
-    return used - declared

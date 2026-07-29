@@ -237,18 +237,3 @@ def check_flow_trace_feasibility(
             reasoning="no path conditions in trace",
         )
     return check_path_feasibility(conditions, profile=profile)
-
-
-def check_all_flow_traces(
-    traces: List[Dict[str, Any]],
-    *,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, FeasibilityResult]:
-    """Check feasibility of all flow traces. Returns {trace_id: result}."""
-    results = {}
-    for trace in traces:
-        trace_id = trace.get("id", f"trace-{len(results)}")
-        result = check_flow_trace_feasibility(trace, profile=profile)
-        if result.conditions:
-            results[trace_id] = result
-    return results

@@ -160,30 +160,6 @@ def merge_constraint(
     return [by_id[k] for k in order]
 
 
-def check_constraint_freshness(
-    constraint: Constraint,
-    target_path: Path,
-) -> str:
-    """Check whether a constraint's source function still exists.
-
-    Returns:
-        "fresh" — source file exists and hash was set.
-        "stale" — source file deleted.
-        "unknown" — no hash stored or can't determine.
-
-    Full re-hash (detecting source edits) requires checklist line
-    numbers — use ``refresh_constraint_statuses`` for that.
-    """
-    if not constraint.source_hash:
-        return "unknown"
-    source_file = safe_join(target_path, constraint.file)
-    if source_file is None:
-        return "unknown"
-    if not source_file.exists():
-        return "stale"
-    return "fresh"
-
-
 def refresh_constraint_statuses(
     constraints: List[Constraint],
     target_path: Path,

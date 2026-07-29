@@ -418,11 +418,6 @@ class TestAdversarialFixes:
         assert "literal_arg" in result.reasons
         assert result.score > 0
 
-    def test_constraint_file_path_traversal_freshness(self, tmp_path: Path):
-        from core.audit.constraints import check_constraint_freshness
-        c = _constraint(file="../../etc/passwd", source_hash="abc")
-        assert check_constraint_freshness(c, tmp_path) == "unknown"
-
     def test_large_file_skipped(self, tmp_path: Path):
         """Files larger than 2MB should not be read for heuristic."""
         c = _constraint()

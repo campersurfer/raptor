@@ -3,7 +3,6 @@
 from core.audit.negative_space import (
     NegativeSpaceFinding,
     SecurityConvention,
-    check_all_negative_space,
     check_deployment_assumptions,
     check_lock_ordering,
     check_missing_app_features,
@@ -299,57 +298,6 @@ class TestCheckNegativeSpace:
         }
         findings = check_negative_space(gap, [conv], "memory")
         assert len(findings) == 0
-
-
-class TestCheckAllNegativeSpace:
-    def test_processes_all_gaps(self):
-        conv = SecurityConvention(
-            concern="error_handling",
-            pattern=r"if err != nil",
-            occurrences=5,
-            locations=[],
-            confidence=0.9,
-        )
-        gaps = [
-            {
-                "file": "a.go", "name": "handle_create",
-                "source": "func handle_create() error {\n    return doStuff()\n}",
-                "sloc": 10, "strategies": ["general"],
-            },
-            {
-                "file": "b.go", "name": "handle_delete",
-                "source": "func handle_delete() {\n    if err != nil { return }\n}",
-                "sloc": 10, "strategies": ["general"],
-            },
-        ]
-        results = check_all_negative_space(gaps, [conv])
-        assert "a.go:handle_create" in results
-        assert "b.go:handle_delete" not in results
-
-    def test_empty_gaps(self):
-        assert check_all_negative_space([], []) == {}
-
-    def test_no_conventions(self):
-        gaps = [{"file": "a.py", "name": "f", "source": "pass", "strategies": ["auth"]}]
-        assert check_all_negative_space(gaps, []) == {}
-
-    def test_default_strategy_general(self):
-        conv = SecurityConvention(
-            concern="error_handling",
-            pattern=r"if err != nil",
-            occurrences=5,
-            locations=[],
-            confidence=0.9,
-        )
-        gaps = [
-            {
-                "file": "a.go", "name": "handle_stuff",
-                "source": "func handle_stuff() { doThing() }",
-                "sloc": 10,
-            },
-        ]
-        results = check_all_negative_space(gaps, [conv])
-        assert len(results) >= 1
 
 
 class TestNegativeSpaceFindingDict:

@@ -111,18 +111,6 @@ def truncate_output(
     return truncated, note
 
 
-def validate_no_shell_interpolation(args: List[str]) -> bool:
-    """Check that a subprocess argument list doesn't contain shell metacharacters
-    that suggest string interpolation was used instead of list-based args.
-
-    Returns True if the args look safe, False if suspicious.
-    """
-    for arg in args:
-        if any(c in arg for c in ("|", ";", "`", "$(")):
-            return False
-    return True
-
-
 def format_limits_summary() -> str:
     """Human-readable summary of configured resource limits."""
     global _TOOL_LIMITS

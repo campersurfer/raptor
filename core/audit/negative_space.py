@@ -408,37 +408,6 @@ def check_negative_space(
     return findings
 
 
-def check_all_negative_space(
-    gaps: Sequence[Dict[str, Any]],
-    conventions: Sequence[SecurityConvention],
-) -> Dict[str, List[NegativeSpaceFinding]]:
-    """Check all functions for missing security checks.
-
-    Returns {file:function → [findings]}.
-    """
-    gaps = [g for g in gaps if not g.get("dead")]
-    results: Dict[str, List[NegativeSpaceFinding]] = {}
-
-    for gap in gaps:
-        strategies = gap.get("strategies", set())
-        if isinstance(strategies, (list, tuple)):
-            strategies = set(strategies)
-        if not strategies:
-            strategies = {"general"}
-
-        key = f"{gap['file']}:{gap['name']}"
-        all_findings: List[NegativeSpaceFinding] = []
-
-        for strat in strategies:
-            findings = check_negative_space(gap, conventions, strat)
-            all_findings.extend(findings)
-
-        if all_findings:
-            results[key] = all_findings
-
-    return results
-
-
 def _should_have_convention(
     gap: Dict[str, Any],
     convention: SecurityConvention,

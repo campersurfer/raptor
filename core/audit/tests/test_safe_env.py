@@ -8,7 +8,6 @@ from core.audit.safe_env import (
     get_output_limit,
     get_resource_limits,
     truncate_output,
-    validate_no_shell_interpolation,
 )
 
 
@@ -74,33 +73,6 @@ class TestTruncateOutput:
         result, note = truncate_output(items, "unknown_tool")
         assert len(result) == 999999
         assert note is None
-
-
-class TestShellInterpolation:
-    def test_safe_args(self):
-        assert validate_no_shell_interpolation(
-            ["readelf", "-n", "/path/to/binary"]
-        ) is True
-
-    def test_pipe_detected(self):
-        assert validate_no_shell_interpolation(
-            ["readelf", "-n", "/path | cat /etc/passwd"]
-        ) is False
-
-    def test_semicolon_detected(self):
-        assert validate_no_shell_interpolation(
-            ["nm", "/bin/test; rm -rf /"]
-        ) is False
-
-    def test_backtick_detected(self):
-        assert validate_no_shell_interpolation(
-            ["strings", "`whoami`"]
-        ) is False
-
-    def test_subshell_detected(self):
-        assert validate_no_shell_interpolation(
-            ["objdump", "$(id)"]
-        ) is False
 
 
 class TestFormatSummary:
