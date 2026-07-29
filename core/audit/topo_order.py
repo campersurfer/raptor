@@ -40,7 +40,7 @@ def detect_sccs(adj: Dict[str, List[str]]) -> List[SCC]:
     lowlinks: dict[str, int] = {}
     result: list[SCC] = []
 
-    all_nodes: set[str] = set(adj.keys())
+    all_nodes: set[str] = set(adj)
     for targets in adj.values():
         all_nodes.update(targets)
 
