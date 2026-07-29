@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -88,6 +89,7 @@ class ExpansionBudget:
 
     max_expansions: int = 50
     _expanded: List[str] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def remaining(self) -> int:
@@ -98,12 +100,13 @@ class ExpansionBudget:
         return self.remaining <= 0
 
     def try_expand(self, function_key: str) -> bool:
-        if function_key in self._expanded:
+        with self._lock:
+            if function_key in self._expanded:
+                return True
+            if self.exhausted:
+                return False
+            self._expanded.append(function_key)
             return True
-        if self.exhausted:
-            return False
-        self._expanded.append(function_key)
-        return True
 
     def summary(self) -> str:
         return (

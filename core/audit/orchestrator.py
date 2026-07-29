@@ -3678,9 +3678,11 @@ def _check_budget(
         if time.monotonic() - start_time >= config.max_seconds:
             result.terminated_by = "max_seconds"
             return True
-    if config.max_cost_usd and result.total_cost_usd >= config.max_cost_usd:
-        result.terminated_by = "max_cost_usd"
-        return True
+    if config.max_cost_usd:
+        with result._lock:
+            if result.total_cost_usd >= config.max_cost_usd:
+                result.terminated_by = "max_cost_usd"
+                return True
     return False
 
 
