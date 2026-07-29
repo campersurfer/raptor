@@ -215,8 +215,8 @@ class JoernServer:
         )
         try:
             self._post_sync(warmup, timeout=30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Joern warmup imports failed: %s", e)
 
     def _warmup_dataflow(self) -> None:
         """Initialize the dataflow engine after CPG load.
@@ -236,8 +236,8 @@ class JoernServer:
         )
         try:
             self._post_sync(warmup, timeout=30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Joern dataflow warmup failed: %s", e)
 
     def stop(self) -> None:
         """Shut down the Joern server."""
