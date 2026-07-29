@@ -112,19 +112,28 @@ def start_joern_server(target_path, joern_overrides=None, tunables=None):
                          exc_info=True)
             return None
 
-    _ensure_cpg_loaded(srv, target_path, tunables)
+    if not _ensure_cpg_loaded(srv, target_path, tunables):
+        logger.warning("Joern CPG failed to load for %s — disabling Joern", target_path)
+        try:
+            srv.stop()
+        except Exception:
+            pass
+        return None
     return srv
 
 
 def _ensure_cpg_loaded(srv, target_path, tunables=None):
-    """Build and import the CPG for *target_path* into *srv*."""
+    """Build and import the CPG for *target_path* into *srv*.
+
+    Returns True if the CPG was loaded (or already was), False on failure.
+    """
     if getattr(srv, "_cpg_loaded", False):
-        return
+        return True
     try:
         from packages.joern.runner import build_cpg_cached
     except ImportError:
         logger.debug("joern runner not importable; skipping CPG import")
-        return
+        return False
 
     cpg_timeout = getattr(tunables, "cpg_timeout_s", 600) if tunables else 600
     import_timeout = getattr(tunables, "import_timeout_s", 120) if tunables else 120
@@ -136,8 +145,11 @@ def _ensure_cpg_loaded(srv, target_path, tunables=None):
         cpg = build_cpg_cached(Path(target_path), cache_dir, timeout=cpg_timeout)
         if cpg.exists():
             srv.import_cpg(cpg.path, timeout=import_timeout)
+            return True
+        return False
     except Exception:
         logger.debug("CPG build/import failed for %s", target_path, exc_info=True)
+        return False
 
 
 def stop_joern_server(server) -> None:

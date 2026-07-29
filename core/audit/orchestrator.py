@@ -4673,8 +4673,10 @@ def _sweep_validate(
                 if vr.confirmed:
                     return _stamp_evidence(outcome, "codeql:dataflow")
                 if tier_counters:
-                    label = "confirmed" if vr.confirmed else "refuted"
-                    _increment_tier_dict(tier_counters, "codeql", label)
+                    if vr.confirmed is None:
+                        _increment_tier_dict(tier_counters, "codeql", "errors")
+                    else:
+                        _increment_tier_dict(tier_counters, "codeql", "refuted")
         except Exception:
             logger.debug(
                 "codeql_validation failed for %s:%s",
