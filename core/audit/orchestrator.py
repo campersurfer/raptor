@@ -714,20 +714,8 @@ def review_one_function(
         if isinstance(strategies, (list, tuple)):
             strategies = set(strategies)
         ns_findings = []
-        # check_negative_space reads gap["source"] and returns [] without
-        # it, so discovering conventions is only half the job — they have
-        # to reach the per-function check. The body is already in ctx;
-        # pass a throwaway copy rather than hydrating the shared gap,
-        # which would also switch on triage and spec_inference.
-        detector_gap = gap
-        ctx_source = ctx.get("source") or ""
-        if ctx_source and not gap.get("source"):
-            detector_gap = dict(gap)
-            detector_gap["source"] = ctx_source
         for strat in (strategies or {"general"}):
-            ns_findings.extend(
-                check_negative_space(detector_gap, conventions, strat),
-            )
+            ns_findings.extend(check_negative_space(gap_with_source, conventions, strat))
 
         # Match on identity, not prose. NegativeSpaceFinding carries
         # file/function, so substring-searching the function name in
