@@ -585,7 +585,7 @@ def fetch_image_sbom(
     # ``packages_from_layer_files`` handles that ordering.
     layer_files: Dict[str, bytes] = {}
     layers_scanned = 0
-    wanted = set(LAYER_FILE_PATHS.keys())
+    wanted = set(LAYER_FILE_PATHS)
     for layer in image_manifest.layers:
         if layer.size and layer.size > max_layer_bytes:
             logger.debug(
