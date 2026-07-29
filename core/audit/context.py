@@ -196,6 +196,7 @@ def assemble_context(
                 shared_state=ctx.get("shared_state"),
                 crypto_inventory=ctx.get("crypto_inventory"),
                 ownership_model=ctx.get("ownership_model"),
+                source=ctx.get("source"),
             )
     except Exception:
         logger.debug(

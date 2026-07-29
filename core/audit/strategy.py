@@ -94,6 +94,26 @@ _INCLUDE_SIGNALS: Dict[str, List[str]] = {
     ],
 }
 
+_SOURCE_SIGNALS: Dict[str, List[str]] = {
+    STRATEGY_CONCURRENCY: [
+        "rcu_read_lock", "rcu_read_unlock", "rcu_dereference",
+        "spin_lock", "spin_unlock", "mutex_lock", "mutex_unlock",
+        "task_lock", "task_unlock", "lock_sock", "release_sock",
+        "down_read", "up_read", "down_write", "up_write",
+        "atomic_inc", "atomic_dec", "atomic_set",
+        "READ_ONCE", "WRITE_ONCE", "smp_rmb", "smp_wmb",
+    ],
+    STRATEGY_MEMORY: [
+        "kfree", "kmalloc", "kzalloc", "vmalloc", "vfree",
+        "refcount_inc", "refcount_dec", "kref_put", "kref_get",
+        "free(", "malloc(", "calloc(", "realloc(",
+    ],
+    STRATEGY_ALIASING: [
+        "sg_chain", "sg_init_table", "scatterlist",
+        "memcpy_sglist", "skb_cow_data",
+    ],
+}
+
 
 def infer_strategies(
     *,
@@ -109,6 +129,7 @@ def infer_strategies(
     ownership_model: Optional[List[Any]] = None,
     kind: Optional[str] = None,
     visibility: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> FrozenSet[str]:
     """Select review strategies for a function.
 
@@ -129,6 +150,7 @@ def infer_strategies(
         ownership_model: Ownership model entries from context-map enrichment.
         kind: Checklist item kind (function, global, macro, class).
         visibility: Checklist item visibility (static, extern, exported, etc.).
+        source: Function source text for keyword-based strategy inference.
 
     Returns:
         Frozen set of strategy names to apply.
@@ -191,6 +213,11 @@ def infer_strategies(
     if visibility in ("extern", "exported", "public"):
         strategies.add(STRATEGY_INPUT)
 
+    if source:
+        for strategy, keywords in _SOURCE_SIGNALS.items():
+            if any(kw in source for kw in keywords):
+                strategies.add(strategy)
+
     return frozenset(strategies)
 
 
@@ -202,6 +229,7 @@ def strategies_from_item(
     shared_state: Optional[List[Any]] = None,
     crypto_inventory: Optional[List[Any]] = None,
     ownership_model: Optional[List[Any]] = None,
+    source: Optional[str] = None,
 ) -> FrozenSet[str]:
     """Select strategies from a checklist item dict.
 
@@ -235,6 +263,7 @@ def strategies_from_item(
         ownership_model=ownership_model,
         kind=item.get("kind"),
         visibility=metadata.get("visibility"),
+        source=source,
     )
 
 
