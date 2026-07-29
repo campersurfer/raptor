@@ -85,6 +85,8 @@ class ReviewJournalEntry:
     lesson: str | None = None
     validate_verdict: str | None = None
     validate_reason: str | None = None
+    verdict_rationale: str | None = None
+    counter_hypothesis: str | None = None
     # ``source_drifted``: Reflexion correction entries set this true
     # when the source has changed since the prior review — surfaces
     # the drift instead of hiding it behind an inherited

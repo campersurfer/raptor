@@ -1705,8 +1705,9 @@ def _build_reachability_note(
             "a known flow path. Check whether it performs any operation that "
             "is unsafe without validation: array/pointer indexing, pointer "
             "arithmetic, casts, or struct field access via untrusted offsets. "
-            "A missing bounds check on a parameter used as an index IS a "
-            "vulnerability — the absence of validation is the bug."
+            "If callers validate inputs before calling this function, the "
+            "validation responsibility lies with the caller — that is clean, "
+            "not a function-level defect."
         )
 
     return "\n".join(parts)

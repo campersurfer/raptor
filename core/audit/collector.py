@@ -128,6 +128,12 @@ def append_journal_for_outcome(
         except Exception:
             domain_model_hash = None
 
+    verdict_rationale = None
+    counter_hypothesis = None
+    if review_result:
+        verdict_rationale = review_result.get("verdict_rationale") or None
+        counter_hypothesis = review_result.get("counter_hypothesis") or None
+
     entry = ReviewJournalEntry(
         ts=now_iso(),
         run_id=run_id,
@@ -149,6 +155,8 @@ def append_journal_for_outcome(
         evidence_tools=evidence_tools,
         cost_usd=getattr(outcome, "cost_usd", None) or None,
         duration_s=getattr(outcome, "duration_s", None) or None,
+        verdict_rationale=verdict_rationale,
+        counter_hypothesis=counter_hypothesis,
         producer=producer,
     )
     try:
@@ -287,5 +295,5 @@ class Collector:
     def _flush_audit_log(self) -> None:
         log_path = self.out_dir / ".audit-log.jsonl"
         lines = [json.dumps(e, separators=(",", ":")) for e in self._log_entries]
-        with open(log_path, "a", encoding="utf-8") as f:
+        with open(log_path, "a") as f:
             f.write("\n".join(lines) + "\n")

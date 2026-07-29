@@ -334,7 +334,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         try:
             inventory_path = out_dir / "inventory.json"
             if inventory_path.exists():
-                with open(inventory_path, encoding="utf-8") as inv_f:
+                with open(inventory_path) as inv_f:
                     inventory = json.load(inv_f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -1017,7 +1017,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         lifecycle = subprocess.run(
             [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
              "start", "audit", "--target", str(target_path)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True,
         )
         if lifecycle.returncode != 0:
             print(f"lifecycle start failed: {lifecycle.stderr.strip()}",
@@ -1120,31 +1120,32 @@ def cmd_run(args: argparse.Namespace) -> int:
         logging.getLogger(__name__).debug(
             "threat-model auto-load failed", exc_info=True)
 
+    # --- load checklist for context assembly (callers, reachability) ---
+    try:
+        checklist_data = json.loads(checklist_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        checklist_data = None
+
     # --- binary oracle ---
     binary_verdicts = None
     from core.analysis.binary_oracle_cli import apply_to_config as _bo_apply
     binary_paths = _bo_apply(args, target_path)
-    if binary_paths:
-        try:
-            checklist_data = json.loads(checklist_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            checklist_data = None
-        if checklist_data:
-            from core.analysis.binary_oracle import (
-                enrich_inventory_with_binary_oracle,
-                extract_verdicts,
+    if binary_paths and checklist_data:
+        from core.analysis.binary_oracle import (
+            enrich_inventory_with_binary_oracle,
+            extract_verdicts,
+        )
+        bo_counts = enrich_inventory_with_binary_oracle(
+            checklist_data, binary_paths,
+        )
+        binary_verdicts = extract_verdicts(checklist_data)
+        if binary_verdicts:
+            print(
+                f"Binary oracle: {bo_counts.get('classified', 0)} classified "
+                f"({bo_counts.get('absent', 0)} absent, "
+                f"{bo_counts.get('symbol_present', 0)} present)",
+                flush=True,
             )
-            bo_counts = enrich_inventory_with_binary_oracle(
-                checklist_data, binary_paths,
-            )
-            binary_verdicts = extract_verdicts(checklist_data)
-            if binary_verdicts:
-                print(
-                    f"Binary oracle: {bo_counts.get('classified', 0)} classified "
-                    f"({bo_counts.get('absent', 0)} absent, "
-                    f"{bo_counts.get('symbol_present', 0)} present)",
-                    flush=True,
-                )
 
     models = args.model or []
     config = OrchestratorConfig(
@@ -1167,6 +1168,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_propagation_depth=args.max_propagation_depth,
         binary_verdicts=binary_verdicts,
         no_binary_oracle=getattr(args, "no_binary_oracle", False),
+        inventory=checklist_data,
     )
 
     # --- progress callback ---
@@ -1213,7 +1215,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     ]
     if model_id:
         lifecycle_args.extend(["--model", model_id])
-    subprocess.run(lifecycle_args, capture_output=True, timeout=30, text=True)
+    subprocess.run(lifecycle_args, capture_output=True)
 
     return 0 if result.terminated_by == "complete" else 1
 
@@ -1303,7 +1305,7 @@ def _lifecycle_fail(out_dir: Path, reason: str) -> None:
     subprocess.run(
         [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
          "fail", str(out_dir), reason],
-        capture_output=True, timeout=30, text=True,
+        capture_output=True,
     )
 
 
@@ -1312,7 +1314,7 @@ def _guess_target(out_dir: Path) -> Path | None:
     checklist_path = out_dir / "checklist.json"
     if checklist_path.exists():
         try:
-            with open(checklist_path, encoding="utf-8") as f:
+            with open(checklist_path) as f:
                 data = json.load(f)
             tp = data.get("target_path")
             if tp:

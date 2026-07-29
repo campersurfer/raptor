@@ -1,4 +1,4 @@
-"""Run the /audit calibration corpus and emit a scored CSV.
+"""Run the /audit calibration corpus and score results.
 
 Usage:
     python3 -m core.audit.corpus.run_corpus [options]
@@ -9,13 +9,12 @@ Steps:
     3. Build checklist + context map for each target
     4. Run /audit's orchestrator against the labeled functions
     5. Score each outcome against ground truth
-    6. Emit CSV + detailed summary with cost, duration, per-function verdicts
+    6. Emit JSON + detailed summary with cost, duration, per-function verdicts
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import logging
 import os
@@ -23,7 +22,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +123,7 @@ def _build_checklist(
             [sys.executable,
              str(raptor_dir / "libexec" / "raptor-build-checklist"),
              str(target_dir), "--out", str(out_dir)],
-            env=env, capture_output=True, text=True, timeout=300,
+            env=env, capture_output=True, text=True,
         )
         if cp.returncode != 0:
             print(f"  checklist build failed: {cp.stderr.strip()[:200]}",
@@ -142,7 +141,7 @@ def _poll_progress(
     """Print new audit-log entries since last poll.  Returns new seen count."""
     if not log_path.exists():
         return seen
-    with open(log_path, encoding="utf-8") as f:
+    with open(log_path) as f:
         lines = f.readlines()
     new_count = len(lines)
     if new_count <= seen:
@@ -173,10 +172,13 @@ def _run_audit(
     *,
     model: str = "",
     out_dir: Optional[Path] = None,
-) -> List[Dict[str, Any]]:
+    two_pass: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
-    Returns a list of result dicts with function_id -> outcome mapping.
+    Returns (results, run_dirs) — results is a list of per-function
+    outcome dicts; run_dirs lists the output directories used (for
+    --debug journal retrieval).
     """
     from .label import FunctionLabel
 
@@ -185,6 +187,7 @@ def _run_audit(
         by_repo.setdefault(label.source.repo, []).append(label)
 
     results = []
+    run_dirs: List[Path] = []
     for repo_key, repo_labels in by_repo.items():
         src_dir = source_dirs.get(repo_key)
         if src_dir is None or not src_dir.is_dir():
@@ -204,9 +207,12 @@ def _run_audit(
                 })
             continue
 
-        outcomes = _run_audit_on_target(
+        outcomes, audit_dir = _run_audit_on_target(
             src_dir, repo_labels, model=model, out_dir=out_dir,
+            two_pass=two_pass,
         )
+        if audit_dir:
+            run_dirs.append(audit_dir)
         for label in repo_labels:
             outcome = outcomes.get(label.function_id)
             if outcome is None:
@@ -238,7 +244,7 @@ def _run_audit(
                 "duration_s": dur,
             })
 
-    return results
+    return results, run_dirs
 
 
 def _status_matches(expected: str, actual: str) -> bool:
@@ -258,8 +264,12 @@ def _run_audit_on_target(
     *,
     model: str = "",
     out_dir: Optional[Path] = None,
-) -> Dict[str, Any]:
-    """Run /audit orchestrator on a target and return outcomes by function_id."""
+    two_pass: bool = False,
+) -> Tuple[Dict[str, Any], Optional[Path]]:
+    """Run /audit orchestrator on a target.
+
+    Returns (outcomes_by_function_id, audit_output_dir).
+    """
     if out_dir is None:
         out_dir = Path(f"out/audit-corpus-{int(time.time())}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -277,6 +287,8 @@ def _run_audit_on_target(
     ]
     if model:
         cmd.extend(["--model", model])
+    if two_pass:
+        cmd.append("--two-pass")
 
     env = {**os.environ, "CLAUDECODE": "1", "_RAPTOR_TRUSTED": "1"}
     labeled_ids = {label.function_id for label in labels}
@@ -315,7 +327,7 @@ def _run_audit_on_target(
 
     outcomes_by_id: Dict[str, Dict[str, Any]] = {}
     if log_path.exists():
-        with open(log_path, encoding="utf-8") as f:
+        with open(log_path) as f:
             for raw in f:
                 raw = raw.strip()
                 if not raw:
@@ -330,23 +342,17 @@ def _run_audit_on_target(
                 if key:
                     outcomes_by_id[key] = entry
 
-    return outcomes_by_id
+    return outcomes_by_id, out_dir
 
 
-def _write_csv(
+def _write_results(
     results: List[Dict[str, Any]],
     output: Path,
 ) -> None:
-    """Write results to a CSV file."""
-    fieldnames = [
-        "function_id", "bug_class", "expected", "actual",
-        "match", "hypothesis", "evidence_tool", "model",
-    ]
-    with open(output, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in results:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
+    """Write results to a JSON file."""
+    with open(output, "w") as f:
+        json.dump(results, f, indent=2)
+        f.write("\n")
 
 
 def _format_detail_table(results: List[Dict[str, Any]]) -> str:
@@ -424,6 +430,55 @@ def _format_summary(
     return "\n".join(lines)
 
 
+def _save_debug(
+    results: List[Dict[str, Any]],
+    run_dirs: List[Path],
+    output_path: Path,
+) -> None:
+    """Save LLM reasoning alongside results for diagnosis.
+
+    Collects review-journal.jsonl entries from each run directory and
+    writes a per-function debug JSONL next to the results file.  Each
+    line has the function_id, verdict, hypotheses, and verdict_rationale.
+    """
+    debug_path = output_path.with_suffix(".debug.jsonl")
+
+    journal_entries: Dict[str, Dict[str, Any]] = {}
+    for d in run_dirs:
+        jpath = d / "review-journal.jsonl"
+        if not jpath.exists():
+            continue
+        with open(jpath) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                fid = entry.get("file", "") + ":" + entry.get("function", "")
+                if fid != ":":
+                    journal_entries[fid] = entry
+
+    labeled_ids = {r["function_id"] for r in results}
+    with open(debug_path, "w") as f:
+        for fid in sorted(labeled_ids):
+            je = journal_entries.get(fid, {})
+            hypotheses = je.get("hypotheses", [])
+            record = {
+                "function_id": fid,
+                "verdict": je.get("verdict", ""),
+                "hypotheses": hypotheses,
+                "cwe": je.get("cwe", ""),
+                "verdict_rationale": je.get("verdict_rationale", ""),
+                "counter_hypothesis": je.get("counter_hypothesis", ""),
+            }
+            f.write(json.dumps(record) + "\n")
+
+    print(f"Debug reasoning written to {debug_path}")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run /audit calibration corpus",
@@ -449,12 +504,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Output directory for the audit run",
     )
     parser.add_argument(
-        "--csv", type=Path, default=Path("corpus-results.csv"),
-        help="Path for the results CSV (default: corpus-results.csv)",
+        "--output", type=Path, default=Path("corpus-results.json"),
+        help="Path for the results JSON (default: corpus-results.json)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Load and verify labels without running audit",
+    )
+    parser.add_argument(
+        "--two-pass", action="store_true",
+        help="Split reasoning from classification into two LLM calls",
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Save LLM reasoning alongside CSV for diagnosis",
     )
     args = parser.parse_args(argv)
 
@@ -494,15 +557,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"Running audit (model: {args.model or 'default'})...", flush=True)
     t0 = time.monotonic()
-    results = _run_audit(
+    results, run_dirs = _run_audit(
         labels, source_dirs,
         model=args.model, out_dir=args.out,
+        two_pass=args.two_pass,
     )
     wall_s = time.monotonic() - t0
 
-    args.csv.parent.mkdir(parents=True, exist_ok=True)
-    _write_csv(results, args.csv)
-    print(f"\nResults written to {args.csv}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_results(results, args.output)
+    print(f"\nResults written to {args.output}")
+
+    if args.debug:
+        _save_debug(results, run_dirs, args.output)
+
     print()
     print(_format_summary(results, wall_s, args.model))
 

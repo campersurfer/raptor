@@ -24,8 +24,13 @@ _STATUS_FULL = {
     "type": "string",
     "enum": ["clean", "suspicious", "finding", "dormant"],
     "description": (
-        "clean = reviewed, no security concern. "
-        "suspicious = potential bug but not exploitable. "
+        "clean = reviewed, no security concern. Use clean when your "
+        "analysis concludes the function is safe, even if it handles "
+        "security-sensitive data or calls dangerous APIs with correct "
+        "guards. 'Handles pointers' is not a bug. "
+        "suspicious = a specific, nameable bug exists but is not "
+        "exploitable in the current calling context. You must name "
+        "the bug — if you cannot, use clean. "
         "finding = real vulnerability worth investigating. "
         "dormant = latent issue that needs specific conditions to trigger."
     ),
@@ -35,8 +40,13 @@ _STATUS_NO_DORMANT = {
     "type": "string",
     "enum": ["clean", "suspicious", "finding"],
     "description": (
-        "clean = reviewed, no security concern. "
-        "suspicious = potential bug but not exploitable. "
+        "clean = reviewed, no security concern. Use clean when your "
+        "analysis concludes the function is safe, even if it handles "
+        "security-sensitive data or calls dangerous APIs with correct "
+        "guards. 'Handles pointers' is not a bug. "
+        "suspicious = a specific, nameable bug exists but is not "
+        "exploitable in the current calling context. You must name "
+        "the bug — if you cannot, use clean. "
         "finding = real vulnerability worth investigating."
     ),
 }
@@ -65,7 +75,8 @@ REVIEW_SCHEMA = {
                 "mechanism and your confidence after evaluation. Do NOT "
                 "omit hypotheses just because a counter-argument exists "
                 "— downstream validation will be the final judge. "
-                "Preserve every hypothesis you generated in Steps 2-4."
+                "Preserve every hypothesis you generated in Steps 2-4. "
+                "Do not generate empty arrays — omit if no hypotheses."
             ),
             "items": {
                 "type": "object",
@@ -131,7 +142,8 @@ REVIEW_SCHEMA = {
                 "subsequent reviews so later functions benefit from what "
                 "you discovered here. Be concise but complete — say "
                 "enough that the observation is useful without re-reading "
-                "the source. Omit if nothing non-obvious was learned."
+                "the source. Do not generate empty arrays — omit if "
+                "nothing non-obvious was learned."
             ),
             "items": {"type": "string"},
         },
@@ -163,13 +175,12 @@ REVIEW_SCHEMA = {
         "preconditions": {
             "type": "array",
             "description": (
-                "Required when status is finding. Each precondition is an "
-                "assumption that MUST hold for this vulnerability to be "
-                "exploitable. Name the assumption and tell us WHERE to "
-                "verify it mechanically. If you cannot point to a specific "
-                "location where the assumption can be checked, your "
-                "confidence should be low and the status should be "
-                "suspicious, not finding."
+                "Each precondition is an assumption that MUST hold for "
+                "a vulnerability to be exploitable. Name the assumption "
+                "and tell us WHERE to verify it mechanically. If you "
+                "cannot point to a specific location where the assumption "
+                "can be checked, your confidence should be low. "
+                "Do not generate empty arrays — omit if no preconditions."
             ),
             "items": {
                 "type": "object",
@@ -289,8 +300,8 @@ REVIEW_SCHEMA = {
         "impact": {
             "type": "object",
             "description": (
-                "What the attacker gains from this finding. Required when "
-                "status is finding."
+                "What the attacker gains from this finding. "
+                "Omit if status is clean or dormant."
             ),
             "properties": {
                 "primitive": {
@@ -361,12 +372,8 @@ REVIEW_SCHEMA = {
                 "contracts you encountered while reviewing this function "
                 "that you do not understand well enough to audit "
                 "confidently. Each item is a question the study loop "
-                "will resolve — e.g. 'What does IPC_NOID flag control "
-                "in ipc_addid?' or 'What are the locking semantics of "
-                "rcu_read_lock in this context?'. Emit items only when "
-                "missing knowledge genuinely weakened your review — not "
-                "for general curiosity. Omit if you had sufficient "
-                "context to review confidently."
+                "will resolve. Do not generate empty arrays — omit if "
+                "you had sufficient context to review confidently."
             ),
             "items": {
                 "type": "object",
@@ -411,8 +418,21 @@ REVIEW_SCHEMA = {
                 "required": ["question"],
             },
         },
+        "verdict_rationale": {
+            "type": "string",
+            "description": (
+                "State WHY you chose this status. If suspicious: name "
+                "the specific unresolved bug that prevents a clean "
+                "verdict — a refuted hypothesis is not an unresolved "
+                "bug. If clean: state the key evidence that confirms "
+                "safety. If finding: state the confirmed vulnerability. "
+                "This field must be consistent with your hypotheses — "
+                "if every hypothesis was refuted, explain what "
+                "remaining concern justifies suspicious over clean."
+            ),
+        },
     },
-    "required": ["status", "body", "hypotheses"],
+    "required": ["status", "verdict_rationale", "body", "hypotheses"],
 }
 
 REVIEW_SCHEMA_BLIND = {
@@ -424,11 +444,12 @@ REVIEW_SCHEMA_BLIND = {
         "body": {"type": "string"},
         "cwe": {"type": "string"},
         "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
+        "verdict_rationale": REVIEW_SCHEMA["properties"]["verdict_rationale"],
         "observations": REVIEW_SCHEMA["properties"]["observations"],
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
         "reading_list": REVIEW_SCHEMA["properties"]["reading_list"],
     },
-    "required": ["status", "body", "hypotheses"],
+    "required": ["status", "verdict_rationale", "body", "hypotheses"],
 }
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -489,7 +510,27 @@ _DEFAULT_SYSTEM_PROMPT = (
     "Early-return guards (if len > MAX return -1) protect subsequent "
     "code even though they are not syntactically 'inside' the call.\n\n"
     "If you cannot answer all four concretely, the correct verdict "
-    "is clean or suspicious, not finding.\n\n"
+    "is clean, not finding.\n\n"
+    "STEP 5 — CLEAN vs SUSPICIOUS: Before choosing suspicious, verify "
+    "that you can name a specific bug — a concrete defect in THIS "
+    "function's logic, not a hypothetical caller misuse. A hypothesis "
+    "you already refuted is not a bug. If every hypothesis was refuted "
+    "or depends on the caller violating the function's contract, the "
+    "verdict is clean.\n\n"
+    "TOOL EVIDENCE AND CALLER CONTEXT: Mechanical tools (Semgrep, "
+    "Coccinelle, CodeQL) match patterns within a single function. "
+    "They cannot see caller context. A tool reporting 'missing bounds "
+    "check' on a helper function is correct in isolation — but if "
+    "every caller shown in context validates bounds before calling, "
+    "the tool match is informational, not a finding. Tool evidence "
+    "must survive caller-context validation before it can support a "
+    "finding verdict.\n\n"
+    "OUTPUT DISCIPLINE: Complete your full analysis — all hypotheses, "
+    "evidence evaluation, and validation checks — before selecting "
+    "your final status value. The status must follow from the "
+    "reasoning, never the reverse. Do not generate empty arrays or "
+    "objects as placeholder values — omit optional fields entirely "
+    "when they do not apply.\n\n"
     "KNOWLEDGE GAPS: If you encounter types, macros, API contracts, "
     "or domain-specific constructs that you do not understand well "
     "enough to audit confidently, list them in reading_list. Each "
@@ -541,6 +582,22 @@ _DISMISSIVE_COUNTER = frozenset({
     "none", "n/a", "not applicable",
 })
 
+_CONTRACT_DELEGATION = frozenset({
+    "caller's responsibility", "caller must", "caller is responsible",
+    "violates the contract", "violation of the contract",
+    "violates the function's contract", "violates its contract",
+    "bug in the caller", "buggy caller", "caller provides",
+    "caller correctness", "relies on caller", "caller-side",
+    "relying on this contract", "relying on the contract",
+    "relying on a contract", "relying on its contract",
+    "compile-time assertion", "compile-time guarantee",
+    "_static_assert", "static_assert",
+    "explicit contract", "function's contract",
+    "handled upstream", "validated upstream",
+    "checked by the caller", "validated by the caller",
+    "bounded by the caller", "ensured by the caller",
+})
+
 
 def _counter_hypothesis_is_compelling(counter: str) -> bool:
     """Return True if the counter-hypothesis names a specific attack.
@@ -548,11 +605,17 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
     Filters out dismissive responses ("no plausible attack") and
     vague hand-waving ("could be dangerous"). A compelling counter
     names a specific mechanism, input, or precondition.
+
+    Contract delegation — where the counter says "a caller would need
+    to violate the contract" — is not compelling: a bug in the caller
+    is not a finding in the reviewed function.
     """
     if not counter or len(counter) < 30:
         return False
     lower = counter.lower().strip()
     if any(d in lower for d in _DISMISSIVE_COUNTER):
+        return False
+    if any(d in lower for d in _CONTRACT_DELEGATION):
         return False
     specificity_markers = (
         "overflow", "underflow", "null", "free", "race", "inject",
@@ -648,6 +711,28 @@ def make_review_fn(
         except (ValueError, AttributeError):
             logger.warning("model override %r not resolved — using default", model_name)
 
+    def _single_pass(
+        prompt: str,
+        active_schema: Dict[str, Any],
+        kwargs: Dict[str, Any],
+    ):
+        """Standard single-call structured generation."""
+        response = llm_client.generate_structured(
+            prompt,
+            active_schema,
+            system_prompt=effective_system_prompt,
+            **kwargs,
+        )
+        if hasattr(response, "result"):
+            result = response.result
+        elif response:
+            result = response[0]
+        else:
+            result = {"status": "error", "body": "empty LLM response"}
+        cost = response.cost if hasattr(response, "cost") else 0.0
+        model = response.model if hasattr(response, "model") else ""
+        return result, cost, model
+
     def review_fn(
         ctx: Dict[str, Any],
         config: OrchestratorConfig,
@@ -665,23 +750,14 @@ def make_review_fn(
         active_schema = deepen_schema if ctx.get("deepen") else first_pass_schema
 
         try:
-            response = llm_client.generate_structured(
-                prompt,
-                active_schema,
-                system_prompt=effective_system_prompt,
-                **kwargs,
+            result, cost, resolved_model = _single_pass(
+                prompt, active_schema, kwargs,
             )
         except Exception as exc:
             if _is_content_filter_error(exc):
                 raise _ContentFilterError(str(exc)) from exc
             raise
 
-        if hasattr(response, "result"):
-            result = response.result
-        elif response:
-            result = response[0]
-        else:
-            result = {"status": "error", "body": "empty LLM response"}
         duration = time.monotonic() - t0
 
         status = result.get("status", "suspicious")
@@ -701,21 +777,26 @@ def make_review_fn(
                     ctx["file"], ctx["function"], snippet,
                 )
 
-        model_name = ""
-        cost = 0.0
-        if hasattr(response, "model"):
-            model_name = response.model
-        if hasattr(response, "cost"):
-            cost = response.cost
-
-        raw_ev = result.get("evidence_tool") or ""
-        evidence_tool = _normalize_evidence_tool(raw_ev)
-
         hypotheses_raw = result.get("hypotheses") or []
         hypotheses = [
             h for h in hypotheses_raw
             if isinstance(h, dict) and h.get("mechanism")
         ]
+
+        if status == "suspicious" and hypotheses:
+            all_refuted = all(
+                h.get("confidence") == "refuted" for h in hypotheses
+            )
+            if all_refuted:
+                status = "clean"
+                result["status"] = status
+                logger.info(
+                    "all-refuted demotion %s:%s: %d hypotheses refuted",
+                    ctx["file"], ctx["function"], len(hypotheses),
+                )
+
+        raw_ev = result.get("evidence_tool") or ""
+        evidence_tool = _normalize_evidence_tool(raw_ev)
 
         return ReviewOutcome(
             file=ctx["file"],
@@ -726,7 +807,7 @@ def make_review_fn(
             hypotheses=hypotheses or None,
             evidence_tool=evidence_tool,
             cost_usd=cost,
-            model=model_name,
+            model=resolved_model,
             duration_s=duration,
             review_result=result,
         )
