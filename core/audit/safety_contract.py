@@ -233,21 +233,6 @@ def assert_boost_only(source: str) -> None:
         )
 
 
-def validate_no_suppress(results: list[BoostEvidence | SuppressEvidence]) -> None:
-    """Validate that a tool's output contains no SuppressEvidence.
-
-    Call this at the tool boundary before returning results to the
-    orchestrator.  Belt-and-suspenders with the __post_init__ gate.
-    """
-    for r in results:
-        if isinstance(r, SuppressEvidence):
-            raise ContractViolation(
-                f"Tool returned SuppressEvidence (source={r.source!r}, "
-                f"verdict={r.verdict!r}) but is not allowed to suppress. "
-                f"Convert to BoostEvidence or add source to allowlist."
-            )
-
-
 def record_boost(
     out_dir: Path,
     evidence: BoostEvidence,
@@ -274,6 +259,5 @@ __all__ = [
     "BoostEvidence",
     "SuppressEvidence",
     "assert_boost_only",
-    "validate_no_suppress",
     "record_boost",
 ]

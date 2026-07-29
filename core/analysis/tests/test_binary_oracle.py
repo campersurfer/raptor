@@ -924,7 +924,10 @@ def test_extract_verdicts_from_enriched_inventory():
                         "name": "parse_input",
                         "kind": "function",
                         "metadata": {
-                            "binary_oracle": {"classification": "absent"},
+                            "binary_oracle": {
+                                "classification": "absent",
+                                "binaries": [{"tier": "full", "verdict": "absent"}],
+                            },
                         },
                     },
                     {
@@ -960,6 +963,90 @@ def test_extract_verdicts_empty_inventory():
 
     assert extract_verdicts({}) == {}
     assert extract_verdicts({"files": []}) == {}
+
+
+def test_extract_verdicts_excludes_symbol_only_absent():
+    """Symbol-only tier absent verdicts are not suppression-grade."""
+    from core.analysis.binary_oracle import extract_verdicts
+
+    inventory = {
+        "files": [
+            {
+                "path": "src/lib.c",
+                "language": "c",
+                "items": [
+                    {
+                        "name": "dead_fn",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {
+                                "classification": "absent",
+                                "binaries": [
+                                    {"tier": "symbol_only", "verdict": "absent"},
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "name": "also_dead",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {
+                                "classification": "absent",
+                                "binaries": [
+                                    {"tier": "full", "verdict": "absent"},
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "name": "mixed_tier",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {
+                                "classification": "absent",
+                                "binaries": [
+                                    {"tier": "symbol_only", "verdict": "absent"},
+                                    {"tier": "full", "verdict": "absent"},
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "name": "no_binaries_key",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {"classification": "absent"},
+                        },
+                    },
+                    {
+                        "name": "alive",
+                        "kind": "function",
+                        "metadata": {
+                            "binary_oracle": {
+                                "classification": "symbol_present",
+                                "binaries": [
+                                    {"tier": "symbol_only", "verdict": "present"},
+                                ],
+                            },
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+
+    verdicts = extract_verdicts(inventory)
+    # dead_fn: symbol_only only -> excluded
+    assert "dead_fn" not in verdicts
+    # also_dead: full tier -> included
+    assert verdicts["also_dead"] == "absent"
+    # mixed_tier: has at least one full -> included
+    assert verdicts["mixed_tier"] == "absent"
+    # no_binaries_key: no binaries at all -> excluded (no full evidence)
+    assert "no_binaries_key" not in verdicts
+    # alive: non-absent classification -> always included
+    assert verdicts["alive"] == "symbol_present"
 
 
 def test_raptor_audit_wires_binary_args():

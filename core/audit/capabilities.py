@@ -32,6 +32,7 @@ class AuditCapabilities:
     nm: bool = False
     binary_available: bool = False
     dwarf_available: bool = False
+    joern_issues: tuple = ()
 
 
 def _can_import(module: str) -> bool:
@@ -65,8 +66,15 @@ def probe_capabilities(
     binary_path: Optional[Path] = None,
 ) -> AuditCapabilities:
     """Detect available tools. Called once at audit start."""
+    try:
+        from packages.joern.prereqs import check_prereqs as _joern_prereqs
+        _joern_issues = tuple(_joern_prereqs())
+    except ImportError:
+        _joern_issues = ("packages.joern not available",)
+
     return AuditCapabilities(
-        joern=shutil.which("joern") is not None,
+        joern=len(_joern_issues) == 0,
+        joern_issues=_joern_issues,
         r2=shutil.which("r2") is not None,
         frida=_can_import("frida"),
         semgrep=shutil.which("semgrep") is not None,
@@ -100,6 +108,8 @@ def format_capability_report(caps: AuditCapabilities) -> str:
     for attr, label in tool_names.items():
         if getattr(caps, attr):
             present.append(label)
+        elif attr == "joern" and caps.joern_issues:
+            absent.append(f"Joern ({caps.joern_issues[0]})")
         else:
             absent.append(label)
 
