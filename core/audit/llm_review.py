@@ -785,7 +785,8 @@ def make_review_fn(
 
         if status == "suspicious" and hypotheses:
             all_refuted = all(
-                h.get("confidence") == "refuted" for h in hypotheses
+                (h.get("confidence") or "").lower() == "refuted"
+                for h in hypotheses
             )
             if all_refuted:
                 status = "clean"

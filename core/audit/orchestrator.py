@@ -5669,7 +5669,7 @@ def _has_refuting_counter(outcome: ReviewOutcome) -> bool:
     for h in hypotheses:
         if not isinstance(h, dict):
             continue
-        if h.get("confidence") == "refuted":
+        if (h.get("confidence") or "").lower() == "refuted":
             continue
         counter = h.get("counter", "")
         if not counter or len(counter) < 20:

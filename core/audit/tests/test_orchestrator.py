@@ -1846,6 +1846,26 @@ class TestHasRefutingCounter:
         )
         assert not _has_refuting_counter(o)
 
+    def test_refuted_hypothesis_case_insensitive(self):
+        from core.audit.orchestrator import _has_refuting_counter
+        for variant in ("Refuted", "REFUTED", "rEfUtEd"):
+            o = ReviewOutcome(
+                file="f", function="g", status="suspicious", body="x",
+                review_result={
+                    "hypotheses": [{
+                        "mechanism": "overflow",
+                        "confidence": variant,
+                        "counter": (
+                            "This server is single-threaded so the race "
+                            "condition window cannot be hit in practice"
+                        ),
+                    }],
+                },
+            )
+            assert not _has_refuting_counter(o), (
+                f"confidence={variant!r} should be treated as refuted"
+            )
+
 
 class TestToolChain:
     """Test _hypothesis_to_tool_chain and _run_tool_chain."""
