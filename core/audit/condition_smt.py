@@ -290,6 +290,9 @@ def _z3_overflow_check(
             val = model[v]
             solver.pop()
             return (True, f"overflow possible: {v} can be {val} > {buffer_size}")
+        if result == z3.unknown:
+            solver.pop()
+            return (True, "solver timeout — conservatively assume guard insufficient")
         solver.pop()
 
     return (False, f"guard sufficient: all constrained vars ≤ {buffer_size}")
@@ -343,6 +346,8 @@ def _z3_integer_overflow_check(
                 solver.pop()
                 if result == z3.sat:
                     return (True, "integer overflow in allocation size is possible")
+                if result == z3.unknown:
+                    return (True, "solver timeout — conservatively assume overflow possible")
         return (False, "allocation size cannot overflow given constraints")
 
     return (False, "insufficient variables for multiplication overflow check")
