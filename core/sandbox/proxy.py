@@ -1024,8 +1024,7 @@ class EgressProxy:
                 asyncio.run_coroutine_threadsafe(_graceful(), self._loop)
             except RuntimeError:
                 _graceful().close()
-            return
-        if self._loop is not None and self._loop.is_running():
+        elif self._loop is not None and self._loop.is_running():
             async def _cancel_unix():
                 stale = [t for t in self._unix_tasks if not t.done()]
                 for t in stale:
@@ -1037,11 +1036,17 @@ class EgressProxy:
                 asyncio.run_coroutine_threadsafe(_cancel_unix(), self._loop)
             except RuntimeError:
                 pass
-            return
-        try:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        except RuntimeError:
-            pass  # loop already stopped
+        else:
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except RuntimeError:
+                pass  # loop already stopped
+        # Join the daemon thread so transport _call_connection_lost
+        # callbacks complete before stop() returns.  Without this,
+        # the thread keeps running and may close recycled fd numbers
+        # that belong to the caller's next subprocess.run pipes.
+        if self._thread is not None:
+            self._thread.join(timeout=drain_timeout + 2.0)
 
     def _stop_thread_best_effort(self) -> None:
         """Defensive cleanup helper called from ``__init__`` when the
@@ -1738,9 +1743,9 @@ def get_proxy(
 
 
 def _reset_for_tests() -> None:
-    """Tear down the singleton. Test-only."""
+    """Tear down the singleton and join its thread. Test-only."""
     global _instance
     with _lock:
         if _instance is not None:
-            _instance.stop()
+            _instance.stop(drain_timeout=0)
             _instance = None
