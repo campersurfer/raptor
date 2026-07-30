@@ -202,7 +202,9 @@ class TestAutoSynthesizeRules:
             )
 
         def _fake_llm_callable(_config):
-            return lambda p, s, sp: {"rule": "r"}
+            class _FakeClient:
+                total_cost = 0.0
+            return lambda p, s, sp: {"rule": "r"}, _FakeClient()
 
         with patch(
             "core.audit.checker_synthesis._build_llm_callable",

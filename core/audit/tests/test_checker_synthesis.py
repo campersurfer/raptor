@@ -133,12 +133,16 @@ class TestBuildLLMCallable:
 
     def test_returns_callable_with_generate_structured(self):
         class _FullClient:
+            total_cost = 0.0
+
             def generate_structured(self, **kw):
                 return {"result": True}, {}
 
         with patch("core.llm.client.LLMClient", return_value=_FullClient()):
             result = _build_llm_callable(_StubConfig())
-            assert callable(result)
+            assert result is not None
+            fn, client = result
+            assert callable(fn)
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +164,13 @@ class TestSynthesizeAndSweepDelegation:
     def test_no_target_path_returns_none(self):
         o = _StubOutcome()
         c = _StubConfig(target_path=None)
+
+        class _FakeClient:
+            total_cost = 0.0
+
         with patch(
             "core.audit.checker_synthesis._build_llm_callable",
-            return_value=lambda p, s, sp: None,
+            return_value=(lambda p, s, sp: None, _FakeClient()),
         ):
             assert synthesize_and_sweep(o, c, set()) is None
 
@@ -191,7 +199,9 @@ class TestSynthesizeAndSweepDelegation:
             )
 
         def _fake_llm_callable(_config):
-            return lambda p, s, sp: {"rule": "r"}
+            class _FakeClient:
+                total_cost = 0.0
+            return lambda p, s, sp: {"rule": "r"}, _FakeClient()
 
         o = _StubOutcome()
         c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
@@ -232,7 +242,9 @@ class TestSynthesizeAndSweepDelegation:
             )
 
         def _fake_llm_callable(_config):
-            return lambda p, s, sp: {"rule": "r"}
+            class _FakeClient:
+                total_cost = 0.0
+            return lambda p, s, sp: {"rule": "r"}, _FakeClient()
 
         o = _StubOutcome()
         c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
@@ -299,7 +311,9 @@ class TestSynthesizeAndSweepDelegation:
             return CheckerSynthesisResult(seed=seed, rule=None)
 
         def _fake_llm_callable(_config):
-            return lambda p, s, sp: {"rule": "r"}
+            class _FakeClient:
+                total_cost = 0.0
+            return lambda p, s, sp: {"rule": "r"}, _FakeClient()
 
         o = _StubOutcome()
         c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
@@ -315,7 +329,9 @@ class TestSynthesizeAndSweepDelegation:
 
     def test_exception_in_substrate_returns_none(self, tmp_path):
         def _fake_llm_callable(_config):
-            return lambda p, s, sp: {"rule": "r"}
+            class _FakeClient:
+                total_cost = 0.0
+            return lambda p, s, sp: {"rule": "r"}, _FakeClient()
 
         o = _StubOutcome()
         c = _StubConfig(target_path=str(tmp_path), out_dir=str(tmp_path))
