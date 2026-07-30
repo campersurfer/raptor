@@ -146,13 +146,18 @@ def synthesize_and_sweep(
     try:
         from packages.checker_synthesis import RuleLibrary
         from packages.checker_synthesis.languages import detect_engine
+    except ImportError:
+        logger.debug("checker_synthesis packages not available")
+        return None
 
-        lib = RuleLibrary()
-        engine = detect_engine(seed.file)
-        cs_result = None
-        if engine and seed.cwe:
-            candidates = lib.find_replayable(seed.cwe, engine)
-            if candidates:
+    cs_result = None
+
+    lib = RuleLibrary()
+    engine = detect_engine(seed.file)
+    if engine and seed.cwe:
+        candidates = lib.find_replayable(seed.cwe, engine)
+        if candidates:
+            try:
                 from packages.checker_synthesis.synthesise import _run_engine
                 entry = candidates[0]
                 rule_path = lib.rule_path(entry)
@@ -184,8 +189,14 @@ def synthesize_and_sweep(
                         "audit synthesis: replayed library rule %s — %d match(es)",
                         entry.rule_id, len(matches),
                     )
+            except Exception:
+                logger.warning(
+                    "audit synthesis: library replay failed for %s:%s",
+                    seed.file, seed.function, exc_info=True,
+                )
 
-        if cs_result is None:
+    if cs_result is None:
+        try:
             from packages.checker_synthesis import synthesise_with_refinement
             cs_result = synthesise_with_refinement(
                 seed,
@@ -194,9 +205,12 @@ def synthesize_and_sweep(
                 llm=llm_callable,
                 max_matches=MAX_SWEEP_HITS_PER_RULE,
             )
-    except Exception:
-        logger.debug("checker_synthesis failed", exc_info=True)
-        return None
+        except Exception:
+            logger.warning(
+                "audit synthesis: full synthesis failed for %s:%s",
+                seed.file, seed.function, exc_info=True,
+            )
+            return None
 
     if cs_result.rule is None:
         logger.debug(
