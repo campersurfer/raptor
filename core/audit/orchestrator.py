@@ -937,7 +937,8 @@ def review_one_function(
             is_sk = gap_key in sinks_set
             gap_sloc = gap.get("sloc", 0)
             if _should_cc(outcome, bucket_val, is_ep, is_sk, sloc=gap_sloc):
-                result.clean_checks += 1
+                with result._lock:
+                    result.clean_checks += 1
                 cc_flows = _run_clean_check_sweep(
                     outcome, config, evidence_index, joern_server,
                 )
@@ -974,10 +975,11 @@ def review_one_function(
             evidence_index=evidence_index,
             joern_server=joern_server,
         )
-        if outcome.status == "finding":
-            result.sweep_validated += 1
-        else:
-            result.sweep_demoted += 1
+        with result._lock:
+            if outcome.status == "finding":
+                result.sweep_validated += 1
+            else:
+                result.sweep_demoted += 1
 
     # ── Proactive validation ──────────────────────────────────────────
     if outcome.status in ("finding", "suspicious") and not config.blind_first_pass:
@@ -2317,6 +2319,8 @@ def _run_audit_body(
         evidence_index=evidence_index,
         joern_server=joern_server,
         sarif_cache=sarif_cache,
+        domain_model=domain_model,
+        audit_log=audit_log,
     )
 
     # --- Study loop: enrich domain model, then re-review affected functions ---
@@ -3694,7 +3698,8 @@ def _retry_error_outcomes(
             continue
 
         result.error_retries += 1
-        result.error_retry_recovered += 1
+        if new_outcome.status != "error":
+            result.error_retry_recovered += 1
         result.errors -= 1
         if outcome.error_class in result.error_counts:
             result.error_counts[outcome.error_class] -= 1
@@ -5298,7 +5303,7 @@ def _deepen_suspicious(
 
         outcome.line = gap.get("line_start", 0)
 
-        if outcome.status in ("finding", "suspicious"):
+        if outcome.status in ("finding", "suspicious", "dormant"):
             if outcome.status == "finding":
                 if config.sweep_validate_findings:
                     outcome = _sweep_validate(
@@ -5680,22 +5685,23 @@ def _find_gap_in_checklist(
 
 def _untally_outcome(result: OrchestratorResult, outcome: ReviewOutcome) -> None:
     """Reverse a previously tallied outcome."""
-    if outcome.status == "finding":
-        result.findings -= 1
-    elif outcome.status == "suspicious":
-        result.suspicious -= 1
-    elif outcome.status == "clean":
-        result.clean -= 1
-    elif outcome.status == "dormant":
-        result.dormant -= 1
-    elif outcome.status == "dark":
-        result.dormant -= 1
-    elif outcome.status == "error":
-        result.errors -= 1
-        if outcome.error_class and outcome.error_class in result.error_counts:
-            result.error_counts[outcome.error_class] -= 1
-    result.reviewed -= 1
-    result.total_cost_usd -= outcome.cost_usd
+    with result._lock:
+        if outcome.status == "finding":
+            result.findings -= 1
+        elif outcome.status == "suspicious":
+            result.suspicious -= 1
+        elif outcome.status == "clean":
+            result.clean -= 1
+        elif outcome.status == "dormant":
+            result.dormant -= 1
+        elif outcome.status == "dark":
+            result.dormant -= 1
+        elif outcome.status == "error":
+            result.errors -= 1
+            if outcome.error_class and outcome.error_class in result.error_counts:
+                result.error_counts[outcome.error_class] -= 1
+        result.reviewed -= 1
+        result.total_cost_usd -= outcome.cost_usd
 
 
 _DISMISSIVE_COUNTERS = frozenset({
@@ -6109,6 +6115,8 @@ def _review_flow_traces(
     evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
     joern_server=None,
     sarif_cache: Optional[SarifCache] = None,
+    domain_model=None,
+    audit_log: Optional[list] = None,
 ) -> OrchestratorResult:
     """Post-loop pass: review entire source→sink flow traces as a unit.
 
@@ -6206,6 +6214,16 @@ def _review_flow_traces(
                     evidence_index=evidence_index,
                     joern_server=joern_server,
                 )
+            if outcome.status == "finding":
+                gate_violations = _check_finding_gates(
+                    outcome, audit_log=audit_log,
+                    domain_model=domain_model,
+                )
+                if gate_violations:
+                    outcome = _demote_outcome(
+                        outcome,
+                        f"[gate violation: {'; '.join(gate_violations)}]",
+                    )
             _tally_outcome(result, outcome)
             traces_reviewed += 1
             logger.info(
