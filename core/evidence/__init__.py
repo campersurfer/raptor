@@ -150,12 +150,15 @@ def make_evidence(
 
 _logger = logging.getLogger(__name__)
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IDENTIFIER_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*"
+    r"((?:\.|::|/)[A-Za-z_][A-Za-z0-9_]*)*$"
+)
 _NAME_CAP = 120
 
 
 def _is_valid_identifier(name: str) -> bool:
-    """True when *name* looks like a C / Python identifier."""
+    """True when *name* looks like a qualified identifier across languages."""
     return bool(_IDENTIFIER_RE.match(name))
 
 
@@ -211,6 +214,9 @@ class EvidenceRecord:
 
     file: str
     function: str
+
+    line_start: int = 0
+    line_end: int = 0
 
     sink_unreachable: bool = False
     sink_narrowed_classes: List[str] = field(default_factory=list)
@@ -677,7 +683,12 @@ def build_evidence_index(
             if not func_name:
                 continue
             key = f"{file_path}:{func_name}"
-            index[key] = EvidenceRecord(file=file_path, function=func_name)
+            ls = item.get("line_start", 0)
+            le = item.get("line_end", 0)
+            index[key] = EvidenceRecord(
+                file=file_path, function=func_name,
+                line_start=ls, line_end=le,
+            )
 
     if sink_results is not None:
         _reachable = set()
@@ -768,12 +779,12 @@ def build_evidence_index(
 
     if sarif_cache is not None:
         for key, rec in index.items():
-            hits = sarif_cache.lookup(rec.file)
+            hits = sarif_cache.lookup(rec.file, rec.line_start, rec.line_end)
             if hits is None:
                 continue
             for hit in hits:
-                rule_id = hit.get("ruleId", "") or ""
-                if rule_id.startswith("codeql"):
+                source = hit.get("_sarif_source", "")
+                if source == "codeql":
                     rec.codeql_alerts.append(hit)
                 else:
                     rec.semgrep_hits.append(hit)

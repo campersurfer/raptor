@@ -99,6 +99,10 @@ class SarifCache:
             except (OSError, _json.JSONDecodeError):
                 continue
             for run in data.get("runs", []):
+                tool_name = (
+                    run.get("tool", {}).get("driver", {}).get("name", "")
+                ).lower()
+                is_codeql = "codeql" in tool_name
                 for result in run.get("results", []):
                     locs = result.get("locations") or [{}]
                     loc = locs[0] if locs else {}
@@ -106,6 +110,7 @@ class SarifCache:
                     uri = phys.get("artifactLocation", {}).get("uri", "")
                     normalized = _normalize_sarif_path(uri)
                     if normalized:
+                        result["_sarif_source"] = "codeql" if is_codeql else "semgrep"
                         cache._by_file.setdefault(normalized, []).append(result)
 
         total = sum(len(v) for v in cache._by_file.values())
