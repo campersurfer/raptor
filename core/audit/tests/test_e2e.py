@@ -264,37 +264,43 @@ class TestAuditE2E:
     def test_critique_identifies_mode2_gap(self, setup):
         """Critique identifies confirmed findings without codebase-wide rules."""
         target, out_dir = setup
-        _run([_CHECKLIST_CLI, str(target), str(out_dir)])
+        r = _run([_CHECKLIST_CLI, str(target), str(out_dir)])
+        assert r.returncode == 0, r.stderr
 
         # Review vuln_fn: context → sweep → finding
-        _run([_AUDIT_CLI, "context", "--target", str(target),
-              "--file", "vuln.c", "--function", "vuln_fn",
-              "--line", "8", "--out", str(out_dir)])
+        r = _run([_AUDIT_CLI, "context", "--target", str(target),
+                  "--file", "vuln.c", "--function", "vuln_fn",
+                  "--line", "8", "--out", str(out_dir)])
+        assert r.returncode == 0, r.stderr
         rule_path = _write_semgrep_rule(out_dir)
-        _run([_AUDIT_CLI, "sweep",
-              "--rule-file", rule_path,
-              "--tool", "semgrep",
-              "--file", "vuln.c", "--function", "vuln_fn",
-              "--out", str(out_dir), "--target", str(target)])
-        _run([_AUDIT_CLI, "record",
-              "--out", str(out_dir), "--target", str(target),
-              "--file", "vuln.c", "--function", "vuln_fn",
-              "--status", "finding",
-              "--hypothesis", "format string",
-              "--evidence-tool", "semgrep",
-              "--vuln-type", "CWE-134",
-              "--body", "confirmed",
-              "--line-start", "8",
-              "--reach-via", "called from main"])
+        r = _run([_AUDIT_CLI, "sweep",
+                  "--rule-file", rule_path,
+                  "--tool", "semgrep",
+                  "--file", "vuln.c", "--function", "vuln_fn",
+                  "--out", str(out_dir), "--target", str(target)])
+        assert r.returncode == 0, r.stderr
+        r = _run([_AUDIT_CLI, "record",
+                  "--out", str(out_dir), "--target", str(target),
+                  "--file", "vuln.c", "--function", "vuln_fn",
+                  "--status", "finding",
+                  "--hypothesis", "format string",
+                  "--evidence-tool", "semgrep",
+                  "--vuln-type", "CWE-134",
+                  "--body", "confirmed",
+                  "--line-start", "8",
+                  "--reach-via", "called from main"])
+        assert r.returncode == 0, r.stderr
 
         # Review safe_fn: context → clean (only 0 sweeps)
-        _run([_AUDIT_CLI, "context", "--target", str(target),
-              "--file", "vuln.c", "--function", "safe_fn",
-              "--line", "4", "--out", str(out_dir)])
-        _run([_AUDIT_CLI, "record",
-              "--out", str(out_dir), "--target", str(target),
-              "--file", "vuln.c", "--function", "safe_fn",
-              "--status", "clean", "--body", "reviewed"])
+        r = _run([_AUDIT_CLI, "context", "--target", str(target),
+                  "--file", "vuln.c", "--function", "safe_fn",
+                  "--line", "4", "--out", str(out_dir)])
+        assert r.returncode == 0, r.stderr
+        r = _run([_AUDIT_CLI, "record",
+                  "--out", str(out_dir), "--target", str(target),
+                  "--file", "vuln.c", "--function", "safe_fn",
+                  "--status", "clean", "--body", "reviewed"])
+        assert r.returncode == 0, r.stderr
 
         r = _run([_AUDIT_CLI, "critique", "--out", str(out_dir)])
         assert r.returncode == 0, r.stderr
@@ -319,7 +325,7 @@ class TestAuditE2E:
                   "--smt-args",
                   '{"var":"len","type":"int32","op":"len*4"}',
                   "--file", "vuln.c", "--function", "vuln_fn",
-                  "--out", str(out_dir)])
+                  "--out", str(out_dir), "--target", str(target)])
         assert r.returncode == 0, r.stderr
         assert "smt:check-overflow" in r.stdout
 
