@@ -1195,8 +1195,9 @@ class LLMConfig:
         )
 
         candidates = self._configured_models()
+        bare = bare_model_id(model_id)
         for mc in candidates:
-            if mc.model_name == model_id:
+            if mc.model_name == model_id or mc.model_name == bare:
                 return mc
 
         # Shorthand expansion: when the operator passes a bare tier token
@@ -1239,11 +1240,11 @@ class LLMConfig:
             )
             return ModelConfig(
                 provider=provider,
-                model_name=model_id,
+                model_name=bare_model_id(model_id),
                 api_key=best.api_key,
                 api_base=best.api_base,
             )
-        return ModelConfig(provider=provider, model_name=model_id)
+        return ModelConfig(provider=provider, model_name=bare_model_id(model_id))
 
     def to_file(self, config_path: Path) -> None:
         """Save a MINIMAL snapshot of this configuration to JSON.
