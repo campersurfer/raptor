@@ -28,7 +28,10 @@ from .observe import (
     _check_blocked, _interpret_result,
 )
 from .preexec import _DEFAULT_LIMITS, _load_user_limits, _make_preexec_fn
-from .profiles import DEFAULT_PROFILE, PROFILES, _SANDBOX_KWARGS
+from .profiles import (
+    DEFAULT_PROFILE, PROFILES, _SANDBOX_KWARGS,
+    host_recon_threshold_for_profile,
+)
 
 # Attribute indirection so tests can patch these at the submodule level.
 # `patch.object(core.sandbox.landlock, "check_landlock_available", ...)`
@@ -1556,7 +1559,13 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         # multiple run() calls, the accumulated view is exposed as
         # `run.events` (see below).
         proxy_token = (
-            proxy_instance.register_sandbox(caller_label=caller_label)
+            proxy_instance.register_sandbox(
+                caller_label=caller_label,
+                host_recon_threshold=host_recon_threshold_for_profile(
+                    profile or DEFAULT_PROFILE,
+                    _proxy_mod.DEFAULT_HOST_RECON_THRESHOLD,
+                ),
+            )
             if proxy_instance is not None else None
         )
         # Mount-ns path: bypass subprocess+preexec entirely. _spawn
@@ -2420,6 +2429,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             caller_label=(
                 f"{caller_label}:cm-block" if caller_label
                 else "sandbox:cm-block"
+            ),
+            host_recon_threshold=host_recon_threshold_for_profile(
+                profile or DEFAULT_PROFILE,
+                _proxy_mod.DEFAULT_HOST_RECON_THRESHOLD,
             ),
         )
     if use_egress_proxy and _will_engage_audit:

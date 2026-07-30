@@ -107,6 +107,46 @@ _LOG_LINE_RE = re.compile(
 )
 
 
+# Live-escalation: credential-looking path fragments. Mirrors
+# core/sandbox/triage.py's `_CREDENTIAL_PATH_PATTERNS` — duplicated
+# rather than imported (triage.py isn't otherwise a dependency of this
+# module) but must be kept in sync by hand so the live stderr notice
+# here and triage.py's post-hoc `credential_path_touch` signal agree
+# on what counts.
+#
+# Unlike Linux's escape-primitive syscall set (ptrace, bpf, keyctl,
+# io_uring_*, ...), there is no macOS/SBPL analogue worth inventing
+# here: non-file/network SBPL actions (mach-lookup, process-*,
+# iokit-open, sysctl-*, ...) all collapse to the generic "seccomp"
+# bucket in `_action_to_type` below with no established HIGH-severity
+# subset — fabricating one would be an ungrounded judgment call.
+# Network-level live escalation (resolved_ip_screened / host_recon) is
+# already covered platform-wide by core/sandbox/proxy.py, which both
+# platforms share. Credential-path touches on file-read/file-write
+# records are the one live signal this platform's audit stream can
+# attribute meaningfully on its own.
+_CREDENTIAL_PATH_PATTERNS = (
+    ".ssh", "id_rsa", "id_ed25519", ".aws/credentials", ".aws/config",
+    ".netrc", ".git-credentials", "/etc/shadow", "/etc/gshadow",
+    ".config/raptor", ".npmrc", ".pypirc", ".docker/config.json",
+    ".kube/config", ".gnupg", "credentials.json", ".env",
+)
+
+
+def _announce_credential_path_touch(path: str, pid: int) -> None:
+    """Best-effort immediate stderr banner — mirrors
+    core.sandbox.tracer._announce_escape_primitive's use of raw
+    os.write(2, ...) so it survives redirected/odd stdio state."""
+    try:
+        os.write(2, (
+            f"RAPTOR sandbox ALERT: credential-looking path touched: "
+            f"'{path}' (pid={pid}). See sandbox-triage.json at run end "
+            f"for full context.\n"
+        ).encode("ascii", errors="replace"))
+    except OSError:
+        pass
+
+
 # Map SBPL action prefixes to the RAPTOR sandbox-summary type taxonomy
 # (matches Linux tracer's _NAME_TO_TYPE mapping).
 def _action_to_type(action: str) -> str:
@@ -218,6 +258,12 @@ class LogStreamer:
         # Lazily-opened directory fd for openat(). See
         # _append_record_locked for the TOCTOU rationale.
         self._dirfd: Optional[int] = None
+        # Live-escalation dedup: paths already announced to stderr
+        # this run, so a target repeatedly touching the same
+        # credential-looking path doesn't spam the operator's
+        # terminal. One banner per distinct path per run — mirrors
+        # tracer.py's per-syscall-name dedup.
+        self._escalated_paths: set = set()
 
     def start(self) -> None:
         """Spawn `log stream` filtered to sandbox kext events, gate
@@ -440,6 +486,21 @@ class LogStreamer:
 
         return seen
 
+    def _maybe_escalate_credential_path(self, record: dict) -> None:
+        """Live stderr escalation for credential-looking path touches.
+        Pulled out of `_read_loop` as its own method purely so tests
+        can exercise it directly against a synthetic `record` dict
+        without needing a real `log stream` subprocess."""
+        path = record.get("path")
+        if (path
+                and record.get("type") in ("read", "write")
+                and path not in self._escalated_paths
+                and not _audit_budget.live_escalation_disabled()
+                and any(pattern in path
+                        for pattern in _CREDENTIAL_PATH_PATTERNS)):
+            self._escalated_paths.add(path)
+            _announce_credential_path_touch(path, record["target_pid"])
+
     def _read_loop(self) -> None:
         """Read ndjson lines from `log stream`, parse, and append
         records to the JSONL. Robust to malformed lines (silently
@@ -481,6 +542,8 @@ class LogStreamer:
                 #       before its associated record without another
                 #       writer slipping a record in between.
                 try:
+                    self._maybe_escalate_credential_path(record)
+
                     with self._append_lock:
                         decision, marker = self._budget.evaluate(
                             record["syscall"], record["target_pid"],

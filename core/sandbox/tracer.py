@@ -166,6 +166,50 @@ _DENIALS_FILENAME = ".sandbox-denials.jsonl"
 # doesn't misinterpret observe records as enforcement events.
 _OBSERVE_FILENAME = ".sandbox-observe.jsonl"
 
+# Live-escalation: syscalls that, if denied, indicate a sandbox-escape
+# ATTEMPT rather than ordinary "tool needed something the profile didn't
+# allow" noise. Mirrors core/sandbox/triage.py's
+# `_ESCAPE_PRIMITIVE_SYSCALLS` (verified against seccomp.py's
+# _SECCOMP_BLOCK_ALWAYS + _SECCOMP_BLOCK_UNLESS_DEBUG) — duplicated
+# rather than imported so the tracer's hot per-syscall-event loop never
+# pulls in triage.py's json/summary/proxy import chain. Keep the two
+# sets in sync by hand; triage.py's post-hoc `escape_primitive_denied`
+# signal and this live stderr notice are meant to fire on the same set.
+#
+# Only reachable when audit mode is engaged (this whole module is a
+# `--audit`-only subprocess — see module docstring). In plain
+# enforcement mode the kernel ERRNOs these syscalls in-kernel with no
+# tracer attached at all, so there is no live per-syscall signal to
+# escalate; the operator only learns "some seccomp denial happened,
+# identity unknown" post-hoc via observe.py's exit-code heuristic (see
+# triage.py's `seccomp_denied_unattributed`, LOW severity). That's an
+# existing, unrelated limitation — not something this change addresses.
+_LIVE_ESCALATE_SYSCALLS = frozenset({
+    "keyctl", "add_key", "request_key", "bpf", "userfaultfd",
+    "perf_event_open", "io_uring_setup", "io_uring_enter",
+    "io_uring_register", "pidfd_getfd", "kcmp",
+    "open_by_handle_at", "name_to_handle_at",
+    "ptrace", "process_vm_readv", "process_vm_writev",
+})
+
+
+def _announce_escape_primitive(name: str, pid: int) -> None:
+    """Best-effort immediate stderr banner for a live escape-primitive
+    syscall denial. Never raises — mirrors the existing global-cap
+    stderr notice's use of raw `os.write(2, ...)` a few lines below,
+    which survives even if stdio has been redirected/closed oddly in
+    the sandboxed child's environment.
+    """
+    try:
+        os.write(2, (
+            f"RAPTOR sandbox ALERT: escape-primitive syscall "
+            f"'{name}' denied (pid={pid}). This is consistent with a "
+            f"sandbox-escape ATTEMPT, not ordinary tool denial noise. "
+            f"See sandbox-triage.json at run end for full context.\n"
+        ).encode("ascii", errors="replace"))
+    except OSError:
+        pass
+
 
 def _resolve_output_filename(observe_mode: bool) -> str:
     """Pick the JSONL filename for tracer records.
@@ -1226,6 +1270,12 @@ def trace(target_pid: int, run_dir: Path,
     )
     budget = _audit_budget_mod.AuditBudget(global_cap=_budget_override)
 
+    # Live-escalation dedup: syscall names already announced to stderr
+    # this run, so a target retrying the same denied syscall doesn't
+    # spam the operator's terminal. One banner per distinct
+    # escape-primitive syscall per run.
+    _escalated_syscalls: set = set()
+
     # Set of currently-traced PIDs. Starts with the original target;
     # grows when fork/vfork/clone events fire (kernel auto-attaches
     # the new child); shrinks when each tracee exits. Loop terminates
@@ -1292,6 +1342,7 @@ def trace(target_pid: int, run_dir: Path,
             output_filename=_filename,
             mode_field=_mode_field,
             observe_nonce=_observe_nonce,
+            escalated_syscalls=_escalated_syscalls,
         )
 
     # End-of-run summary record so the sandbox-summary aggregator
@@ -1322,6 +1373,7 @@ def _handle_waitpid_event(
     output_filename: str = _DENIALS_FILENAME,
     mode_field: str = "audit",
     observe_nonce: Optional[str] = None,
+    escalated_syscalls: Optional[set] = None,
     # Injection points so tests can substitute synthetic helpers
     # without forking real children. Defaults are the production
     # implementations; tests pass mocks.
@@ -1514,6 +1566,13 @@ def _handle_waitpid_event(
                 # signal is exactly what the operator wants.
 
             if should_log:
+                if (name in _LIVE_ESCALATE_SYSCALLS
+                        and escalated_syscalls is not None
+                        and name not in escalated_syscalls
+                        and not audit_budget.live_escalation_disabled()):
+                    escalated_syscalls.add(name)
+                    _announce_escape_primitive(name, wpid)
+
                 decision, marker = budget.evaluate(name, wpid)
                 if marker is not None:
                     _write_record_dict(run_dir, marker,

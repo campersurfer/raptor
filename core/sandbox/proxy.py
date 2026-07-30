@@ -73,6 +73,7 @@ import asyncio
 import atexit
 import ipaddress
 import logging
+import os
 import socket
 import threading
 import time
@@ -85,7 +86,19 @@ from typing import Iterable, List, Optional, Set, Tuple
 # request.
 from core.security.log_sanitisation import has_nonprintable
 
+from . import audit_budget
+
 logger = logging.getLogger(__name__)
+
+
+def _stderr_write(message: str) -> None:
+    """Best-effort immediate stderr write for live escalation banners
+    — raw os.write(2, ...) so it survives redirected/odd stdio state.
+    Mirrors core.sandbox.tracer._announce_escape_primitive."""
+    try:
+        os.write(2, message.encode("ascii", errors="replace"))
+    except OSError:
+        pass
 
 # Connection bounds — per-tunnel and aggregate. Tunable via EgressProxy
 # constructor kwargs but the defaults are deliberately conservative.
@@ -188,6 +201,22 @@ _PROXY_EVENT_RESULTS = frozenset({
     # Unhandled exception in tunnel handler
     "handler_error",
 })
+
+# Live-escalation: default distinct-denied-host threshold before the
+# proxy prints an immediate stderr recon-pattern banner. Mirrors
+# core/sandbox/triage.py's `DEFAULT_HOST_RECON_THRESHOLD` — duplicated
+# rather than imported (triage.py depends on this module already;
+# importing back would be circular) but must be kept in sync by hand
+# so the live notice here and triage.py's post-hoc `host_recon_pattern`
+# signal agree on what counts as recon.
+#
+# Scoped to the whole EgressProxy singleton, not per registered
+# sandbox: `_record()`'s fan-out (see its docstring) has no per-caller
+# attribution by design — "the proxy is process-level, no per-sandbox
+# mapping at this layer" — so a per-token distinct-host counter would
+# conflate concurrently-registered sandboxes rather than isolate them.
+# A process-wide counter is the honest granularity this layer supports.
+DEFAULT_HOST_RECON_THRESHOLD = 5
 
 # Thread-safe singleton. `get_proxy()` is the sole entry point.
 _lock = threading.Lock()
@@ -478,6 +507,22 @@ class EgressProxy:
         self._sandbox_labels: dict = {}
         self._next_token = 0
         self._buffer_lock = threading.Lock()
+        # Live-escalation state (see DEFAULT_HOST_RECON_THRESHOLD above
+        # and _record()'s escalation checks below). `_live_recon_hosts`
+        # accumulates distinct denied hosts for the life of this proxy
+        # instance (roughly one RAPTOR run — see module docstring on
+        # in-process daemon-thread lifetime); `_live_recon_escalated`
+        # makes the recon banner one-shot per instance rather than
+        # re-firing on every denial past the threshold.
+        # `_live_recon_threshold` starts at the default and can only be
+        # tightened (never loosened) by register_sandbox(
+        # host_recon_threshold=...) — same "callers can widen/tighten,
+        # never accidentally weaken a sibling's setting" pattern as
+        # update_idle_timeout's max-semantics above.
+        self._live_recon_hosts: Set[str] = set()
+        self._live_recon_escalated = False
+        self._live_recon_threshold = DEFAULT_HOST_RECON_THRESHOLD
+        self._live_resolved_ip_escalated: Set[str] = set()
         # Atomic snapshot of the buffer-list refs for the hot path.
         # `_record` is called once per CONNECT and used to acquire
         # `_buffer_lock` to iterate `_sandbox_buffers.values()`. Under
@@ -722,7 +767,8 @@ class EgressProxy:
         with self._hosts_lock:
             return host.lower() in self._allowed_hosts
 
-    def register_sandbox(self, caller_label: Optional[str] = None) -> int:
+    def register_sandbox(self, caller_label: Optional[str] = None,
+                         host_recon_threshold: Optional[int] = None) -> int:
         """Register an active sandbox and receive a token.
 
         While registered, every tunnel event the proxy records is
@@ -731,6 +777,19 @@ class EgressProxy:
         so post-mortem filtering can separate, e.g., claude-sub-agent
         traffic from codeql-pack-download even when they share the
         proxy singleton.
+
+        `host_recon_threshold` (optional): a per-profile override for
+        the live host-recon escalation threshold (see
+        DEFAULT_HOST_RECON_THRESHOLD). Min-semantics, not
+        last-write-wins: the proxy singleton may serve multiple
+        concurrently-registered sandboxes with different profiles, and
+        the live recon counter is process-wide (not per-token — see
+        DEFAULT_HOST_RECON_THRESHOLD's docstring), so the most
+        sensitive currently-registered profile governs. A caller
+        passing a looser threshold than what's already registered
+        never weakens an already-tighter sibling's setting — mirrors
+        update_idle_timeout's max-semantics, just inverted (min instead
+        of max) because tighter is the more-sensitive direction here.
 
         Must be paired with `unregister_sandbox(token)` — typically via
         try/finally around the sandboxed subprocess invocation. The
@@ -744,6 +803,9 @@ class EgressProxy:
             self._sandbox_buffers_snapshot = tuple(
                 self._sandbox_buffers.values()
             )
+            if host_recon_threshold is not None:
+                self._live_recon_threshold = min(
+                    self._live_recon_threshold, host_recon_threshold)
             return token
 
     def unregister_sandbox(self, token: int) -> List[dict]:
@@ -812,6 +874,53 @@ class EgressProxy:
         """
         for buf in self._sandbox_buffers_snapshot:
             buf.append(event)
+        self._live_escalate(event)
+
+    def _live_escalate(self, event: dict) -> None:
+        """Immediate stderr escalation for HIGH-severity proxy signals,
+        ahead of the run-end sandbox-triage.json classification —
+        mirrors core.sandbox.tracer._announce_escape_primitive /
+        seatbelt_audit._announce_credential_path_touch. Print-only, no
+        change to the CONNECT decision already made by gates 1/2 above.
+
+        Called from `_record()` on the proxy's single event-loop
+        thread — no lock needed for the dedup-state mutations below,
+        same reasoning as `_record`'s own lock-free hot path.
+        """
+        if audit_budget.live_escalation_disabled():
+            return
+        result = event.get("result")
+
+        if result == "denied_resolved_ip":
+            resolved_ip = event.get("resolved_ip")
+            if (resolved_ip
+                    and resolved_ip not in self._live_resolved_ip_escalated):
+                self._live_resolved_ip_escalated.add(resolved_ip)
+                _stderr_write(
+                    f"RAPTOR sandbox ALERT: proxy CONNECT resolved to a "
+                    f"blocked IP range: {resolved_ip} (host="
+                    f"{event.get('host')!r}). Consistent with an "
+                    f"SSRF/DNS-rebinding/cloud-metadata probing attempt, "
+                    f"not ordinary allowlist noise. See sandbox-"
+                    f"triage.json at run end for full context.\n"
+                )
+            return
+
+        if result in ("denied_host", "would_deny_host"):
+            host = event.get("host")
+            if not host or self._live_recon_escalated:
+                return
+            self._live_recon_hosts.add(host)
+            if len(self._live_recon_hosts) >= self._live_recon_threshold:
+                self._live_recon_escalated = True
+                _stderr_write(
+                    f"RAPTOR sandbox ALERT: {len(self._live_recon_hosts)} "
+                    f"distinct hosts denied by the egress proxy "
+                    f"(threshold={self._live_recon_threshold}) — "
+                    f"consistent with a host-recon/C2-discovery pattern, "
+                    f"not a single missing allowlist entry. See sandbox-"
+                    f"triage.json at run end for full context.\n"
+                )
 
     async def _cached_getaddrinfo(self, host: str, port: int) -> list:
         """Resolve `host:port` with a TTL cache.
