@@ -1663,7 +1663,7 @@ class TestResolveGateDemoted:
         r.findings = sum(1 for o in outcomes if o.status == "finding")
         return r
 
-    def test_g2_demoted_resolves_to_clean(self, tmp_path: Path):
+    def test_g2_demoted_resolves_to_dark_without_tool_coverage(self, tmp_path: Path):
         target = tmp_path / "target"
         target.mkdir()
         (target / "safe.c").write_text(
@@ -1685,11 +1685,10 @@ class TestResolveGateDemoted:
         )
         result = self._make_result(outcome)
         _resolve_gate_demoted(result, config, sarif_cache=None, checklist=checklist)
-        assert result.outcomes[0].status == "clean"
+        assert result.outcomes[0].status == "dark"
         assert result.suspicious == 0
-        assert result.clean == 1
 
-    def test_self_contradiction_resolves_to_clean(self, tmp_path: Path):
+    def test_self_contradiction_resolves_to_dark_without_tool_coverage(self, tmp_path: Path):
         target = tmp_path / "target"
         target.mkdir()
         (target / "safe.c").write_text(
@@ -1711,9 +1710,8 @@ class TestResolveGateDemoted:
         )
         result = self._make_result(outcome)
         _resolve_gate_demoted(result, config, sarif_cache=None, checklist=checklist)
-        assert result.outcomes[0].status == "clean"
+        assert result.outcomes[0].status == "dark"
         assert result.suspicious == 0
-        assert result.clean == 1
 
     def test_stays_suspicious_with_prefilter_hit(self, tmp_path: Path):
         target = tmp_path / "target"
