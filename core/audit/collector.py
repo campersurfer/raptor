@@ -77,7 +77,7 @@ def append_journal_for_outcome(
         hypotheses_list = outcome.hypotheses
     elif getattr(outcome, "hypothesis", None):
         hypotheses_list = [
-            {"claim": outcome.hypothesis, "status": "unknown"},
+            {"mechanism": outcome.hypothesis, "confidence": "unknown"},
         ]
 
     evidence_tools: list[str] = []

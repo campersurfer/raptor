@@ -137,9 +137,6 @@ def merge_outcomes(original: Any, refined: Any) -> Any:
     if orig_status == "finding" and ref_status == "clean":
         return original
 
-    if orig_status == "suspicious" and ref_status == "finding":
-        return refined
-
     if ref_status == "finding" and not refined_tool and original_tool:
         refined.evidence_tool = original_tool
 

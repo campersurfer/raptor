@@ -772,11 +772,13 @@ def make_review_fn(
             )
             status = "suspicious"
 
+        counter_escalated = False
         if status == "clean" and escalate_clean:
             counter = result.get("counter_hypothesis", "")
             if _counter_hypothesis_is_compelling(counter):
                 status = "suspicious"
                 result["status"] = status
+                counter_escalated = True
                 snippet = counter[:120]
                 if len(counter) > 120:
                     snippet += "…"
@@ -791,7 +793,7 @@ def make_review_fn(
             if isinstance(h, dict) and h.get("mechanism")
         ]
 
-        if status == "suspicious" and hypotheses:
+        if status == "suspicious" and hypotheses and not counter_escalated:
             all_refuted = all(
                 (h.get("confidence") or "").lower() == "refuted"
                 for h in hypotheses
