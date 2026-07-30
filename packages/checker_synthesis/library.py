@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -172,6 +173,7 @@ class RuleLibrary:
         self._dir = Path(library_dir) if library_dir else _DEFAULT_LIBRARY_DIR
         self._manifest_path = self._dir / "manifest.json"
         self._entries: Optional[List[LibraryEntry]] = None
+        self._lock = threading.Lock()
 
     @property
     def library_dir(self) -> Path:
@@ -420,54 +422,56 @@ class RuleLibrary:
         by body hash — returns the existing entry if the rule body already
         exists.
         """
-        self._ensure_dirs()
-        bh = _body_hash(body)
+        with self._lock:
+            self._ensure_dirs()
+            bh = _body_hash(body)
 
-        existing = self.get_by_body_hash(bh)
-        if existing is not None:
-            return existing
+            existing = self.get_by_body_hash(bh)
+            if existing is not None:
+                return existing
 
-        ext = _rule_extension(engine)
-        rel_path = f"{engine}/{rule_id}{ext}"
-        dest = self._dir / rel_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomically(dest, body, tmp_prefix=".rule-")
+            ext = _rule_extension(engine)
+            rel_path = f"{engine}/{rule_id}{ext}"
+            dest = self._dir / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            write_text_atomically(dest, body, tmp_prefix=".rule-")
 
-        entry = LibraryEntry(
-            rule_id=rule_id,
-            engine=engine,
-            cwe=cwe,
-            body_hash=bh,
-            rule_path=rel_path,
-            rationale=rationale,
-            seed_file=seed_file,
-            seed_function=seed_function,
-            dual_control=False,
-            promoted_at=timestamp,
-            tp_rate=0.0,
-            fp_rate=0.0,
-            total_variants=0,
-            source=source,
-        )
-        self._load().append(entry)
-        self._save()
-        return entry
+            entry = LibraryEntry(
+                rule_id=rule_id,
+                engine=engine,
+                cwe=cwe,
+                body_hash=bh,
+                rule_path=rel_path,
+                rationale=rationale,
+                seed_file=seed_file,
+                seed_function=seed_function,
+                dual_control=False,
+                promoted_at=timestamp,
+                tp_rate=0.0,
+                fp_rate=0.0,
+                total_variants=0,
+                source=source,
+            )
+            self._load().append(entry)
+            self._save()
+            return entry
 
     def record_match(self, rule_id: str, is_tp: bool) -> None:
         """Record a single match result (simpler API than update()).
 
         Increments total_variants if TP, recomputes rates.
         """
-        entries = self._load()
-        entry = next((e for e in entries if e.rule_id == rule_id), None)
-        if entry is None:
-            return
-        entry.total_matches += 1
-        if is_tp:
-            entry.total_variants += 1
-        entry.tp_rate = entry.total_variants / entry.total_matches
-        entry.fp_rate = 1.0 - entry.tp_rate
-        self._save()
+        with self._lock:
+            entries = self._load()
+            entry = next((e for e in entries if e.rule_id == rule_id), None)
+            if entry is None:
+                return
+            entry.total_matches += 1
+            if is_tp:
+                entry.total_variants += 1
+            entry.tp_rate = entry.total_variants / entry.total_matches
+            entry.fp_rate = 1.0 - entry.tp_rate
+            self._save()
 
     def retire_low_precision(
         self, *, threshold: float = 0.3, min_evidence: int = 5,

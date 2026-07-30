@@ -460,7 +460,8 @@ def review_one_function(
             evidence_tool="triage:classifier",
         )
         outcome.line = gap.get("line_start", 0)
-        result.prefilter_skipped += 1
+        with result._lock:
+            result.prefilter_skipped += 1
         try:
             if collector is not None:
                 collector.submit(outcome, gap)
@@ -544,7 +545,8 @@ def review_one_function(
                 evidence_tool=f"sage:recall:{prior_tool}" if prior_tool else "sage:recall",
             )
             outcome.line = gap.get("line_start", 0)
-            result.prefilter_skipped += 1
+            with result._lock:
+                result.prefilter_skipped += 1
             try:
                 if collector is not None:
                     collector.submit(outcome, gap)
@@ -765,7 +767,8 @@ def review_one_function(
             ctx["negative_space"] = ns_findings
             evidence_key = f"{gap['file']}:{gap['name']}"
             if evidence_key in evidence_index:
-                evidence_index[evidence_key].negative_space = ns_findings
+                with shared._evidence_lock:
+                    evidence_index[evidence_key].negative_space = ns_findings
 
     func_name = gap.get("name", "")
     func_file = gap.get("file", "")
@@ -791,7 +794,8 @@ def review_one_function(
             ctx["codeql_no_alerts"] = True
 
     if config.enable_session_context and session_observations:
-        ctx["session_observations"] = list(session_observations)
+        with shared._observations_lock:
+            ctx["session_observations"] = list(session_observations)
     if project_learnings:
         ctx["project_context"] = project_learnings
     if fp_patterns:
@@ -833,7 +837,8 @@ def review_one_function(
                 evidence_tool="prefilter:skip",
             )
             outcome.line = gap.get("line_start", 0)
-            result.prefilter_skipped += 1
+            with result._lock:
+                result.prefilter_skipped += 1
             try:
                 if collector is not None:
                     collector.submit(outcome, gap)
@@ -850,7 +855,8 @@ def review_one_function(
             return outcome
 
         if pf_result.hits:
-            result.prefilter_hits += len(pf_result.hits)
+            with result._lock:
+                result.prefilter_hits += len(pf_result.hits)
             if not config.blind_first_pass:
                 ctx["prefilter_results"] = pf_result
 
@@ -950,7 +956,8 @@ def review_one_function(
                         revised = review_fn(cc_ctx, config)
                         if revised.status != "clean":
                             outcome = _merge_clean(outcome, revised)
-                            result.clean_check_rescues += 1
+                            with result._lock:
+                                result.clean_check_rescues += 1
                             logger.info(
                                 "clean-check rescue %s:%s → %s",
                                 gap["file"], gap["name"],
@@ -992,11 +999,12 @@ def review_one_function(
             joern_server=joern_server,
         )
         if outcome.evidence_tool:
-            _inject_discovered_evidence(
-                discovered_evidence,
-                outcome.file, outcome.function,
-                outcome.evidence_tool, outcome.hypothesis,
-            )
+            with shared._evidence_lock:
+                _inject_discovered_evidence(
+                    discovered_evidence,
+                    outcome.file, outcome.function,
+                    outcome.evidence_tool, outcome.hypothesis,
+                )
 
     # ── Refinement ────────────────────────────────────────────────────
     if config.max_refinements > 0:
@@ -1019,7 +1027,8 @@ def review_one_function(
                 and not _check_budget(config, start_time, result)
             ):
                 ref_round += 1
-                result.refinement_rounds += 1
+                with result._lock:
+                    result.refinement_rounds += 1
                 tool_results = collect_tool_results(
                     outcome, evidence_index=evidence_index,
                 )
@@ -1128,7 +1137,8 @@ def review_one_function(
                 for hit in synth.hits:
                     hit.setdefault("priority_score", 0.8)
                     shared.synthesis_queue.append(hit)
-                result.synthesis_amplified += len(synth.hits)
+                with result._lock:
+                    result.synthesis_amplified += len(synth.hits)
                 if checker_library and synth.rule_id:
                     checker_library.add_rule(
                         rule_id=synth.rule_id,
@@ -1180,7 +1190,8 @@ def review_one_function(
     if live_classifications is not None and outcome.review_result:
         try:
             from .live_classifications import extract_from_outcome as _extract_live
-            _extract_live(outcome, gap, live_classifications)
+            with shared._live_lock:
+                _extract_live(outcome, gap, live_classifications)
         except Exception:
             logger.debug(
                 "live classification extraction failed for %s:%s",
@@ -1229,10 +1240,11 @@ def review_one_function(
             layer_disagreements.append(disagree)
 
     if config.enable_session_context and outcome.review_result:
-        _accumulate_observations(
-            session_observations, outcome, gap,
-            sweep_pre_status=pre_sweep_status,
-        )
+        with shared._observations_lock:
+            _accumulate_observations(
+                session_observations, outcome, gap,
+                sweep_pre_status=pre_sweep_status,
+            )
 
     if (
         config.critique_interval > 0

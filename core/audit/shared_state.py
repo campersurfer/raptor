@@ -148,6 +148,7 @@ class SharedState:
     # Running list of per-review observations used to build session context
     # for subsequent reviews.
     session_observations: list[dict[str, str]] = field(default_factory=list)
+    _observations_lock: threading.Lock = field(default_factory=threading.Lock)
 
     # Evidence discovered at runtime by proactive tool dispatching; keyed by
     # "file:function".
@@ -181,6 +182,7 @@ class SharedState:
     # Live-discovered sinks, sanitizers, and entry points accumulated
     # from LLM review outcomes during the loop.
     live_classifications: LiveClassifications | None = None  # type: ignore[type-arg]
+    _live_lock: threading.Lock = field(default_factory=threading.Lock)
 
     # ------------------------------------------------------------------
     # Factory
