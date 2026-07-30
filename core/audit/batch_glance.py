@@ -141,10 +141,22 @@ def make_batch_review_fn(
 
         results = parse_batch_response(raw_text, contexts)
 
+        # Build a keyed lookup from LLM results by file:function.
+        # Positional fallback is intentionally omitted — if the LLM
+        # reorders items, index-based matching misattributes verdicts.
+        # Unmatched functions get status="error" and fall back to
+        # individual review.
+        results_by_key: dict[str, dict[str, Any]] = {}
+        for r in results:
+            if isinstance(r, dict) and r.get("file") and r.get("function"):
+                rkey = f"{r['file']}:{r['function']}"
+                results_by_key[rkey] = r
+
         outcomes: list[ReviewOutcome] = []
         for i, ctx in enumerate(contexts):
-            if i < len(results) and isinstance(results[i], dict):
-                r = results[i]
+            ckey = f"{ctx['file']}:{ctx['function']}"
+            r = results_by_key.get(ckey)
+            if r is not None:
                 status = r.get("status", "suspicious")
                 if status not in ("clean", "suspicious"):
                     logger.warning(

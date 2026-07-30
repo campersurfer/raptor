@@ -146,6 +146,8 @@ _RECEIPT_MAP: Dict[str, tuple] = {
     "dark_verify:refuted": (EvidenceSource.DARK_VERIFY, "refuted by executed dark witness"),
     "dark_verify": (EvidenceSource.DARK_VERIFY, "dark verification witness"),
     "compilation": (EvidenceSource.COMPILATION, "confirmed by compilation and execution"),
+    "critique": (EvidenceSource.PREFILTER, "confirmed by critique prefilter"),
+    "sarif_cache": (EvidenceSource.SEMGREP, "matched prior SARIF result"),
 }
 
 _CONFIDENCE_PRIORITY: Dict[Confidence, int] = {
