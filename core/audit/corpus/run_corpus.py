@@ -461,8 +461,12 @@ def _run_probe(
     from core.audit.strategy import infer_strategies, primers_for_strategies
     from core.llm.client import LLMClient
     from core.llm.concurrency import run_parallel, derive_max_workers
+    from core.llm.log_quiet import quiet_noisy_loggers
+
+    quiet_noisy_loggers()
 
     client = LLMClient()
+    client.config.max_cost_per_scan = 100.0
     model_config = None
     if model:
         try:
@@ -589,10 +593,12 @@ def _run_probe(
             )
             result = response.result if hasattr(response, "result") else {}
             cost = response.cost if hasattr(response, "cost") else 0.0
+            cached = getattr(response, "cached", False)
         except Exception as exc:
             logger.error("probe failed for %s: %s", label.function_id, exc)
             result = {"status": "error"}
             cost = 0.0
+            cached = False
         dur = time.monotonic() - t0
 
         actual = result.get("status", "error")
@@ -609,11 +615,12 @@ def _run_probe(
                          "dormant": "~", "suspicious": "?",
                          "error": "x"}.get(actual, "?")
         match_marker = " " if match else " MISS"
+        cache_tag = " [cached]" if cached else ""
         print(f"  [{n}/{total}] {label.function_id} "
               f"[{strat_str}] "
               f"expected={expected} got={actual}{status_marker}"
               f"{match_marker} "
-              f"(${cost:.4f}, {dur:.1f}s)",
+              f"(${cost:.4f}, {dur:.1f}s){cache_tag}",
               flush=True)
 
         return {
@@ -631,12 +638,13 @@ def _run_probe(
             "model": model,
             "cost_usd": cost,
             "duration_s": dur,
+            "cached": cached,
         }
 
-    model_name = model_config.model_name if model_config else model
-    workers = derive_max_workers(model_name) if model_name else 1
-    logger.info("probe: %d items, %d workers (model=%s)",
-                len(llm_items), workers, model_name)
+    model_name = model_config.model_name if model_config else (model or "default")
+    workers = derive_max_workers(model_name)
+    logger.debug("probe: %d items, %d workers (model=%s)",
+                 len(llm_items), workers, model_name)
 
     llm_results = run_parallel(
         llm_items, _probe_one,
@@ -796,9 +804,10 @@ def _format_detail_table(results: List[Dict[str, Any]]) -> str:
         if len(evidence) > 24:
             evidence = evidence[:21] + "..."
         cost = r.get("cost_usd", 0.0)
+        cached_tag = " (cached)" if r.get("cached") else ""
         lines.append(
             f"{fid:<45} {r['expected']:<10} {r['actual']:<12} "
-            f"{match_str:<6} {evidence:<25} ${cost:>6.4f}"
+            f"{match_str:<6} {evidence:<25} ${cost:>6.4f}{cached_tag}"
         )
     return "\n".join(lines)
 
@@ -817,6 +826,7 @@ def _format_summary(
     total_llm_s = sum(r.get("duration_s", 0.0) for r in results)
     matched = sum(1 for r in reviewed if r.get("match"))
     mismatched = [r for r in reviewed if not r.get("match")]
+    cached_count = sum(1 for r in results if r.get("cached"))
 
     lines = []
     lines.append("=" * 70)
@@ -825,6 +835,8 @@ def _format_summary(
     lines.append(f"  Labels: {len(results)}")
     if skipped_count:
         lines.append(f"  Skipped by mechanical gates: {skipped_count}")
+    if cached_count:
+        lines.append(f"  Cached: {cached_count}/{len(results)} (cost and duration reflect cache hits)")
     lines.append(f"  Matched: {matched}/{len(reviewed)}")
     lines.append(f"  Cost: ${total_cost:.4f}")
     lines.append(f"  Wall clock: {wall_s:.0f}s ({wall_s/60:.1f}m)")

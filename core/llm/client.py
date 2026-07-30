@@ -447,6 +447,7 @@ class LLMClient:
         self.providers: Dict[str, LLMProvider] = {}
         self.total_cost = 0.0
         self.request_count = 0
+        self.cache_hits = 0
         self.task_type_costs: Dict[str, float] = {}  # task_type → cumulative cost
         # Distinct models actually invoked during this client's lifetime,
         # keyed by (provider, alias, resolved, role) → call count. Feeds the
@@ -1357,6 +1358,7 @@ class LLMClient:
                 logger.debug("Using cached response for %s/%s", model_config.provider, model_config.model_name)
                 with self._stats_lock:
                     self.request_count += 1
+                    self.cache_hits += 1
                 return LLMResponse(
                     content=cached_content,
                     model=model_config.model_name,
@@ -1677,6 +1679,7 @@ class LLMClient:
                 )
                 with self._stats_lock:
                     self.request_count += 1
+                    self.cache_hits += 1
                 return StructuredResponse(
                     result=cached_result,
                     raw=cached_raw,
@@ -1934,11 +1937,14 @@ class LLMClient:
             provider_stats[key] = pstat
 
         with self._stats_lock:
-            return {
+            stats = {
                 "total_requests": self.request_count,
                 "total_cost": self.total_cost,
                 "budget_remaining": self.config.max_cost_per_scan - self.total_cost,
                 "providers": provider_stats,
                 "task_type_costs": dict(self.task_type_costs),
             }
+            if self.cache_hits:
+                stats["cache_hits"] = self.cache_hits
+            return stats
 
