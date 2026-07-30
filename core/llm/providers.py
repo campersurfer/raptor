@@ -2896,7 +2896,7 @@ class GeminiProvider(LLMProvider):
         normalized = _normalize_schema(schema)
         pydantic_model = _dict_schema_to_pydantic(normalized)
 
-        max_out = self.config.max_tokens
+        max_out = kwargs.pop("max_tokens", None) or self.config.max_tokens
         config_kwargs = {
             "temperature": kwargs.get("temperature", self.config.temperature),
             "max_output_tokens": max_out,
