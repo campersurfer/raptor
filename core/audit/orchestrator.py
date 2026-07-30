@@ -928,7 +928,9 @@ def review_one_function(
                             gap["file"], gap["name"], exc_info=True,
                         )
         except ImportError:
-            pass
+            logger.warning(
+                "refinement module unavailable — clean-check rescue disabled",
+            )
 
     # ── Sweep validation ──────────────────────────────────────────────
     pre_sweep_status = outcome.status
@@ -4770,8 +4772,9 @@ def _proactive_validate(
             sinks_for_cwe,
             smt_verb_for_cwe,
         )
+        _has_cwe_dispatch = True
     except ImportError:
-        return outcome
+        _has_cwe_dispatch = False
 
     evidence_tool = _sanitize_llm_et(
         review.get("evidence_tool") or outcome.evidence_tool or "",
@@ -4781,7 +4784,7 @@ def _proactive_validate(
 
     confirmed_tools = []
 
-    smt_verb = smt_verb_for_cwe(cwe)
+    smt_verb = smt_verb_for_cwe(cwe) if _has_cwe_dispatch else None
     if smt_verb and "smt" not in dispatched:
         try:
             source_text = ""
@@ -4809,7 +4812,7 @@ def _proactive_validate(
             if tier_counters:
                 _increment_tier_dict(tier_counters, "smt", "errors")
 
-    if joern_applicable(cwe) and "joern" not in dispatched:
+    if _has_cwe_dispatch and joern_applicable(cwe) and "joern" not in dispatched:
         sinks = sinks_for_cwe(cwe)
         pre_hit = False
         if sinks and evidence_index:
@@ -4832,7 +4835,7 @@ def _proactive_validate(
             elif tier_counters:
                 _increment_tier_dict(tier_counters, "joern", "refuted")
 
-    if "codeql" not in dispatched and config.codeql_db_path:
+    if _has_cwe_dispatch and "codeql" not in dispatched and config.codeql_db_path:
         sinks = sinks_for_cwe(cwe)
         if sinks:
             try:
@@ -5889,7 +5892,7 @@ def _resolve_gate_demoted(
             continue
 
         # Determine if the vulnerability class is tool-covered
-        class_covered = True
+        class_covered = False
         if available_tools is not None:
             try:
                 from .tool_coverage import is_class_covered
@@ -5901,8 +5904,8 @@ def _resolve_gate_demoted(
                     available_tools=available_tools,
                 )
             except Exception:
-                logger.debug("tool_coverage check failed for %s:%s",
-                             outcome.file, outcome.function, exc_info=True)
+                logger.warning("tool_coverage check failed for %s:%s",
+                               outcome.file, outcome.function, exc_info=True)
 
         if class_covered:
             resolved = ReviewOutcome(
