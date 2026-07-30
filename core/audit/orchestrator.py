@@ -3803,6 +3803,31 @@ def _sage_store_observation(text: str, kind: str, source: str) -> None:
         pass
 
 
+_MAX_OBSERVATION_LEN = 500
+
+
+def _sanitise_observation(text: str) -> str:
+    """Sanitise an LLM-generated observation before re-injection.
+
+    Observations flow into subsequent prompts.  A target with an
+    injection payload could influence the LLM to emit observations
+    that carry the payload forward.
+    """
+    from .prompt_defence import sanitise_for_prompt, scan_for_injection
+
+    cleaned = sanitise_for_prompt(text, content_type="comment")
+    if len(cleaned) > _MAX_OBSERVATION_LEN:
+        cleaned = cleaned[:_MAX_OBSERVATION_LEN] + "…"
+    warnings = scan_for_injection(cleaned, location="session_observation")
+    if warnings:
+        logger.warning(
+            "injection pattern in observation (dropped): %s",
+            cleaned[:80],
+        )
+        return ""
+    return cleaned
+
+
 def _accumulate_observations(
     session_observations: List[Dict[str, str]],
     outcome: ReviewOutcome,
@@ -3823,7 +3848,7 @@ def _accumulate_observations(
         if outcome.status == "finding" and _is_tool_confirmed(outcome.evidence_tool or ""):
             obs_text = (
                 f"[tool-confirmed] {outcome.evidence_tool} confirmed: "
-                f"{outcome.hypothesis}"
+                f"{_sanitise_observation(outcome.hypothesis or '')}"
             )
             session_observations.append({
                 "source": source,
@@ -3833,7 +3858,7 @@ def _accumulate_observations(
             _sage_store_observation(obs_text, "tool_confirmation", source)
         elif sweep_pre_status == "finding" and outcome.status == "suspicious":
             obs_text = (
-                f"[tool-refuted] hypothesis '{outcome.hypothesis}' "
+                f"[tool-refuted] hypothesis '{_sanitise_observation(outcome.hypothesis or '')}' "
                 f"was not confirmed by any mechanical tool — demoted"
             )
             session_observations.append({
@@ -3848,8 +3873,11 @@ def _accumulate_observations(
         return
     for obs in raw:
         if isinstance(obs, str) and len(obs) >= 10:
+            cleaned = _sanitise_observation(obs)
+            if not cleaned:
+                continue
             session_observations.append({
-                "source": source, "text": obs,
+                "source": source, "text": cleaned,
                 "kind": "llm_observation",
             })
 
