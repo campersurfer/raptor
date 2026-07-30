@@ -35,11 +35,14 @@ class SynthesisResult:
     origin_file: str
     origin_function: str
     hits: List[Dict[str, Any]] = field(default_factory=list)
+    cost_usd: float = 0.0
 
 
 def _build_llm_callable(config: Any):
     """Build a ``packages.checker_synthesis.LLMCallable`` from /audit's
-    LLM config. Returns None when no LLM is available."""
+    LLM config. Returns ``(callable, client)`` or None when no LLM is
+    available. The caller reads ``client.total_cost`` after synthesis to
+    feed the cost back into the budget tracker."""
     try:
         from core.llm.client import LLMClient
         from core.llm.task_types import TaskType
@@ -67,7 +70,7 @@ def _build_llm_callable(config: Any):
             logger.debug("checker_synthesis LLM call failed: %s", exc)
             return None
 
-    return _call
+    return _call, client
 
 
 def _seed_from_outcome(outcome: Any) -> Optional[Any]:
@@ -138,9 +141,11 @@ def synthesize_and_sweep(
     if seed is None:
         return None
 
-    llm_callable = _build_llm_callable(config)
-    if llm_callable is None:
+    llm_pair = _build_llm_callable(config)
+    if llm_pair is None:
         return None
+    llm_callable, llm_client = llm_pair
+    cost_before = llm_client.total_cost
 
     out_dir = getattr(config, "out_dir", None)
     target_path = getattr(config, "target_path", None)
@@ -267,4 +272,5 @@ def synthesize_and_sweep(
         origin_file=file_path,
         origin_function=function,
         hits=new_hits,
+        cost_usd=llm_client.total_cost - cost_before,
     )

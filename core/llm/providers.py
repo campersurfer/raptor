@@ -41,6 +41,8 @@ from .tool_use.types import (
 
 logger = get_logger()
 
+_ZERO_PRICE_WARNED: set[str] = set()
+
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
 _CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)-(\d+)")
 
@@ -309,6 +311,14 @@ class LLMProvider(ABC):
         if response.cost_usd is not None:
             return response.cost_usd
         in_per_m, out_per_m = self.price_per_million()
+        if in_per_m == 0.0 and out_per_m == 0.0 and (response.input_tokens or response.output_tokens):
+            if self.config.model_name not in _ZERO_PRICE_WARNED:
+                _ZERO_PRICE_WARNED.add(self.config.model_name)
+                logger.warning(
+                    "no pricing for model %s — cost tracking disabled, "
+                    "max_cost_usd budget cap will not trigger",
+                    self.config.model_name,
+                )
         return (
             response.input_tokens * in_per_m
             + response.output_tokens * out_per_m

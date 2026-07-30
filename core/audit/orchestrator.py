@@ -1133,6 +1133,12 @@ def review_one_function(
                 outcome, config, seen_keys,
                 synthesis_count=result.synthesis_amplified,
             )
+            if synth and synth.cost_usd:
+                result.cost_tracker.record_call(
+                    "checker_synthesis", cost_usd=synth.cost_usd,
+                )
+                with result._lock:
+                    result.total_cost_usd += synth.cost_usd
             if synth and synth.hits:
                 for hit in synth.hits:
                     hit.setdefault("priority_score", 0.8)
@@ -2333,6 +2339,7 @@ def _run_audit_body(
         sarif_cache=sarif_cache,
         domain_model=domain_model,
         audit_log=audit_log,
+        start_time=start_time,
     )
 
     # --- Study loop: enrich domain model, then re-review affected functions ---
@@ -3694,6 +3701,9 @@ def _retry_error_outcomes(
         return result
 
     for outcome in error_outcomes:
+        if _check_budget(config, start_time, result):
+            break
+
         try:
             ctx = _build_context(
                 config,
@@ -6133,6 +6143,7 @@ def _review_flow_traces(
     sarif_cache: Optional[SarifCache] = None,
     domain_model=None,
     audit_log: Optional[list] = None,
+    start_time: float = 0.0,
 ) -> OrchestratorResult:
     """Post-loop pass: review entire source→sink flow traces as a unit.
 
@@ -6157,6 +6168,9 @@ def _review_flow_traces(
     import json as _json
     traces_reviewed = 0
     for trace_file in trace_files[:10]:
+        if start_time and _check_budget(config, start_time, result):
+            break
+
         try:
             trace = _json.loads(trace_file.read_text())
         except (OSError, _json.JSONDecodeError):
