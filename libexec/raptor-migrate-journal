@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -40,6 +39,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 # ─── trust-marker check (do not import; inline by design) ───
+import os  # noqa: E402
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(

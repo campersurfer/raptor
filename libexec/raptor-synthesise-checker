@@ -9,11 +9,11 @@ Usage:
       --lines <start>-<end> --cwe <id> --reasoning <text> \
       --repo <repo_root> [--out <dir>] [--no-refine] [--json]
 """
-import os
 import sys
 from pathlib import Path
 
 # ─── trust-marker check (do not import; inline by design) ───
+import os  # noqa: E402
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
