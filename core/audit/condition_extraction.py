@@ -385,15 +385,25 @@ def _determine_polarity(
     consequence = None
     alternative = None
 
-    for child in cond_node.children:
+    children = list(cond_node.children)
+    for i, child in enumerate(children):
         if child.type in ("block", "compound_statement", "consequence",
                           "statement_block", "then", "body"):
             if consequence is None:
                 consequence = child
+            elif alternative is None:
+                alternative = child
             continue
-        if child.type in ("else_clause", "alternative", "else",
-                          "else_statement"):
+        if child.type in ("else_clause", "alternative", "else_statement"):
             alternative = child
+            continue
+        if child.type == "else":
+            # Bare "else" keyword — skip punctuation/comments to find body
+            for j in range(i + 1, len(children)):
+                sib = children[j]
+                if sib.type not in ("comment", "{", "}"):
+                    alternative = sib
+                    break
             continue
         # C/Go/Java: the first statement after condition is consequence
         if (consequence is None and
@@ -406,17 +416,20 @@ def _determine_polarity(
                 if child.start_point[0] > cond_node.start_point[0]:
                     consequence = child
 
+    # Ruby "unless" inverts the condition — swap polarity at the end
+    is_unless = cond_node.type == "unless"
+
     sink_row = sink_line - 1  # 0-indexed
 
     # Check if sink is in consequence
     if consequence is not None:
         if consequence.start_point[0] <= sink_row <= consequence.end_point[0]:
-            return "required"
+            return "excluded" if is_unless else "required"
 
     # Check if sink is in alternative
     if alternative is not None:
         if alternative.start_point[0] <= sink_row <= alternative.end_point[0]:
-            return "excluded"
+            return "required" if is_unless else "excluded"
 
     # Early-return-guard pattern: if the consequence contains only an exit
     # statement and the sink is AFTER the entire if-block, the guard is
@@ -428,20 +441,20 @@ def _determine_polarity(
         if consequence.type in exit_types:
             is_exit_only = True
         elif consequence.type in ("block", "compound_statement", "statement_block"):
-            children = [c for c in consequence.children
-                        if c.type not in ("{", "}", "comment")]
-            if children and all(c.type in exit_types for c in children):
+            blk_children = [c for c in consequence.children
+                            if c.type not in ("{", "}", "comment")]
+            if blk_children and blk_children[-1].type in exit_types:
                 is_exit_only = True
 
         if is_exit_only and sink_row > cond_node.end_point[0]:
-            return "excluded"
+            return "required" if is_unless else "excluded"
 
     # Sink is after the if-block but not in an early-return pattern,
     # or we can't determine — assume required (conservative)
     if sink_row > cond_node.end_point[0]:
-        return "required"
+        return "excluded" if is_unless else "required"
 
-    return "required"
+    return "excluded" if is_unless else "required"
 
 
 def _find_enclosing_conditionals(
@@ -550,7 +563,10 @@ def _find_preceding_guard_clauses(
         if _is_exit_only_body(child, lang, exit_types):
             cond_text = _extract_condition_text(child, lang, source_bytes)
             if cond_text:
-                results.append((child, cond_text, "excluded"))
+                # unless guard: body fires when condition is FALSE,
+                # so sink after it requires condition TRUE = "required"
+                polarity = "required" if child.type == "unless" else "excluded"
+                results.append((child, cond_text, polarity))
 
     return results
 
@@ -577,12 +593,10 @@ def _is_exit_only_body(if_node, lang: str, exit_types: tuple) -> bool:
 
     for child in if_node.children:
         if child.type in block_types:
-            # This is the body — get the actual statements
+            # This is the body — the last statement must be an exit
+            # (preceding log/print calls don't change guard semantics)
             statements = _block_statements(child, exit_types)
-            return (
-                len(statements) > 0
-                and all(s.type in exit_types for s in statements)
-            )
+            return len(statements) > 0 and statements[-1].type in exit_types
 
         # C/Go: single-statement body without braces
         if child.type in exit_types:
