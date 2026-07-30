@@ -648,7 +648,7 @@ def build_evidence_index(
     prefilter_results: Optional[Dict[str, Any]] = None,
     context_map_sinks: Optional[List[Dict[str, Any]]] = None,
     binary_bridge: Optional[Any] = None,
-    scope: Optional[str] = None,
+    scope: "Optional[str | list[str]]" = None,
 ) -> Dict[str, EvidenceRecord]:
     """Build the per-function evidence index from pre-sweep outputs.
 
@@ -660,13 +660,17 @@ def build_evidence_index(
     running downstream layer0 scans) for thousands of out-of-scope
     functions when auditing a single file or subdirectory.
     """
+    scope_tuple: "tuple[str, ...] | None" = None
+    if scope:
+        scope_tuple = (scope,) if isinstance(scope, str) else tuple(scope)
+
     index: Dict[str, EvidenceRecord] = {}
 
     for file_entry in checklist.get("files", []):
         file_path = file_entry.get("path", "")
         if not file_path:
             continue
-        if scope and not file_path.startswith(scope):
+        if scope_tuple and not file_path.startswith(scope_tuple):
             continue
         for item in file_entry.get("items", []):
             func_name = item.get("name", "")

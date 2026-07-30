@@ -55,7 +55,7 @@ def compute_gaps(
     context_map: Optional[Dict[str, Any]] = None,
     strategy_filter: Optional[str] = None,
     budget: Optional[int] = None,
-    scope: Optional[str] = None,
+    scope: Optional[str | list[str]] = None,
     fuzz_coverage: Optional[Dict[str, Any]] = None,
     out_dir: Optional[Path] = None,
     project_dir: Optional[Path] = None,
@@ -110,21 +110,26 @@ def compute_gaps(
     if not entry_point_set:
         entry_point_set = _derive_entry_points(checklist)
 
-    effective_scope = scope
+    scope_list: list[str] | None = None
     if scope:
+        scope_list = [scope] if isinstance(scope, str) else list(scope)
         target_path = checklist.get("target_path", "")
         if target_path:
             normalised = target_path.rstrip("/")
-            scope_norm = scope.rstrip("/")
-            if normalised.endswith("/" + scope_norm) or normalised == scope_norm:
-                effective_scope = None
+            scope_list = [
+                s for s in scope_list
+                if not (normalised.endswith("/" + s.rstrip("/"))
+                        or normalised == s.rstrip("/"))
+            ]
+            if not scope_list:
+                scope_list = None
 
     gaps: List[Dict[str, Any]] = []
 
     for file_info in checklist.get("files", []):
         file_path = file_info.get("path", "")
 
-        if effective_scope and not file_path.startswith(effective_scope):
+        if scope_list and not any(file_path.startswith(s) for s in scope_list):
             continue
         items = file_info.get("items", file_info.get("functions", []))
 

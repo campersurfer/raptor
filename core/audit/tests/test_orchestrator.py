@@ -3369,3 +3369,45 @@ class TestDeadCodeReason:
         gap = {"file": "a.py", "name": "f"}
         assert _dead_code_reason(gap) is None
 
+
+class TestJoernTarget:
+    """_joern_target narrows CPG builds to the scoped subtree."""
+
+    def _cfg(self, tmp_path, scope=None):
+        target = tmp_path / "repo"
+        target.mkdir()
+        out = tmp_path / "out"
+        out.mkdir()
+        return OrchestratorConfig(target_path=target, out_dir=out, scope=scope)
+
+    def test_no_scope_returns_target(self, tmp_path):
+        from core.audit.orchestrator import _joern_target
+        cfg = self._cfg(tmp_path)
+        assert _joern_target(cfg) == cfg.target_path
+
+    def test_single_scope_narrows(self, tmp_path):
+        from core.audit.orchestrator import _joern_target
+        cfg = self._cfg(tmp_path, scope="src/database/sql")
+        (cfg.target_path / "src" / "database" / "sql").mkdir(parents=True)
+        assert _joern_target(cfg) == cfg.target_path / "src" / "database" / "sql"
+
+    def test_multi_scope_common_prefix(self, tmp_path):
+        from core.audit.orchestrator import _joern_target
+        cfg = self._cfg(tmp_path, scope=["fs", "kernel/locking"])
+        (cfg.target_path / "fs").mkdir()
+        (cfg.target_path / "kernel" / "locking").mkdir(parents=True)
+        # No common prefix → returns full target
+        assert _joern_target(cfg) == cfg.target_path
+
+    def test_multi_scope_shared_prefix(self, tmp_path):
+        from core.audit.orchestrator import _joern_target
+        cfg = self._cfg(tmp_path, scope=["src/database/sql", "src/database/driver"])
+        (cfg.target_path / "src" / "database" / "sql").mkdir(parents=True)
+        (cfg.target_path / "src" / "database" / "driver").mkdir(parents=True)
+        assert _joern_target(cfg) == cfg.target_path / "src" / "database"
+
+    def test_nonexistent_prefix_falls_back(self, tmp_path):
+        from core.audit.orchestrator import _joern_target
+        cfg = self._cfg(tmp_path, scope="does/not/exist")
+        assert _joern_target(cfg) == cfg.target_path
+

@@ -279,6 +279,38 @@ class OrchestratorResult:
     )
 
 
+def _joern_target(config: OrchestratorConfig) -> Path:
+    """Narrow the Joern CPG build target when scope allows it.
+
+    When all scopes share a common prefix that exists as a subdirectory
+    of target_path, return that subdirectory instead of the full repo
+    root.  This avoids building a multi-GB CPG for an entire monorepo
+    when only a small subtree is being audited.
+    """
+    if not config.scope:
+        return config.target_path
+
+    scopes = [config.scope] if isinstance(config.scope, str) else list(config.scope)
+    if not scopes:
+        return config.target_path
+
+    parts_list = [Path(s).parts for s in scopes]
+    common = []
+    for segments in zip(*parts_list):
+        if len(set(segments)) == 1:
+            common.append(segments[0])
+        else:
+            break
+
+    if not common:
+        return config.target_path
+
+    candidate = config.target_path / Path(*common)
+    if candidate.is_dir():
+        return candidate
+    return config.target_path
+
+
 def get_reviewed_set(out_dir: Path) -> set:
     """Load set of already-reviewed file:function keys from audit log."""
     reviewed = set()
@@ -318,7 +350,8 @@ def run_orchestrator(
     else:
         joern_timeout_s = 600
 
-    joern_server = _start_joern_server_raw(config.target_path, config.joern_overrides, _jt)
+    _joern_path = _joern_target(config)
+    joern_server = _start_joern_server_raw(_joern_path, config.joern_overrides, _jt)
     _joern_lifecycle = joern_server is not None and hasattr(joern_server, '_proc') and joern_server._proc is None
     try:
         return _run_audit_body(
@@ -1465,7 +1498,7 @@ def _run_audit_body(
                 on_progress(-1, 0, placeholder)
 
         joern_flows, joern_future = _resolve_joern_evidence_raw(
-            config.target_path, joern_overrides=config.joern_overrides,
+            _joern_target(config), joern_overrides=config.joern_overrides,
             on_joern_progress=_joern_progress_cb,
             joern_server=joern_server, out_dir=config.out_dir,
         )

@@ -1101,7 +1101,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     from core.audit.report import generate_report, write_report
 
     try:
-        client = LLMClient()
+        llm_cfg = None
+        if args.max_cost is not None:
+            from core.llm.config import LLMConfig
+            llm_cfg = LLMConfig(max_cost_per_scan=args.max_cost)
+        client = LLMClient(config=llm_cfg)
     except Exception as exc:
         print(f"error: could not create LLM client: {exc}", file=sys.stderr)
         _lifecycle_fail(out_dir, f"LLM client init failed: {exc}")
@@ -1336,8 +1340,8 @@ def main() -> int:
     p_gaps.add_argument("--out", required=True)
     p_gaps.add_argument("--target", default=None,
                         help="Target path — used to auto-build checklist if missing")
-    p_gaps.add_argument("--scope", default=None,
-                        help="Restrict to files under this path prefix (e.g. ipc/)")
+    p_gaps.add_argument("--scope", action="append", default=None,
+                        help="Restrict to files under this path prefix (repeatable)")
     p_gaps.add_argument("--strategy", default=None)
     p_gaps.add_argument("--budget", type=int, default=None)
     p_gaps.add_argument("--prioritize", action="store_true",
@@ -1461,8 +1465,8 @@ def main() -> int:
                        help="Filter to one strategy")
     p_run.add_argument("--budget", type=int, default=None,
                        help="Max functions to review")
-    p_run.add_argument("--scope", default=None,
-                       help="Restrict to a subdirectory")
+    p_run.add_argument("--scope", action="append", default=None,
+                       help="Restrict to a subdirectory (repeatable)")
     p_run.add_argument("--annotations-dir", default=None)
     p_run.add_argument("--no-validate", action="store_true",
                        help="Skip automatic /validate post-pass")
