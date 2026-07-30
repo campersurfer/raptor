@@ -328,13 +328,20 @@ def _joern_target(config: OrchestratorConfig) -> Path:
 
 
 def get_reviewed_set(out_dir: Path) -> set:
-    """Load set of already-reviewed file:function keys from audit log."""
+    """Load set of already-reviewed keys from audit log.
+
+    Keys may be bare (file:name, legacy) or lined (file:name:line).
+    Both forms are added so the workqueue filter matches either.
+    """
     reviewed = set()
     for entry in load_audit_log(out_dir):
         if entry.get("action") in ("record", "orchestrator_review"):
             key = entry.get("key", "")
             if key:
                 reviewed.add(key)
+                head, _, tail = key.rpartition(":")
+                if head and tail.isdigit():
+                    reviewed.add(head)
     return reviewed
 
 
@@ -476,9 +483,10 @@ def review_one_function(
     live_classifications = shared.live_classifications
 
     gap_key = f"{gap['file']}:{gap['name']}"
+    gap_key_lined = f"{gap_key}:{gap.get('line_start', 0)}"
 
     # ── Triage skip ───────────────────────────────────────────────────
-    triage = triage_results.get(gap_key)
+    triage = triage_results.get(gap_key_lined) or triage_results.get(gap_key)
     if triage and triage.bucket == TriageBucket.SKIP and not gap.get("force_review"):
         _increment_tier(result, "triage_skip", "confirmed")
         outcome = ReviewOutcome(
@@ -1991,11 +1999,11 @@ def _run_audit_body(
     fn_filter = None
     if config.functions:
         fn_filter_simple: set[str] = set()
-        fn_filter_lined: dict[str, int] = {}
+        fn_filter_lined: dict[str, set[int]] = {}
         for spec in config.functions:
-            parts = spec.rsplit(":", 2)
-            if len(parts) == 3 and parts[2].isdigit():
-                fn_filter_lined[f"{parts[0]}:{parts[1]}"] = int(parts[2])
+            head, _, tail = spec.rpartition(":")
+            if head and tail.isdigit():
+                fn_filter_lined.setdefault(head, set()).add(int(tail))
             else:
                 fn_filter_simple.add(spec)
         fn_filter = (fn_filter_simple, fn_filter_lined)
@@ -2008,7 +2016,15 @@ def _run_audit_body(
         if fn_filter is not None:
             simple, lined = fn_filter
             line = gap.get("line_start", 0)
-            if key not in simple and lined.get(key) != line:
+            meta = gap.get("metadata") or {}
+            cls = meta.get("class_name")
+            qual_key = f"{gap['file']}:{cls}.{gap['name']}" if cls else key
+            in_simple = key in simple or qual_key in simple
+            in_lined = (
+                line in lined.get(key, set())
+                or line in lined.get(qual_key, set())
+            )
+            if not in_simple and not in_lined:
                 result.skipped += 1
                 continue
             gap["force_review"] = True
@@ -2263,6 +2279,10 @@ def _run_audit_body(
 
     if config.max_workers == 0:
         model = config.models[0] if config.models else "default"
+        from core.security.llm_family import resolve_model_shorthand
+        from core.llm.config import _get_configured_models
+        _cands = [e.get("model", "") for e in _get_configured_models() if e.get("model")]
+        model = resolve_model_shorthand(model, _cands) or model
         resolved_workers = derive_max_workers(model)
         logger.info(
             "auto workers: model=%s → max_workers=%d",
@@ -3875,9 +3895,10 @@ def _commit_outcome(
         checked_by=checked_by,
     )
 
+    line_start = gap.get("line_start", 0)
     entry: Dict[str, Any] = {
         "action": "orchestrator_review",
-        "key": f"{outcome.file}:{outcome.function}",
+        "key": f"{outcome.file}:{outcome.function}:{line_start}",
         "status": outcome.status,
         "model": outcome.model,
         "cost_usd": outcome.cost_usd,
@@ -3961,6 +3982,35 @@ def _match_domain_model_invariants(
     return matched
 
 
+def _resolve_hypothesis(outcome: ReviewOutcome) -> str:
+    """Extract the best hypothesis string from the review result.
+
+    Prefers the singular ``hypothesis`` field.  When it is empty, falls
+    back to the highest-confidence entry in the ``hypotheses`` array.
+    """
+    review = outcome.review_result or {}
+    hyp = review.get("hypothesis") or outcome.hypothesis or ""
+    if hyp and hyp.strip():
+        return hyp
+
+    hypotheses = review.get("hypotheses") or []
+    _RANK = {"high": 0, "medium": 1, "low": 2, "refuted": 3}
+    best = None
+    best_rank = 999
+    for entry in hypotheses:
+        if not isinstance(entry, dict):
+            continue
+        mechanism = entry.get("mechanism") or ""
+        if not mechanism.strip():
+            continue
+        confidence = entry.get("confidence", "low")
+        rank = _RANK.get(confidence, 2)
+        if rank < best_rank:
+            best = mechanism
+            best_rank = rank
+    return best or ""
+
+
 def _check_finding_gates(
     outcome: ReviewOutcome,
     *,
@@ -3971,9 +4021,7 @@ def _check_finding_gates(
     from .evidence_grade import is_tool_evidence
 
     violations = []
-    hypothesis = outcome.hypothesis or ""
-    if outcome.review_result:
-        hypothesis = outcome.review_result.get("hypothesis", hypothesis)
+    hypothesis = _resolve_hypothesis(outcome)
 
     evidence = outcome.evidence_tool or ""
     if not evidence and outcome.review_result:
@@ -5534,7 +5582,7 @@ def _sweep_validate(
         True when reviewing a binary target (routes to binary tool chain).
     """
     review = outcome.review_result or {}
-    hypothesis = review.get("hypothesis") or outcome.hypothesis or ""
+    hypothesis = _resolve_hypothesis(outcome)
     evidence_tool = _sanitize_llm_et(
         review.get("evidence_tool") or outcome.evidence_tool or "",
     )

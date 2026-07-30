@@ -172,7 +172,9 @@ def classify_all(
     results: dict[str, TriageResult] = {}
 
     for gap in gaps:
-        key = f"{gap['file']}:{gap['name']}"
+        bare_key = f"{gap['file']}:{gap['name']}"
+        line_start = gap.get("line_start", 0)
+        key = f"{bare_key}:{line_start}"
         sloc = gap.get("sloc", (gap.get("line_end", 0) or 0) - (gap.get("line_start", 0) or 0))
         caller_count = len(gap.get("callers", []))
 
@@ -180,16 +182,16 @@ def classify_all(
             file=gap["file"],
             function=gap["name"],
             sloc=max(sloc, 0),
-            priority_score=scores.get(key, 0.0),
-            is_entry_point=key in entry_points,
-            is_sink=key in sinks,
-            is_trust_boundary=key in trust_boundaries,
-            on_taint_path=key in taint_path_keys,
-            has_joern_flows=key in joern_flow_keys,
-            has_dangerous_callees=key in dangerous_callee_keys,
-            binary_absent=key in binary_absent_keys,
-            sink_unreachable=key in sink_unreachable_keys,
-            prefilter=prefilters.get(key),
+            priority_score=scores.get(bare_key, 0.0),
+            is_entry_point=bare_key in entry_points,
+            is_sink=bare_key in sinks,
+            is_trust_boundary=bare_key in trust_boundaries,
+            on_taint_path=bare_key in taint_path_keys,
+            has_joern_flows=bare_key in joern_flow_keys,
+            has_dangerous_callees=bare_key in dangerous_callee_keys,
+            binary_absent=bare_key in binary_absent_keys,
+            sink_unreachable=bare_key in sink_unreachable_keys,
+            prefilter=prefilters.get(bare_key),
             branch_count=gap.get("branch_count", 0),
             caller_count=caller_count,
         )

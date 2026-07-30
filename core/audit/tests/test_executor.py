@@ -451,9 +451,9 @@ class TestAsyncGlanceBatch:
         graph = TaskGraph.from_workqueue(wq, [])
         result = _FakeResult()
 
-        triage = {f"a.py:f{i}": FakeTriageResult(FakeBucket("glance")) for i in range(12)}
+        triage = {f"a.py:f{i}:1": FakeTriageResult(FakeBucket("glance")) for i in range(12)}
         for i in range(12, 15):
-            triage[f"a.py:f{i}"] = FakeTriageResult(FakeBucket("investigate"))
+            triage[f"a.py:f{i}:1"] = FakeTriageResult(FakeBucket("investigate"))
 
         shared = MagicMock()
         shared.triage_results = triage
@@ -520,7 +520,7 @@ class TestAsyncGlanceBatch:
         graph = TaskGraph.from_workqueue(wq, [])
         result = _FakeResult()
 
-        triage = {f"a.py:f{i}": FakeTriageResult(FakeBucket("glance")) for i in range(3)}
+        triage = {f"a.py:f{i}:1": FakeTriageResult(FakeBucket("glance")) for i in range(3)}
         shared = MagicMock()
         shared.triage_results = triage
 

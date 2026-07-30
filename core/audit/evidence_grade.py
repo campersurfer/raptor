@@ -294,7 +294,7 @@ def grade_evidence_record(record: Any) -> List[GradedEvidence]:
         ns = record.negative_space
         items.append(grade_evidence(
             EvidenceSource.NEGATIVE_SPACE,
-            f"{len(ns)} missing security checks",
+            f"{len(ns)} convention deviations from sibling functions",
         ))
 
     if getattr(record, "sink_unreachable", False):

@@ -580,12 +580,18 @@ def format_negative_space_prose(
     if not findings:
         return ""
 
-    lines = ["### Missing security checks"]
+    lines = [
+        "### Convention deviations",
+        "Sibling functions in this file follow conventions that this "
+        "function deviates from. A deviation is an observation, not a "
+        "finding — the function may handle the concern differently, "
+        "or the convention may not apply here. Evaluate independently.",
+    ]
     for f in findings:
-        prefix = "WARNING" if f.confidence == "high" else "Note"
+        conf = f"[{f.confidence}]" if f.confidence == "high" else ""
         lines.append(
-            f"- **{prefix}** ({f.cwe}): {f.check_type} — "
-            f"expected {f.expected}. {f.evidence}."
+            f"- ({f.cwe}) {f.check_type} — "
+            f"expected {f.expected}. {f.evidence}. {conf}"
         )
 
     return "\n".join(lines)

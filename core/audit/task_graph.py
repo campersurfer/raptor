@@ -194,18 +194,24 @@ class TaskGraph:
 
         wq_keys: set[str] = set()
         gaps_by_key: dict[str, dict[str, Any]] = {}
+        bare_to_lined: dict[str, set[str]] = {}
         for gap in workqueue:
-            key = f"{gap['file']}:{gap['name']}"
+            key = f"{gap['file']}:{gap['name']}:{gap.get('line_start', 0)}"
+            bare = f"{gap['file']}:{gap['name']}"
             wq_keys.add(key)
             gaps_by_key[key] = gap
+            bare_to_lined.setdefault(bare, set()).add(key)
 
         caller_to_callees: dict[str, set[str]] = {}
         for edge in call_edges:
-            caller_key = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
+            caller_bare = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
             callee_file = edge.get("callee_file") or edge.get("caller_file", "")
-            callee_key = f"{callee_file}:{edge.get('callee', '')}"
-            if caller_key in wq_keys and callee_key in wq_keys and caller_key != callee_key:
-                caller_to_callees.setdefault(caller_key, set()).add(callee_key)
+            callee_bare = f"{callee_file}:{edge.get('callee', '')}"
+            if caller_bare == callee_bare:
+                continue
+            for caller_key in bare_to_lined.get(caller_bare, ()):
+                for callee_key in bare_to_lined.get(callee_bare, ()):
+                    caller_to_callees.setdefault(caller_key, set()).add(callee_key)
 
         repass_callers: set[str] = set()
         total_edges = sum(len(v) for v in caller_to_callees.values())

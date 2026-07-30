@@ -81,7 +81,9 @@ class TestGetReviewedSet:
             '{"action":"record","key":"src/util.c:helper"}\n'
         )
         result = get_reviewed_set(tmp_path)
-        assert result == {"src/auth.c:check_pw", "src/util.c:helper"}
+        assert "src/auth.c:check_pw" in result
+        assert "src/util.c:helper" in result
+        assert "src/auth.c:validate" not in result
 
     def test_reads_orchestrator_review_actions(self, tmp_path: Path):
         log = tmp_path / ".audit-log.jsonl"
@@ -90,7 +92,26 @@ class TestGetReviewedSet:
             '{"action":"context","key":"src/auth.c:validate"}\n'
         )
         result = get_reviewed_set(tmp_path)
-        assert result == {"src/auth.c:check_pw"}
+        assert "src/auth.c:check_pw" in result
+        assert "src/auth.c:validate" not in result
+
+    def test_lined_key_produces_bare_fallback(self, tmp_path: Path):
+        log = tmp_path / ".audit-log.jsonl"
+        log.write_text(
+            '{"action":"orchestrator_review","key":"sql.go:Scan:3232"}\n'
+        )
+        result = get_reviewed_set(tmp_path)
+        assert "sql.go:Scan:3232" in result
+        assert "sql.go:Scan" in result
+
+    def test_bare_key_no_spurious_strip(self, tmp_path: Path):
+        log = tmp_path / ".audit-log.jsonl"
+        log.write_text(
+            '{"action":"orchestrator_review","key":"src/auth.c:check_pw"}\n'
+        )
+        result = get_reviewed_set(tmp_path)
+        assert "src/auth.c:check_pw" in result
+        assert "src/auth.c" not in result
 
 
 @pytest.mark.slow

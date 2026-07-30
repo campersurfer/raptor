@@ -126,11 +126,11 @@ REVIEW_SCHEMA = {
         "counter_hypothesis": {
             "type": "string",
             "description": (
-                "Required when status is clean. Your strongest argument "
-                "for why this function IS vulnerable despite your clean "
-                "verdict. What assumption could be wrong? What input "
-                "would break it? If you cannot construct a plausible "
-                "counter-argument, say why."
+                "Your strongest argument for why your verdict could be "
+                "wrong. For clean: why might this function actually be "
+                "vulnerable? For finding/suspicious: what evidence "
+                "would disprove the hypothesis? If you cannot construct "
+                "a plausible counter-argument, say why."
             ),
         },
         "observations": {
@@ -432,7 +432,10 @@ REVIEW_SCHEMA = {
             ),
         },
     },
-    "required": ["status", "verdict_rationale", "body", "hypotheses"],
+    "required": [
+        "status", "verdict_rationale", "body", "hypotheses",
+        "hypothesis", "counter_hypothesis",
+    ],
 }
 
 REVIEW_SCHEMA_BLIND = {
@@ -449,7 +452,10 @@ REVIEW_SCHEMA_BLIND = {
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
         "reading_list": REVIEW_SCHEMA["properties"]["reading_list"],
     },
-    "required": ["status", "verdict_rationale", "body", "hypotheses"],
+    "required": [
+        "status", "verdict_rationale", "body", "hypotheses",
+        "hypothesis", "counter_hypothesis",
+    ],
 }
 
 _DEFAULT_SYSTEM_PROMPT = (

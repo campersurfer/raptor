@@ -136,43 +136,43 @@ class TestClassifyAll:
 
     def test_basic_classification(self):
         gaps = [
-            {"file": "a.c", "name": "main", "sloc": 10},
-            {"file": "b.c", "name": "parse", "sloc": 10},
+            {"file": "a.c", "name": "main", "sloc": 10, "line_start": 1},
+            {"file": "b.c", "name": "parse", "sloc": 10, "line_start": 1},
         ]
         results = classify_all(
             gaps,
             entry_points=frozenset({"a.c:main"}),
         )
-        assert results["a.c:main"].bucket == TriageBucket.DEEP_DIVE
-        assert results["b.c:parse"].bucket == TriageBucket.GLANCE
+        assert results["a.c:main:1"].bucket == TriageBucket.DEEP_DIVE
+        assert results["b.c:parse:1"].bucket == TriageBucket.GLANCE
 
     def test_sink_unreachable_from_set(self):
-        gaps = [{"file": "a.c", "name": "util", "sloc": 10}]
+        gaps = [{"file": "a.c", "name": "util", "sloc": 10, "line_start": 5}]
         results = classify_all(
             gaps,
             sink_unreachable_keys=frozenset({"a.c:util"}),
         )
-        assert results["a.c:util"].bucket == TriageBucket.SKIP
+        assert results["a.c:util:5"].bucket == TriageBucket.SKIP
 
     def test_priority_scores_forwarded(self):
-        gaps = [{"file": "a.c", "name": "f", "sloc": 10}]
+        gaps = [{"file": "a.c", "name": "f", "sloc": 10, "line_start": 1}]
         results = classify_all(
             gaps,
             priority_scores={"a.c:f": 15.0},
         )
-        assert results["a.c:f"].priority_score == 15.0
+        assert results["a.c:f:1"].priority_score == 15.0
 
     def test_sloc_from_line_range(self):
         gaps = [{"file": "a.c", "name": "big", "line_start": 10, "line_end": 250}]
         results = classify_all(gaps)
-        assert results["a.c:big"].bucket == TriageBucket.DEEP_DIVE
+        assert results["a.c:big:10"].bucket == TriageBucket.DEEP_DIVE
 
     def test_all_signals_combined(self):
         gaps = [
-            {"file": "a.c", "name": "entry", "sloc": 50},
-            {"file": "b.c", "name": "leaf", "sloc": 5},
-            {"file": "c.c", "name": "middle", "sloc": 40},
-            {"file": "d.c", "name": "dead", "sloc": 15},
+            {"file": "a.c", "name": "entry", "sloc": 50, "line_start": 1},
+            {"file": "b.c", "name": "leaf", "sloc": 5, "line_start": 1},
+            {"file": "c.c", "name": "middle", "sloc": 40, "line_start": 1},
+            {"file": "d.c", "name": "dead", "sloc": 15, "line_start": 1},
         ]
         results = classify_all(
             gaps,
@@ -180,10 +180,22 @@ class TestClassifyAll:
             sink_unreachable_keys=frozenset({"d.c:dead"}),
             taint_path_keys=frozenset({"c.c:middle"}),
         )
-        assert results["a.c:entry"].bucket == TriageBucket.DEEP_DIVE
-        assert results["b.c:leaf"].bucket == TriageBucket.GLANCE
-        assert results["c.c:middle"].bucket == TriageBucket.INVESTIGATE
-        assert results["d.c:dead"].bucket == TriageBucket.SKIP
+        assert results["a.c:entry:1"].bucket == TriageBucket.DEEP_DIVE
+        assert results["b.c:leaf:1"].bucket == TriageBucket.GLANCE
+        assert results["c.c:middle:1"].bucket == TriageBucket.INVESTIGATE
+        assert results["d.c:dead:1"].bucket == TriageBucket.SKIP
+
+    def test_same_name_different_lines_no_collision(self):
+        """Methods with the same name at different lines get separate keys."""
+        gaps = [
+            {"file": "sql.go", "name": "Scan", "sloc": 8, "line_start": 193},
+            {"file": "sql.go", "name": "Scan", "sloc": 28, "line_start": 3232},
+        ]
+        results = classify_all(gaps)
+        assert "sql.go:Scan:193" in results
+        assert "sql.go:Scan:3232" in results
+        assert results["sql.go:Scan:193"].bucket == TriageBucket.GLANCE
+        assert results["sql.go:Scan:3232"].bucket == TriageBucket.INVESTIGATE
 
 
 class TestFormatTriageSummary:

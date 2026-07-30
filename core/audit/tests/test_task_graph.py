@@ -7,8 +7,8 @@ from typing import Any
 from core.audit.task_graph import TaskGraph, _break_cycles, _relax_bottlenecks
 
 
-def _gap(file: str, name: str, priority: float = 0.5) -> dict[str, Any]:
-    return {"file": file, "name": name, "priority_score": priority}
+def _gap(file: str, name: str, priority: float = 0.5, line_start: int = 0) -> dict[str, Any]:
+    return {"file": file, "name": name, "priority_score": priority, "line_start": line_start}
 
 
 def _edge(
@@ -40,7 +40,7 @@ class TestFromWorkqueue:
 
         ready = g.pop_ready(10)
         assert len(ready) == 1
-        assert ready[0].key == "a.py:callee"
+        assert ready[0].key == "a.py:callee:0"
 
     def test_self_edge_ignored(self) -> None:
         wq = [_gap("a.py", "recurse")]
@@ -64,13 +64,13 @@ class TestMarkComplete:
         g = TaskGraph.from_workqueue(wq, edges)
 
         ready = g.pop_ready(1)
-        assert ready[0].key == "a.py:callee"
+        assert ready[0].key == "a.py:callee:0"
 
-        newly_ready = g.mark_complete("a.py:callee")
-        assert "a.py:caller" in newly_ready
+        newly_ready = g.mark_complete("a.py:callee:0")
+        assert "a.py:caller:0" in newly_ready
 
         ready2 = g.pop_ready(1)
-        assert ready2[0].key == "a.py:caller"
+        assert ready2[0].key == "a.py:caller:0"
 
     def test_multiple_deps_both_needed(self) -> None:
         wq = [
@@ -84,22 +84,22 @@ class TestMarkComplete:
         ]
         g = TaskGraph.from_workqueue(wq, edges)
 
-        g.mark_complete("a.py:dep1")
+        g.mark_complete("a.py:dep1:0")
         ready = g.pop_ready(10)
         keys = {t.key for t in ready}
-        assert "a.py:caller" not in keys
+        assert "a.py:caller:0" not in keys
 
-        g.mark_complete("a.py:dep2")
+        g.mark_complete("a.py:dep2:0")
         ready = g.pop_ready(10)
         keys = {t.key for t in ready}
-        assert "a.py:caller" in keys
+        assert "a.py:caller:0" in keys
 
     def test_pending_decrements(self) -> None:
         wq = [_gap("a.py", "f1"), _gap("a.py", "f2")]
         g = TaskGraph.from_workqueue(wq, [])
         assert g.pending == 2
         g.pop_ready(1)
-        g.mark_complete("a.py:f1")
+        g.mark_complete("a.py:f1:0")
         assert g.pending == 1
 
 
@@ -113,8 +113,8 @@ class TestPopReady:
         g = TaskGraph.from_workqueue(wq, [])
         ready = g.pop_ready(3)
         keys = [t.key for t in ready]
-        assert keys[0] == "a.py:high"
-        assert keys[-1] == "a.py:low"
+        assert keys[0] == "a.py:high:0"
+        assert keys[-1] == "a.py:low:0"
 
     def test_pop_respects_n(self) -> None:
         wq = [_gap("a.py", f"f{i}") for i in range(5)]
@@ -137,7 +137,7 @@ class TestSerialOrder:
         g = TaskGraph.from_workqueue(wq, edges)
         order = g.serial_order()
         keys = [t.key for t in order]
-        assert keys == ["a.py:leaf", "a.py:mid", "a.py:root"]
+        assert keys == ["a.py:leaf:0", "a.py:mid:0", "a.py:root:0"]
 
     def test_independent_tasks_by_priority(self) -> None:
         wq = [
@@ -147,7 +147,7 @@ class TestSerialOrder:
         g = TaskGraph.from_workqueue(wq, [])
         order = g.serial_order()
         keys = [t.key for t in order]
-        assert keys[0] == "a.py:high"
+        assert keys[0] == "a.py:high:0"
 
     def test_diamond_dependency(self) -> None:
         wq = [
@@ -165,10 +165,10 @@ class TestSerialOrder:
         g = TaskGraph.from_workqueue(wq, edges)
         order = g.serial_order()
         keys = [t.key for t in order]
-        assert keys[0] == "a.py:bottom"
-        assert keys[-1] == "a.py:top"
-        assert keys.index("a.py:left") < keys.index("a.py:top")
-        assert keys.index("a.py:right") < keys.index("a.py:top")
+        assert keys[0] == "a.py:bottom:0"
+        assert keys[-1] == "a.py:top:0"
+        assert keys.index("a.py:left:0") < keys.index("a.py:top:0")
+        assert keys.index("a.py:right:0") < keys.index("a.py:top:0")
 
 
 class TestCycleBreaking:
@@ -238,7 +238,7 @@ class TestCycleBreaking:
         order = g.serial_order()
         assert len(order) == 3
         keys = [t.key for t in order]
-        assert keys.index("a.py:A") < keys.index("a.py:top")
+        assert keys.index("a.py:A:0") < keys.index("a.py:top:0")
 
     def test_no_cycle_no_edges_dropped(self) -> None:
         """DAG with no cycles drops nothing."""
@@ -291,7 +291,7 @@ class TestRepass:
         repass = g.repass_tasks()
         assert len(repass) >= 1
         keys = {t.key for t in repass}
-        assert keys <= {"a.py:A", "a.py:B", "a.py:C"}
+        assert keys <= {"a.py:A:0", "a.py:B:0", "a.py:C:0"}
 
     def test_repass_empty_for_dag(self) -> None:
         wq = [_gap("a.py", "caller"), _gap("a.py", "callee")]
@@ -330,7 +330,7 @@ class TestBottleneckRelaxation:
         g = TaskGraph.from_workqueue(wq, edges, max_workers=1)
         ready = g.pop_ready(100)
         assert len(ready) == 1
-        assert ready[0].key == "a.py:deep_dep"
+        assert ready[0].key == "a.py:deep_dep:0"
 
     def test_relaxation_widens_wavefront(self) -> None:
         """With max_workers=2, callers beyond 2 proceed immediately."""
@@ -410,7 +410,7 @@ class TestUnblockingPriority:
         ready = g.pop_ready(2)
         # popular should come first (higher effective priority due to dependents)
         keys = [t.key for t in ready]
-        assert keys[0] == "a.py:popular"
+        assert keys[0] == "a.py:popular:0"
 
     def test_security_priority_still_wins(self) -> None:
         """A high-security-priority task beats a high-dependent one."""
@@ -425,7 +425,7 @@ class TestUnblockingPriority:
         g = TaskGraph.from_workqueue(wq, edges)
         ready = g.pop_ready(2)
         keys = [t.key for t in ready]
-        assert keys[0] == "a.py:secure"
+        assert keys[0] == "a.py:secure:0"
 
 
 class TestGraphStats:
@@ -471,3 +471,33 @@ class TestGraphStats:
         assert d["total_tasks"] == 1
         assert "cycle_back_edges_dropped" in d
         assert "initial_ready" in d
+
+
+class TestSameBareCrossEdge:
+    def test_same_bare_key_edge_skipped(self) -> None:
+        """Edge where caller and callee have the same bare key (e.g. Go
+        receiver methods Rows.Scan and NullString.Scan) must not create
+        false cross-dependencies between line-disambiguated variants."""
+        wq = [
+            _gap("sql.go", "Scan", 0.5, line_start=3232),
+            _gap("sql.go", "Scan", 0.5, line_start=4500),
+            _gap("sql.go", "helper", 0.5, line_start=100),
+        ]
+        edges = [_edge("sql.go", "Scan", "sql.go", "Scan")]
+        g = TaskGraph.from_workqueue(wq, edges)
+        ready = g.pop_ready(10)
+        assert len(ready) == 3
+
+    def test_same_bare_different_callee_still_creates_dep(self) -> None:
+        """Same-named functions calling a different function should
+        still create dependency edges for both variants."""
+        wq = [
+            _gap("sql.go", "Scan", 0.5, line_start=3232),
+            _gap("sql.go", "Scan", 0.5, line_start=4500),
+            _gap("sql.go", "helper", 0.5, line_start=100),
+        ]
+        edges = [_edge("sql.go", "Scan", "sql.go", "helper")]
+        g = TaskGraph.from_workqueue(wq, edges)
+        ready = g.pop_ready(10)
+        assert len(ready) == 1
+        assert ready[0].key == "sql.go:helper:100"

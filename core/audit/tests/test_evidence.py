@@ -181,7 +181,7 @@ class TestFormatEvidenceProse:
         ]
         prose = format_evidence_prose(rec)
         assert "CWE-306" in prose
-        assert "Missing security checks" in prose
+        assert "Convention deviations" in prose
 
 
 class TestFormatEvidenceStructured:

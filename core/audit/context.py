@@ -1396,7 +1396,7 @@ def _find_callees(
         return []
 
 
-_OPERATOR_NOTE_MAX_BYTES = 4 * 1024
+_OPERATOR_NOTE_MAX_BYTES = 16 * 1024
 
 
 def _wrap_operator_note(
@@ -1414,7 +1414,7 @@ def _wrap_operator_note(
     - **HTML escape**: prevents ``</operator_note>`` closure attacks
       that would exit the tag and inject following text as system-
       level instructions.
-    - **4KB cap**: bounded prompt inflation; oversize bodies get a
+    - **16KB cap**: bounded prompt inflation; oversize bodies get a
       truncation marker + WARNING log so operators can spot them.
 
     Non-goal: perfect prompt-injection resistance. Defence for

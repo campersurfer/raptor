@@ -321,7 +321,7 @@ class TestFormatNegativeSpaceProse:
     def test_empty(self):
         assert format_negative_space_prose([]) == ""
 
-    def test_high_confidence_warning(self):
+    def test_high_confidence_tag(self):
         f = NegativeSpaceFinding(
             check_type="missing_auth",
             expected="check_auth (10 functions, ~90% adoption)",
@@ -332,11 +332,12 @@ class TestFormatNegativeSpaceProse:
             strategy="auth",
         )
         result = format_negative_space_prose([f])
-        assert "WARNING" in result
+        assert "[high]" in result
         assert "CWE-306" in result
         assert "missing_auth" in result
+        assert "Convention deviations" in result
 
-    def test_medium_confidence_note(self):
+    def test_medium_confidence_no_tag(self):
         f = NegativeSpaceFinding(
             check_type="missing_validation",
             expected="validate_ (5 functions, ~50% adoption)",
@@ -347,8 +348,8 @@ class TestFormatNegativeSpaceProse:
             strategy="input_handling",
         )
         result = format_negative_space_prose([f])
-        assert "Note" in result
-        assert "WARNING" not in result
+        assert "[high]" not in result
+        assert "CWE-20" in result
 
     def test_multiple_findings(self):
         findings = [
@@ -364,7 +365,7 @@ class TestFormatNegativeSpaceProse:
         result = format_negative_space_prose(findings)
         assert "CWE-306" in result
         assert "CWE-20" in result
-        assert result.count("- **") == 2
+        assert result.count("- (") == 2
 
 
 class TestSiblingNegativeSpace:

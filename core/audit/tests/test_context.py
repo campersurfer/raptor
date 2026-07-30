@@ -1322,30 +1322,30 @@ class TestNegativeSpaceContext:
         f = self._make_finding()
         ctx = self._base_ctx(negative_space=[f])
         result = format_context_for_prompt(ctx)
-        assert "Missing security checks" in result
+        assert "Convention deviations" in result
         assert "CWE-306" in result
 
     def test_no_negative_space_no_section(self):
         ctx = self._base_ctx()
         result = format_context_for_prompt(ctx)
-        assert "Missing security checks" not in result
+        assert "Convention deviations" not in result
 
     def test_empty_list_no_section(self):
         ctx = self._base_ctx(negative_space=[])
         result = format_context_for_prompt(ctx)
-        assert "Missing security checks" not in result
+        assert "Convention deviations" not in result
 
-    def test_high_confidence_has_warning(self):
+    def test_high_confidence_has_tag(self):
         f = self._make_finding(confidence="high")
         ctx = self._base_ctx(negative_space=[f])
         result = format_context_for_prompt(ctx)
-        assert "WARNING" in result
+        assert "[high]" in result
 
-    def test_medium_confidence_has_note(self):
+    def test_medium_confidence_no_tag(self):
         f = self._make_finding(confidence="medium")
         ctx = self._base_ctx(negative_space=[f])
         result = format_context_for_prompt(ctx)
-        assert "Note" in result
+        assert "[high]" not in result
 
 
 class TestCalleeContractsContext:

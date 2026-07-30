@@ -91,11 +91,11 @@ class TestWrapOperatorNote:
         wrapped = _wrap_operator_note("a & b", file="a.c", function="f")
         assert "&amp;" in wrapped
 
-    def test_caps_at_4kb(self):
-        body = "x" * (10 * 1024)
+    def test_caps_at_16kb(self):
+        body = "x" * (20 * 1024)
         wrapped = _wrap_operator_note(body, file="a.c", function="f")
         assert "[...truncated" in wrapped
-        assert len(wrapped.encode("utf-8")) < 6 * 1024
+        assert len(wrapped.encode("utf-8")) < 18 * 1024
 
     def test_empty_body_returns_empty(self):
         assert _wrap_operator_note("", file="a.c", function="f") == ""

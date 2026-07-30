@@ -73,7 +73,7 @@ _DEGRADATION_MATRIX: List[Fallback] = [
         tool="binary",
         fallback_tool="source-only",
         impact="Lose all binary mechanical intelligence. Source-only audit, "
-               "no Layer 0, no binary oracle, no Frida.",
+               "no Layer 0, no binary oracle.",
         fallback_description="Layers 1-2-3 only (Joern + LLM, no Layer 0)",
     ),
     Fallback(

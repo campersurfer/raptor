@@ -206,6 +206,7 @@ def compute_gaps(
                 "strategies": sorted(strategies),
                 "is_stale": False,
                 "sloc": sloc,
+                "metadata": metadata,
             }
 
             if item.get("lexical_dead"):

@@ -18,8 +18,10 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -87,6 +89,99 @@ def _resolve_source_dirs(
             resolved[key] = dest
 
     return resolved
+
+
+QUICK_FILE_LIMIT = 5000
+_SOURCE_EXTS = frozenset({
+    ".c", ".h", ".py", ".go", ".rs", ".js", ".ts",
+    ".java", ".cpp", ".cc", ".cxx", ".rb", ".swift",
+})
+
+
+def _count_source_files(path: Path, limit: int = QUICK_FILE_LIMIT + 1) -> int:
+    """Quick source-file count, short-circuiting at *limit*."""
+    count = 0
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and d not in (
+                "vendor", "node_modules", "__pycache__", ".git",
+            )
+        ]
+        for f in files:
+            if Path(f).suffix in _SOURCE_EXTS:
+                count += 1
+                if count >= limit:
+                    return count
+    return count
+
+
+def _build_excerpt_tree(
+    labels: List[Any],
+    source_dirs: Dict[str, Path],
+) -> Dict[str, Path]:
+    """Build minimal source trees containing only labelled files.
+
+    Returns a mapping repo_key -> temp directory.  Caller must clean up.
+    """
+    by_repo: Dict[str, set] = {}
+    for label in labels:
+        by_repo.setdefault(label.source.repo, set()).add(label.source.file)
+
+    excerpt_dirs: Dict[str, Path] = {}
+    for repo_key, files in by_repo.items():
+        src_dir = source_dirs.get(repo_key)
+        if src_dir is None or not src_dir.is_dir():
+            continue
+
+        tmp = Path(tempfile.mkdtemp(prefix=f"corpus-excerpt-{repo_key}-"))
+        copied = 0
+        for rel_file in sorted(files):
+            src = src_dir / rel_file
+            dst = tmp / rel_file
+            if src.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dst))
+                copied += 1
+
+        excerpt_dirs[repo_key] = tmp
+        print(f"  Excerpt: {repo_key} — {copied} file(s)", flush=True)
+
+    return excerpt_dirs
+
+
+def _filter_quick_repos(
+    labels: List[Any],
+    source_dirs: Dict[str, Path],
+) -> Tuple[List[Any], List[str]]:
+    """Remove labels from repos exceeding QUICK_FILE_LIMIT.
+
+    Returns (filtered_labels, skipped_repo_keys).
+    """
+    repo_ok: Dict[str, bool] = {}
+    skipped: List[str] = []
+
+    for label in labels:
+        repo = label.source.repo
+        if repo in repo_ok:
+            continue
+        src_dir = source_dirs.get(repo)
+        if src_dir and src_dir.is_dir():
+            count = _count_source_files(src_dir)
+            repo_ok[repo] = count < QUICK_FILE_LIMIT
+            if not repo_ok[repo]:
+                n = sum(1 for lb in labels if lb.source.repo == repo)
+                skipped.append(repo)
+                print(
+                    f"  Quick: skipping {repo} "
+                    f"({count}+ source files, {n} labels)",
+                    flush=True,
+                )
+        else:
+            repo_ok[repo] = True
+
+    kept = [lb for lb in labels if repo_ok.get(lb.source.repo, True)]
+    return kept, skipped
 
 
 def _verify_labels(
@@ -211,6 +306,13 @@ def _run_audit(
             for label in repo_labels:
                 outcome = outcomes.get(label.function_id)
                 if outcome is None:
+                    # audit log keys use bare function name (no class/receiver),
+                    # so Rows.Scan → Scan — try the stripped form
+                    parts = label.function_id.rsplit(":", 1)
+                    if len(parts) == 2 and "." in parts[1]:
+                        stripped = parts[0] + ":" + parts[1].rsplit(".", 1)[-1]
+                        outcome = outcomes.get(stripped)
+                if outcome is None:
                     actual = "error"
                     hypothesis = ""
                     evidence_tool = ""
@@ -302,8 +404,6 @@ def _run_audit_on_target(
         parts = label.function_id.split(":")
         name = parts[-1] if len(parts) >= 2 else parts[0]
         file = ":".join(parts[:-1]) if len(parts) >= 2 else ""
-        if "." in name:
-            name = name.rsplit(".", 1)[-1]
         fn_specs.append(f"{file}:{name}:{label.source.line_start}")
 
     labeled_ids = {label.function_id for label in labels}
@@ -357,8 +457,12 @@ def _run_audit_on_target(
                 if entry.get("action") != "orchestrator_review":
                     continue
                 key = entry.get("key", "")
-                if key:
-                    outcomes_by_id[key] = entry
+                if not key:
+                    continue
+                outcomes_by_id[key] = entry
+                head, _, tail = key.rpartition(":")
+                if head and tail.isdigit():
+                    outcomes_by_id.setdefault(head, entry)
 
     return outcomes_by_id, out_dir
 
@@ -975,6 +1079,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--debug", action="store_true",
         help="Save LLM reasoning alongside results for diagnosis",
     )
+    parser.add_argument(
+        "--scope", choices=["excerpt", "full", "quick"], default="excerpt",
+        help="Source scope: excerpt (labelled files only, default), "
+             "full (entire repo), quick (skip repos with >5k source files)",
+    )
     args = parser.parse_args(argv)
 
     from .label import load_all_labels
@@ -1011,8 +1120,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"expected={label.expected_status}")
         return 0
 
+    # --- scope filtering ---
+    if args.scope == "quick":
+        labels, skipped_repos = _filter_quick_repos(labels, source_dirs)
+        if not labels:
+            print("No labels remaining after quick filter.")
+            return 1
+        print(f"Quick scope: {len(labels)} label(s) remaining "
+              f"({len(skipped_repos)} repo(s) skipped)")
+
     models = args.model if args.model else [""]
 
+    excerpt_dirs = None
     if args.probe:
         t0 = time.monotonic()
         results = []
@@ -1036,11 +1155,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         model = models[0]
         print(f"Running audit (model: {model or 'default'})...",
               flush=True)
+
+        audit_dirs = source_dirs
+        if args.scope == "excerpt":
+            excerpt_dirs = _build_excerpt_tree(labels, source_dirs)
+            audit_dirs = excerpt_dirs
+
         t0 = time.monotonic()
-        results, run_dirs = _run_audit(
-            labels, source_dirs,
-            model=model, out_dir=args.out,
-        )
+        try:
+            results, run_dirs = _run_audit(
+                labels, audit_dirs,
+                model=model, out_dir=args.out,
+            )
+        finally:
+            if excerpt_dirs:
+                for d in excerpt_dirs.values():
+                    shutil.rmtree(str(d), ignore_errors=True)
         wall_s = time.monotonic() - t0
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
