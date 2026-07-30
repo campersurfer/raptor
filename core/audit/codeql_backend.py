@@ -97,7 +97,7 @@ def codeql_pre_sweep(
 
 def build_sink_results(
     target_path, taint_approx_results=None,
-    *, checklist=None, out_dir=None,
+    *, checklist=None, out_dir=None, scope=None,
 ):
     """Run sink discovery on the target."""
     if not target_path or not Path(target_path).is_dir():
@@ -105,7 +105,13 @@ def build_sink_results(
 
     try:
         from core.inventory.sink_discovery import discover_sinks_for_target
-        result = discover_sinks_for_target(Path(target_path))
+        scope_dirs = (
+            [str(Path(target_path) / s) for s in scope]
+            if scope else None
+        )
+        result = discover_sinks_for_target(
+            Path(target_path), scope_dirs=scope_dirs,
+        )
     except ImportError:
         return None
     except Exception:
@@ -151,13 +157,21 @@ def build_sink_results(
 
 def build_taint_summary(
     target_path,
+    scope=None,
 ) -> Optional[Dict[str, Any]]:
     """Build taint summaries for all supported languages."""
     if not target_path or not Path(target_path).is_dir():
         return None
 
     target_path = Path(target_path)
+    scope_prefixes = (
+        tuple(str((target_path / s).resolve()) for s in scope)
+        if scope else None
+    )
     results: Dict[str, Any] = {}
+
+    def _in_scope(p):
+        return not scope_prefixes or str(p.resolve()).startswith(scope_prefixes)
 
     try:
         from core.analysis.python_module_callgraph import build_python_module_callgraph
@@ -165,6 +179,8 @@ def build_taint_summary(
 
         for path in target_path.rglob("*.py"):
             if not path.is_file():
+                continue
+            if not _in_scope(path):
                 continue
             try:
                 cg = build_python_module_callgraph(path)
@@ -190,6 +206,8 @@ def build_taint_summary(
         multi_lang_count = 0
         for path in target_path.rglob("*"):
             if not path.is_file():
+                continue
+            if not _in_scope(path):
                 continue
             if path.suffix.lower() not in _LANG_EXTENSIONS:
                 continue

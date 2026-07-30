@@ -185,6 +185,7 @@ def build_inventory(
     parallel: bool = True,
     allow_unreachable: bool = False,
     treat_exports_as_entries: Union[bool, str] = "auto",
+    scope: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build a source inventory of all files and functions in the target path.
 
@@ -269,6 +270,19 @@ def build_inventory(
 
     # Collect files in single pass
     file_list, pruned_dirs = _collect_source_files(target, extensions)
+    if scope:
+        scope_prefixes = tuple(
+            str((target / s).resolve()) for s in scope
+        )
+        before = len(file_list)
+        file_list = [
+            f for f in file_list
+            if str(f.resolve()).startswith(scope_prefixes)
+        ]
+        logger.info(
+            "scope filter: %d → %d files (%d excluded)",
+            before, len(file_list), before - len(file_list),
+        )
     logger.info("Found %d source files to process", len(file_list))
 
     output_path = Path(output_dir)

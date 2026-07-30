@@ -102,6 +102,7 @@ def fuzz_coverage_for(
 def load_or_build_taint_approx(
     target_path: Optional[Path],
     out_dir: Optional[Path],
+    scope: Optional[list] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached taint approximations or build and persist them."""
     if out_dir:
@@ -117,7 +118,7 @@ def load_or_build_taint_approx(
                     return cached
             except Exception:
                 pass
-    results = _build_taint_approx(target_path)
+    results = _build_taint_approx(target_path, scope=scope)
     if results and out_dir:
         try:
             from core.json import save_json
@@ -129,6 +130,7 @@ def load_or_build_taint_approx(
 
 def _build_taint_approx(
     target_path: Optional[Path],
+    scope: Optional[list] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build tree-sitter taint approximations for all C/C++ files."""
     if not target_path or not target_path.is_dir():
@@ -142,12 +144,19 @@ def _build_taint_approx(
     except ImportError:
         return None
 
+    scope_prefixes = (
+        tuple(str((target_path / s).resolve()) for s in scope)
+        if scope else None
+    )
+
     results: Dict[str, Any] = {}
     c_exts = {".c", ".h"}
     cpp_exts = {".cc", ".cpp", ".cxx", ".hpp"}
 
     for path in target_path.rglob("*"):
         if not path.is_file():
+            continue
+        if scope_prefixes and not str(path.resolve()).startswith(scope_prefixes):
             continue
         suffix = path.suffix.lower()
         if suffix not in c_exts and suffix not in cpp_exts:
