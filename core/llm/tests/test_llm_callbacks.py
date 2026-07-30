@@ -34,7 +34,7 @@ def _reset_banner_flag():
 class TestLLMClientInit:
     """Verify LLMClient initializes correctly without litellm."""
 
-    @patch("core.llm.config.detect_llm_availability")
+    @patch("core.llm.detection.detect_llm_availability")
     def test_init_works_without_litellm(self, mock_detect):
         """LLMClient should initialize without importing litellm."""
         mock_detect.return_value = MagicMock(

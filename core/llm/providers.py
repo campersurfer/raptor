@@ -1030,8 +1030,9 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']], _
 
         # Determine if field is required:
         # - If schema has "required" key: only those fields are required
-        # - If no "required" key: all fields are required (default JSON Schema behavior)
-        is_required = (not has_required_key) or (field_name in required_fields)
+        # - If no "required" key: all fields optional (JSON Schema default;
+        #   LLMs routinely omit sub-fields of optional nested objects)
+        is_required = has_required_key and (field_name in required_fields)
 
         # If field is not required and has no default, make it Optional
         if not is_required and default_value is ...:
