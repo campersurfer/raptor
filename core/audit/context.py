@@ -837,6 +837,24 @@ def format_context_for_prompt(
             )
         sections.append(PromptSection("prior_verdict", "\n".join(pp), 1))
 
+    if ctx.get("disagreement_override"):
+        do = ctx["disagreement_override"]
+        dp = [
+            "\n### Mechanical tool disagreement",
+            "A mechanical analysis tool (Semgrep, Joern, or CodeQL) "
+            "DISAGREES with your prior clean verdict. The tool found "
+            "a reachable dataflow or taint path that your review missed.",
+        ]
+        if do.get("resolution"):
+            dp.append(f"Resolution: {do['resolution']}")
+        dp.append(
+            "Re-examine the function with this signal in mind. The "
+            "mechanical tool may have found a flow you overlooked. "
+            "If after re-examination the function is still clean, "
+            "explain specifically why the tool's flow is a false positive."
+        )
+        sections.append(PromptSection("disagreement_override", "\n".join(dp), 1))
+
     if ctx.get("callee_findings"):
         cp = [
             "\n### Known-vulnerable callees (from prior iteration)",
@@ -894,7 +912,7 @@ def format_context_for_prompt(
         kept, shed = fit_to_budget(sections, budget_limit)
         if shed:
             labels = [s.label for s in shed]
-            logger.info(
+            logger.debug(
                 "prompt_budget: shed %d sections for %s:%s — %s",
                 len(shed), ctx.get("file", "?"), ctx.get("function", "?"),
                 ", ".join(labels),

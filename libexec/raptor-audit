@@ -416,7 +416,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             elif not args.reach_via:
                 print(
                     f"error [G7 REACHABILITY]: {func_key} has zero static "
-                    f"callers. This may be dead code (honeyslop).\n"
+                    f"callers. This may be dead code.\n"
                     f"  Provide --reach-via explaining how this function "
                     f"is reachable (e.g. 'callback registered at foo.c:42', "
                     f"'HTTP route /admin/status', 'exported API', "
@@ -1132,24 +1132,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             _lifecycle_fail(out_dir, "legacy /audit state — migration required")
             return 1
 
-    # --- LLM client + review_fn ---
-    from core.llm.client import LLMClient
-    from core.audit.llm_review import make_review_fn
-    from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
+    from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
     from core.audit.report import generate_report, write_report
-
-    try:
-        llm_cfg = None
-        if args.max_cost is not None:
-            from core.llm.config import LLMConfig
-            llm_cfg = LLMConfig(max_cost_per_scan=args.max_cost)
-        client = LLMClient(config=llm_cfg)
-    except Exception as exc:
-        print(f"error: could not create LLM client: {exc}", file=sys.stderr)
-        _lifecycle_fail(out_dir, f"LLM client init failed: {exc}")
-        return 1
-
-    review_fn = make_review_fn(client, task_type="audit")
 
     # --- auto-load threat model ---
     threat_model = None
@@ -1189,30 +1173,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                 flush=True,
             )
 
-    models = args.model or []
-    config = OrchestratorConfig(
-        target_path=target_path,
-        out_dir=out_dir,
-        budget=args.budget,
-        scope=args.scope,
-        strategy_filter=args.strategy,
-        annotations_dir=Path(args.annotations_dir) if args.annotations_dir else None,
-        validate=not args.no_validate,
-        codeql_db_path=args.codeql_db,
-        max_cost_usd=args.max_cost,
-        max_seconds=args.max_time,
-        review_passes=args.review_passes,
-        subsystem_depth=args.subsystem_depth,
-        threat_model=threat_model,
-        models=models if models else ["default"],
-        multi_model=len(models) > 1,
-        adversarial=args.adversarial,
-        max_propagation_depth=args.max_propagation_depth,
-        binary_verdicts=binary_verdicts,
-        no_binary_oracle=getattr(args, "no_binary_oracle", False),
-        inventory=checklist_data,
-    )
-
     # --- progress callback ---
     def on_progress(idx: int, total: int, outcome):
         if idx < 0:
@@ -1229,7 +1189,36 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"\nStarting audit of {target_path}", flush=True)
     print(f"Output: {out_dir}\n", flush=True)
 
-    result = run_orchestrator(config, review_fn, on_progress=on_progress)
+    models = args.model or []
+    opts = AuditPipelineOpts(
+        target_path=target_path,
+        out_dir=out_dir,
+        scope=args.scope,
+        models=models if models else None,
+        max_cost_usd=args.max_cost,
+        max_seconds=args.max_time,
+        budget=args.budget,
+        strategy_filter=args.strategy,
+        review_passes=args.review_passes,
+        adversarial=args.adversarial,
+        max_propagation_depth=args.max_propagation_depth,
+        subsystem_depth=args.subsystem_depth,
+        validate=not args.no_validate,
+        no_binary_oracle=getattr(args, "no_binary_oracle", False),
+        binary_verdicts=binary_verdicts,
+        inventory=checklist_data,
+        annotations_dir=Path(args.annotations_dir) if args.annotations_dir else None,
+        codeql_db_path=args.codeql_db,
+        threat_model=threat_model,
+        on_progress=on_progress,
+    )
+
+    try:
+        result = run_audit_pipeline(opts)
+    except Exception as exc:
+        print(f"error: audit pipeline failed: {exc}", file=sys.stderr)
+        _lifecycle_fail(out_dir, f"audit pipeline failed: {exc}")
+        return 1
 
     # --- report ---
     report = generate_report(out_dir)

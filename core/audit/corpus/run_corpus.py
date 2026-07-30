@@ -110,65 +110,51 @@ def _build_checklist(
     target_dir: Path,
     out_dir: Path,
 ) -> bool:
-    """Build checklist for a target (mechanical, no LLM).
-
-    context-map.json requires an LLM pass (/understand --map) and is
-    not built here.  raptor-audit run will search for it via the bridge.
-    """
-    raptor_dir = Path(os.environ["RAPTOR_DIR"])
-    from core.config import RaptorConfig
-    env = RaptorConfig.get_safe_env()
-    env["CLAUDECODE"] = "1"
-    env["_RAPTOR_TRUSTED"] = "1"
-
+    """Build checklist for a target (mechanical, no LLM)."""
     checklist_path = out_dir / "checklist.json"
-    if not checklist_path.exists():
-        print(f"  Building checklist for {target_dir.name}...", flush=True)
-        cp = subprocess.run(
-            [sys.executable,
-             str(raptor_dir / "libexec" / "raptor-build-checklist"),
-             str(target_dir), "--out", str(out_dir)],
-            env=env, capture_output=True, text=True,
+    if checklist_path.exists():
+        return True
+
+    print(f"  Building checklist for {target_dir.name}...", flush=True)
+    try:
+        from core.inventory import build_inventory
+
+        build_inventory(str(target_dir), str(out_dir))
+        return True
+    except Exception as exc:
+        print(f"  checklist build failed: {exc}", file=sys.stderr)
+        return False
+
+
+
+def _start_shared_joern(target_dirs: list[Path]):
+    """Start a Joern server for the corpus run, if available."""
+    try:
+        from core.audit.joern_backend import (
+            start_joern_server,
+            target_has_c_sources,
+            target_has_joern_sources,
         )
-        if cp.returncode != 0:
-            print(f"  checklist build failed: {cp.stderr.strip()[:200]}",
-                  file=sys.stderr)
-            return False
+    except ImportError:
+        return None
+    for td in target_dirs:
+        if target_has_c_sources(td) or target_has_joern_sources(td):
+            srv = start_joern_server(td)
+            if srv is not None:
+                logger.info("shared Joern server started for corpus run")
+                return srv
+    return None
 
-    return True
 
+def _stop_shared_joern(srv):
+    if srv is None:
+        return
+    try:
+        from core.audit.joern_backend import stop_joern_server
 
-def _poll_progress(
-    log_path: Path,
-    seen: int,
-    labeled_ids: set,
-) -> int:
-    """Print new audit-log entries since last poll.  Returns new seen count."""
-    if not log_path.exists():
-        return seen
-    with open(log_path) as f:
-        lines = f.readlines()
-    new_count = len(lines)
-    if new_count <= seen:
-        return seen
-    for line in lines[seen:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if entry.get("action") != "orchestrator_review":
-            continue
-        key = entry.get("key", "")
-        status = entry.get("status", "?")
-        marker = " *" if key in labeled_ids else ""
-        char = {"clean": ".", "suspicious": "?", "finding": "!",
-                "dormant": "~", "error": "x"}.get(status, ".")
-        print(f"  [{new_count}] {key} -> {status} {char}{marker}",
-              flush=True)
-    return new_count
+        stop_joern_server(srv)
+    except Exception:
+        logger.debug("shared Joern server stop failed", exc_info=True)
 
 
 def _run_audit(
@@ -190,62 +176,78 @@ def _run_audit(
     for label in labels:
         by_repo.setdefault(label.source.repo, []).append(label)
 
+    joern_srv = _start_shared_joern(
+        [d for d in source_dirs.values() if d.is_dir()],
+    )
+
     results = []
     run_dirs: List[Path] = []
-    for repo_key, repo_labels in by_repo.items():
-        src_dir = source_dirs.get(repo_key)
-        if src_dir is None or not src_dir.is_dir():
+    try:
+        for repo_key, repo_labels in by_repo.items():
+            src_dir = source_dirs.get(repo_key)
+            if src_dir is None or not src_dir.is_dir():
+                for label in repo_labels:
+                    results.append({
+                        "function_id": label.function_id,
+                        "bug_class": label.bug_class,
+                        "expected": label.expected_status,
+                        "actual": "error",
+                        "match": False,
+                        "hypothesis": "",
+                        "evidence_tool": "",
+                        "model": model,
+                        "cost_usd": 0.0,
+                        "duration_s": 0.0,
+                        "error": f"source dir missing: {repo_key}",
+                    })
+                continue
+
+            outcomes, audit_dir = _run_audit_on_target(
+                src_dir, repo_labels, model=model, out_dir=out_dir,
+                joern_server=joern_srv,
+            )
+            if audit_dir:
+                run_dirs.append(audit_dir)
             for label in repo_labels:
+                outcome = outcomes.get(label.function_id)
+                if outcome is None:
+                    actual = "error"
+                    hypothesis = ""
+                    evidence_tool = ""
+                    cost = 0.0
+                    dur = 0.0
+                else:
+                    actual = outcome["status"]
+                    hypothesis = outcome.get("hypothesis", "")
+                    evidence_tool = outcome.get("evidence_tool", "")
+                    cost = outcome.get("cost_usd", 0.0)
+                    dur = outcome.get("duration_s", 0.0)
+
+                expected = label.expected_status
+                mechanical_skip = evidence_tool in (
+                    "triage:classifier",
+                    "dead-code-gate",
+                ) or (
+                    isinstance(hypothesis, str)
+                    and hypothesis.startswith("[dead-code gate:")
+                )
+                match = _status_matches(expected, actual)
+
                 results.append({
                     "function_id": label.function_id,
                     "bug_class": label.bug_class,
-                    "expected": label.expected_status,
-                    "actual": "error",
-                    "match": False,
-                    "hypothesis": "",
-                    "evidence_tool": "",
+                    "expected": expected,
+                    "actual": actual,
+                    "match": match,
+                    "skipped": mechanical_skip,
+                    "hypothesis": hypothesis,
+                    "evidence_tool": evidence_tool,
                     "model": model,
-                    "cost_usd": 0.0,
-                    "duration_s": 0.0,
-                    "error": f"source dir missing: {repo_key}",
+                    "cost_usd": cost,
+                    "duration_s": dur,
                 })
-            continue
-
-        outcomes, audit_dir = _run_audit_on_target(
-            src_dir, repo_labels, model=model, out_dir=out_dir,
-        )
-        if audit_dir:
-            run_dirs.append(audit_dir)
-        for label in repo_labels:
-            outcome = outcomes.get(label.function_id)
-            if outcome is None:
-                actual = "error"
-                hypothesis = ""
-                evidence_tool = ""
-                cost = 0.0
-                dur = 0.0
-            else:
-                actual = outcome["status"]
-                hypothesis = outcome.get("hypothesis", "")
-                evidence_tool = outcome.get("evidence_tool", "")
-                cost = outcome.get("cost_usd", 0.0)
-                dur = outcome.get("duration_s", 0.0)
-
-            expected = label.expected_status
-            match = _status_matches(expected, actual)
-
-            results.append({
-                "function_id": label.function_id,
-                "bug_class": label.bug_class,
-                "expected": expected,
-                "actual": actual,
-                "match": match,
-                "hypothesis": hypothesis,
-                "evidence_tool": evidence_tool,
-                "model": model,
-                "cost_usd": cost,
-                "duration_s": dur,
-            })
+    finally:
+        _stop_shared_joern(joern_srv)
 
     return results, run_dirs
 
@@ -279,8 +281,9 @@ def _run_audit_on_target(
     *,
     model: str = "",
     out_dir: Optional[Path] = None,
+    joern_server: Optional[Any] = None,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
-    """Run /audit orchestrator on a target.
+    """Run /audit orchestrator on a target (in-process).
 
     Returns (outcomes_by_function_id, audit_output_dir).
     """
@@ -290,57 +293,57 @@ def _run_audit_on_target(
 
     _build_checklist(target_dir, out_dir)
 
-    raptor_dir = Path(os.environ["RAPTOR_DIR"])
-    cmd = [
-        sys.executable,
-        str(raptor_dir / "libexec" / "raptor-audit"),
-        "run",
-        str(target_dir),
-        "--out", str(out_dir),
-        "--max-cost", "50",
-    ]
-    if model:
-        cmd.extend(["--model", model])
+    scope_dirs: list[str] = sorted({
+        str(Path(label.source.file).parent) for label in labels
+    })
 
-    from core.config import RaptorConfig
-    env = RaptorConfig.get_safe_env()
-    env["CLAUDECODE"] = "1"
-    env["_RAPTOR_TRUSTED"] = "1"
+    fn_specs: list[str] = []
+    for label in labels:
+        parts = label.function_id.split(":")
+        name = parts[-1] if len(parts) >= 2 else parts[0]
+        file = ":".join(parts[:-1]) if len(parts) >= 2 else ""
+        if "." in name:
+            name = name.rsplit(".", 1)[-1]
+        fn_specs.append(f"{file}:{name}:{label.source.line_start}")
+
     labeled_ids = {label.function_id for label in labels}
-    log_path = out_dir / ".audit-log.jsonl"
 
-    # 7200s = 2h hard deadline for a single audit target.
-    _AUDIT_DEADLINE_S = 7200
+    from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
+
+    def on_progress(idx, total, outcome):
+        key = f"{outcome.file}:{outcome.function}"
+        status = outcome.status
+        marker = " *" if key in labeled_ids else ""
+        char = {"clean": ".", "suspicious": "?", "finding": "!",
+                "dormant": "~", "error": "x"}.get(status, ".")
+        print(f"  [{total}] {key} -> {status} {char}{marker}", flush=True)
 
     print(f"  Audit started: {target_dir}", flush=True)
     t0 = time.monotonic()
-    proc = subprocess.Popen(
-        cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-    )
 
-    seen = 0
-    deadline = t0 + _AUDIT_DEADLINE_S
-    while proc.poll() is None:
-        if time.monotonic() > deadline:
-            proc.kill()
-            proc.wait()
-            logger.error("Audit timed out after %ds", _AUDIT_DEADLINE_S)
-            break
-        time.sleep(3.0)
-        seen = _poll_progress(log_path, seen, labeled_ids)
-
-    _poll_progress(log_path, seen, labeled_ids)
+    try:
+        pipeline_opts = AuditPipelineOpts(
+            target_path=target_dir.resolve(),
+            out_dir=out_dir,
+            scope=scope_dirs or None,
+            functions=fn_specs,
+            models=[model] if model else None,
+            max_cost_usd=50.0,
+            no_binary_oracle=True,
+            joern_server=joern_server,
+            on_progress=on_progress,
+        )
+        run_audit_pipeline(pipeline_opts)
+        rc = 0
+    except Exception:
+        logger.error("Audit pipeline failed", exc_info=True)
+        rc = 1
 
     wall_s = time.monotonic() - t0
-    rc = proc.returncode
-    if rc != 0:
-        stderr = (proc.stderr.read() if proc.stderr else b"").decode(
-            errors="replace")
-        logger.error("Audit run failed (rc=%d):\n%s", rc, stderr[-2000:])
-
     print(f"  Audit finished in {wall_s:.0f}s (rc={rc})", flush=True)
 
     outcomes_by_id: Dict[str, Dict[str, Any]] = {}
+    log_path = out_dir / ".audit-log.jsonl"
     if log_path.exists():
         with open(log_path) as f:
             for raw in f:
@@ -397,7 +400,11 @@ def _build_probe_context(
     ``/understand --study``.
     """
     file_path = label.source.file
-    func_name = label.function_id.split(":")[-1] if ":" in label.function_id else label.function_id
+    func_name = (
+        label.function_id.split(":")[-1]
+        if ":" in label.function_id
+        else label.function_id
+    )
 
     ctx: Dict[str, Any] = {
         "file": file_path,
@@ -804,23 +811,28 @@ def _format_summary(
     """Format the full summary block."""
     from .corpus_metrics import check_gate, compute_metrics, format_report
 
-    aggregate, per_class = compute_metrics(results)
+    aggregate, per_class, skipped_count = compute_metrics(results)
+    reviewed = [r for r in results if not r.get("skipped")]
     total_cost = sum(r.get("cost_usd", 0.0) for r in results)
     total_llm_s = sum(r.get("duration_s", 0.0) for r in results)
-    matched = sum(1 for r in results if r.get("match"))
-    mismatched = [r for r in results if not r.get("match")]
+    matched = sum(1 for r in reviewed if r.get("match"))
+    mismatched = [r for r in reviewed if not r.get("match")]
 
     lines = []
     lines.append("=" * 70)
     lines.append("Corpus run complete")
     lines.append(f"  Model: {model or 'default'}")
     lines.append(f"  Labels: {len(results)}")
-    lines.append(f"  Matched: {matched}/{len(results)}")
+    if skipped_count:
+        lines.append(f"  Skipped by mechanical gates: {skipped_count}")
+    lines.append(f"  Matched: {matched}/{len(reviewed)}")
     lines.append(f"  Cost: ${total_cost:.4f}")
     lines.append(f"  Wall clock: {wall_s:.0f}s ({wall_s/60:.1f}m)")
     lines.append(f"  LLM time: {total_llm_s:.0f}s ({total_llm_s/60:.1f}m)")
     lines.append("")
-    lines.append(format_report(aggregate, per_class, model=model))
+    lines.append(format_report(
+        aggregate, per_class, model=model, skipped=skipped_count,
+    ))
     lines.append("")
     lines.append(_format_detail_table(results))
 
@@ -904,7 +916,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--class", dest="bug_class", default=None,
-        help="Run only one bug class (e.g. aliasing, honeyslop)",
+        help="Run only one bug class (e.g. aliasing, lifecycle)",
     )
     parser.add_argument(
         "--label", dest="label_id", default=None,
