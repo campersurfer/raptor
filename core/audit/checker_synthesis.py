@@ -46,7 +46,11 @@ def _build_llm_callable(config: Any):
     except ImportError:
         return None
 
-    client = LLMClient()
+    model = None
+    models = getattr(config, "models", None)
+    if models and models[0] != "default":
+        model = models[0]
+    client = LLMClient(pinned_model=model) if model else LLMClient()
     if not hasattr(client, "generate_structured"):
         return None
 

@@ -2373,6 +2373,8 @@ def _run_audit_body(
                     str(config.target_path),
                     str(config.out_dir),
                 ]
+                if config.models and config.models[0] != "default":
+                    study_cmd.extend(["--model", config.models[0]])
                 from core.config import RaptorConfig
                 study_env = RaptorConfig.get_safe_env()
                 study_env["_RAPTOR_TRUSTED"] = "1"
@@ -2514,7 +2516,8 @@ def _run_audit_body(
             iris_llm = None
             try:
                 from core.llm.client import LLMClient
-                iris_llm = LLMClient()
+                _iris_model = config.models[0] if config.models and config.models[0] != "default" else None
+                iris_llm = LLMClient(pinned_model=_iris_model) if _iris_model else LLMClient()
             except Exception:
                 logger.debug("IRIS LLM client init failed", exc_info=True)
 
@@ -2764,7 +2767,8 @@ def _run_audit_body(
 
     try:
         from core.llm.client import LLMClient
-        _dark_client = LLMClient()
+        _dark_model = config.models[0] if config.models and config.models[0] != "default" else None
+        _dark_client = LLMClient(pinned_model=_dark_model) if _dark_model else LLMClient()
         _run_dark_verification(
             result, config,
             llm_client=lambda p, s: _dark_client.generate(
