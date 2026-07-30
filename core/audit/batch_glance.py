@@ -79,6 +79,19 @@ def parse_batch_response(
     return results
 
 
+def _classify_batch_error(exc: Exception) -> str:
+    msg = str(exc).lower()
+    if "rate limit" in msg or "timeout" in msg or "overloaded" in msg:
+        return "api_error"
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return "api_error"
+    if "budget exceeded" in msg:
+        return "budget"
+    if isinstance(exc, json.JSONDecodeError):
+        return "json_parse"
+    return "api_error"
+
+
 def make_batch_review_fn(
     llm_client: Any,
     *,
@@ -123,12 +136,14 @@ def make_batch_review_fn(
             )
         except Exception as exc:
             logger.warning("batch glance review failed: %s", exc)
+            ec = _classify_batch_error(exc)
             return [
                 ReviewOutcome(
                     file=ctx["file"],
                     function=ctx["function"],
                     status="error",
                     body=f"batch review failed: {exc}",
+                    error_class=ec,
                 )
                 for ctx in contexts
             ]
