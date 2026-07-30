@@ -82,7 +82,7 @@ def main(
     if cache is None:
         cache = JsonCache(root=Path(args.cache_root) if args.cache_root else SCA_CACHE_ROOT)
     if http is None:
-        http = default_client()
+        http = default_client(offline=args.offline)
 
     ttl_query = 0 if args.no_cache else 24 * 3600
     osv = OsvClient(http, cache, offline=args.offline,
