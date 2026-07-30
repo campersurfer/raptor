@@ -204,8 +204,8 @@ def _joern_co_callee_groups(
             shared_context=f"Called from {caller} ({caller_file})",
         ))
 
-    logger.info("L0 joern co-callee: %d groups from %d raw caller sets",
-                len(groups), len(raw_groups))
+    logger.debug("L0 joern co-callee: %d groups from %d raw caller sets",
+                 len(groups), len(raw_groups))
     return groups
 
 
@@ -573,8 +573,8 @@ def _verb_prefix_groups(
             ))
 
     all_groups = decorator_groups + verb_groups
-    logger.info("L5 verb-prefix: %d groups (%d decorator, %d verb-prefix)",
-                len(all_groups), len(decorator_groups), len(verb_groups))
+    logger.debug("L5 verb-prefix: %d groups (%d decorator, %d verb-prefix)",
+                 len(all_groups), len(decorator_groups), len(verb_groups))
     return all_groups
 
 
@@ -701,7 +701,7 @@ def _paired_operation_groups(
                 if partner in names and partner != name:
                     _add_pair(name, partner)
 
-    logger.info("L6 paired operations: %d pairs", len(groups))
+    logger.debug("L6 paired operations: %d pairs", len(groups))
     return groups
 
 

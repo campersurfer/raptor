@@ -66,6 +66,18 @@ class TestValidateAllToolsSandboxed:
     def test_empty_list(self):
         assert validate_all_tools_sandboxed([]) == []
 
+    def test_llm_phases_excluded(self):
+        missing = validate_all_tools_sandboxed(
+            ["review", "checker_synthesis", "error_retry", "re_review"]
+        )
+        assert missing == []
+
+    def test_llm_phases_mixed_with_tools(self):
+        missing = validate_all_tools_sandboxed(
+            ["review", "semgrep", "checker_synthesis", "unknown_tool"]
+        )
+        assert missing == ["unknown_tool"]
+
 
 class TestToolPolicy:
     def test_to_dict(self):

@@ -191,7 +191,7 @@ def build_cpg(
     Returns a JoernCPG handle. The CPG is written to output_dir
     (default: tempdir) as a binary file.
     """
-    target = Path(target)
+    target = Path(target).resolve()
     if not target.is_dir():
         raise ValueError(f"target must be a directory: {target}")
 

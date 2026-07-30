@@ -318,7 +318,7 @@ def summary_from_review_result(
         return None
 
     preconditions = []
-    for pc in review_result.get("preconditions", []):
+    for pc in review_result.get("preconditions") or []:
         param = pc.get("parameter", pc.get("param", ""))
         assumption = pc.get("assumption", "")
         if param and assumption:

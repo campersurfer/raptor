@@ -46,6 +46,18 @@ except ImportError as _e:
 
 logger = get_logger()
 
+_MODEL_BANNER_SHOWN = False
+
+
+def _model_banner_shown() -> bool:
+    """Return True (and set flag) if the model banner was already logged."""
+    global _MODEL_BANNER_SHOWN
+    if _MODEL_BANNER_SHOWN:
+        return True
+    _MODEL_BANNER_SHOWN = True
+    return False
+
+
 # After this many consecutive cache write failures, auto-disable
 # caching for the rest of the run. Tuned for "transient blip vs
 # durable problem" — three retries lets a momentary EBUSY recover,
@@ -520,22 +532,18 @@ class LLMClient:
         self._cache_write_failures = 0
 
         logger.debug("LLM Client initialized")
-        if self._pinned_model:
-            # Caller has signalled it will override the model on every call.
-            # Suppress the misleading "Primary: <auto-selected>" and
-            # "Fallback models: N" lines — those reflect the operator's
-            # default config, but none of them will actually fire in this
-            # run.  Log what WILL fire instead.
-            logger.info(
-                "Pinned model: %s (caller override; RAPTOR config defaults bypassed)",
-                self._pinned_model,
-            )
-        elif self.config.primary_model:
-            logger.info("Primary model: %s/%s", self.config.primary_model.provider, self.config.primary_model.model_name)
-            if self.config.enable_fallback:
-                logger.info("Fallback models: %d", len(self.config.fallback_models))
-        else:
-            logger.warning("LLM Client initialized with no primary model — all calls will fail")
+        if not _model_banner_shown():
+            if self._pinned_model:
+                logger.info(
+                    "Pinned model: %s (caller override; RAPTOR config defaults bypassed)",
+                    self._pinned_model,
+                )
+            elif self.config.primary_model:
+                logger.info("Primary model: %s/%s", self.config.primary_model.provider, self.config.primary_model.model_name)
+                if self.config.enable_fallback:
+                    logger.info("Fallback models: %d", len(self.config.fallback_models))
+            else:
+                logger.warning("LLM Client initialized with no primary model — all calls will fail")
 
         # Warn if using Ollama for exploit generation
         if self.config.primary_model and self.config.primary_model.provider.lower() == "ollama":

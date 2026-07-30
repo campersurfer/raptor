@@ -33,6 +33,9 @@ def derive_max_workers(model: str) -> int:
     that value is used (still clamped to [1, 32]).  Otherwise
     returns ``rpm // 2`` (headroom for retries) clamped to [1, 32].
     Falls back to 1 when RPM is unknown.
+
+    ``"default"`` is resolved to the actual primary model inside
+    ``rpm_for`` so callers need not resolve it themselves.
     """
     override = read_tuning_max_llm_workers()
     if override is not None:

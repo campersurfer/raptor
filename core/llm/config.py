@@ -573,10 +573,12 @@ def _get_default_primary_model(
     if (thinking_model
             and thinking_model.api_key
             and (prefer_set is None or thinking_model.provider in prefer_set)):
-        logger.info(
-            f"Using automatic thinking model: "
-            f"{thinking_model.provider}/{thinking_model.model_name}"
-        )
+        if not getattr(_get_default_primary_model, "_logged", False):
+            logger.info(
+                f"Using automatic thinking model: "
+                f"{thinking_model.provider}/{thinking_model.model_name}"
+            )
+            _get_default_primary_model._logged = True
         return thinking_model
 
     # Step 3: default-order autodetect via env vars. Skip providers

@@ -400,6 +400,26 @@ def max_output_for(model: str) -> int:
     return limits["max_output"]
 
 
+def resolve_model_name(model: str) -> str:
+    """Resolve ``"default"`` to the actual primary model name.
+
+    Other model strings pass through unchanged.  Used by callers
+    that receive the operator-level ``"default"`` sentinel and need
+    the concrete model name for RPM / context-window lookups.
+    """
+    if model != "default":
+        return model
+    try:
+        from core.llm.config import _get_default_primary_model
+
+        mc = _get_default_primary_model()
+        if mc is not None and mc.model_name:
+            return mc.model_name
+    except Exception:
+        pass
+    return model
+
+
 def rpm_for(model: str, *, default: int = 0) -> int:
     """Requests-per-minute limit for *model*.
 
@@ -408,8 +428,10 @@ def rpm_for(model: str, *, default: int = 0) -> int:
     or unknown models when the caller passes ``default=0``).
 
     Bedrock-prefixed identifiers and dated aliases are normalised the
-    same way as :func:`context_window_for`.
+    same way as :func:`context_window_for`.  ``"default"`` is resolved
+    to the actual primary model before lookup.
     """
+    model = resolve_model_name(model)
     limits = MODEL_LIMITS.get(model)
     if limits is None:
         limits = MODEL_LIMITS.get(_strip_dated_alias(model))

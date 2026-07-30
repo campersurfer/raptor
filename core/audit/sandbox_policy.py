@@ -164,15 +164,24 @@ def all_policies() -> List[ToolPolicy]:
     return list(_TOOL_POLICIES.values())
 
 
+_LLM_PHASES = frozenset({
+    "review", "checker_synthesis", "error_retry", "re_review",
+})
+
+
 def validate_all_tools_sandboxed(
     invoked_tools: List[str],
 ) -> List[str]:
     """Check that every invoked tool has a sandbox policy.
 
     Returns a list of tools WITHOUT a policy (should be empty).
+    LLM-only phases (review, checker_synthesis, etc.) are excluded —
+    they don't invoke external tools.
     """
     missing = []
     for tool in invoked_tools:
+        if tool in _LLM_PHASES:
+            continue
         if get_sandbox_profile(tool) is None:
             missing.append(tool)
     return missing

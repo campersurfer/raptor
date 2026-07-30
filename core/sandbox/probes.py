@@ -497,7 +497,7 @@ def mount_unavailable_reason() -> tuple[str, str]:
         if v == "1":
             return (
                 "mount-ns blocked by host "
-                "(apparmor_restrict_unprivileged_userns=1)",
+                "(kernel.apparmor_restrict_unprivileged_userns=1)",
                 "set kernel.apparmor_restrict_unprivileged_userns=0 "
                 "(Ubuntu 24.04+) and install the uidmap package; or "
                 "rerun on a host where mount-ns is available.",

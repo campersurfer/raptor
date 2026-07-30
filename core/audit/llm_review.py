@@ -478,7 +478,15 @@ _DEFAULT_SYSTEM_PROMPT = (
     "function uses locks/mutexes for SOME fields but accesses others "
     "without the same lock, inconsistent synchronisation is a finding "
     "HERE — concurrent callers are not 'buggy' for using concurrency "
-    "that the rest of the API already supports\n"
+    "that the rest of the API already supports. "
+    "Second exception: if the package/module spawns its own "
+    "goroutines, threads, or callbacks (context cancellation "
+    "handlers, finalizers, background workers, timer callbacks) "
+    "that access shared state, a race between this function and "
+    "those INTERNAL goroutines/threads is a finding even when the "
+    "type's API says 'not safe for concurrent use by callers' — "
+    "the contract refers to external callers, not internal "
+    "synchronisation the type itself is responsible for\n"
     "- The precondition is extreme (UINT_MAX-length strings, exact "
     "byte-aligned truncation)\n"
     "- Your hypothesis depends on an UNVERIFIED assumption about types, "
@@ -599,6 +607,10 @@ _CONTRACT_DELEGATION = frozenset({
     "handled upstream", "validated upstream",
     "checked by the caller", "validated by the caller",
     "bounded by the caller", "ensured by the caller",
+    "has a logic error", "has a bug",
+    "does not perform", "does not behave",
+    "is implemented incorrectly", "is broken",
+    "fails to validate", "fails to check",
 })
 
 
@@ -782,7 +794,7 @@ def make_review_fn(
                 snippet = counter[:120]
                 if len(counter) > 120:
                     snippet += "…"
-                logger.info(
+                logger.debug(
                     "counter-hypothesis escalation %s:%s: %s",
                     ctx["file"], ctx["function"], snippet,
                 )
