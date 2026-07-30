@@ -335,12 +335,10 @@ def verify_guard_relevance_cpg(
             )
             if taint_query is not None:
                 taint_result = _run_query(joern_server, taint_query)
-                if taint_result is not None:
-                    # Check if guard identifiers appear in taint path elements
+                if taint_result:
                     from .condition_binding import extract_identifiers
                     guard_idents = extract_identifiers(guard.text)
-                    taint_codes = set(taint_result) if taint_result else set()
-                    # A taint element's code may contain one of our guard idents
+                    taint_codes = set(taint_result)
                     taint_idents: Set[str] = set()
                     for code in taint_codes:
                         taint_idents.update(extract_identifiers(str(code)))

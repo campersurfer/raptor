@@ -283,7 +283,6 @@ def _z3_overflow_check(
     for v in vars_map.values():
         solver.push()
         solver.add(v > buffer_size)
-        solver.add(v >= 0)  # lengths are non-negative
         result = solver.check()
         if result == z3.sat:
             model = solver.model()
@@ -383,12 +382,12 @@ def _z3_consistency_check(
             solver.add(v != c.bound_value)
 
     result = solver.check()
-    if result == z3.sat:
-        return (True, "constraints are satisfiable (guard does not block all paths)")
-    elif result == z3.unsat:
-        return (False, "constraints are unsatisfiable (guard blocks all paths)")
+    if result == z3.unsat:
+        return (False, "constraints are contradictory — dead path")
     else:
-        return (True, "solver timeout — conservatively assume insufficient")
+        # SAT or unknown: constraints are consistent (or inconclusive);
+        # consistency alone says nothing about guard sufficiency
+        return (False, "constraints are consistent — no insufficiency proven")
 
 
 def _arithmetic_check(
