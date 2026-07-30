@@ -317,6 +317,28 @@ def cmd_record(args: argparse.Namespace) -> int:
             )
             return 1
 
+    # Auto-resolve line numbers from the checklist when not provided.
+    # Must run before G7 so the reachability check gets the correct
+    # line_start (callers_of matches by exact InternalFunction equality
+    # including line — line=0 silently misses all definitive callers).
+    from core.audit.gaps import load_checklist, load_context_map
+
+    checklist = load_checklist(out_dir)
+    context_map = load_context_map(out_dir)
+
+    line_start = args.line_start or 0
+    line_end = args.line_end
+    if not line_start:
+        for ck_file in checklist.get("files", []):
+            if ck_file.get("path") == args.file:
+                for item in ck_file.get("items", []):
+                    if item.get("name") == args.function:
+                        line_start = item.get("line_start", 0)
+                        if not line_end:
+                            line_end = item.get("line_end")
+                        break
+                break
+
     # G7: REACHABILITY — findings must be reachable. Two-signal gate:
     #   - Both call graph (zero callers) AND binary oracle (absent, full
     #     DWARF) agree → hard downgrade to dormant
@@ -324,32 +346,64 @@ def cmd_record(args: argparse.Namespace) -> int:
     #     --reach-via explaining how the function is reachable
     #   - Entry points and functions with callers bypass this gate
     if args.status == "finding":
-        from core.audit.reachability import check_reachability
-        from core.audit.gaps import load_checklist, load_context_map
+        is_entry = False
+        if context_map:
+            for ep in context_map.get("entry_points", []):
+                if (ep.get("file") == args.file
+                        and ep.get("name") == args.function):
+                    is_entry = True
+                    break
 
-        checklist = load_checklist(out_dir)
-        context_map = load_context_map(out_dir)
+        has_callers = None
+        if not is_entry:
+            inventory = None
+            try:
+                inventory_path = out_dir / "inventory.json"
+                if inventory_path.exists():
+                    with open(inventory_path) as inv_f:
+                        inventory = json.load(inv_f)
+            except (json.JSONDecodeError, OSError):
+                pass
 
-        inventory = None
-        try:
-            inventory_path = out_dir / "inventory.json"
-            if inventory_path.exists():
-                with open(inventory_path) as inv_f:
-                    inventory = json.load(inv_f)
-        except (json.JSONDecodeError, OSError):
-            pass
+            if inventory:
+                try:
+                    from core.analysis.reachability import (
+                        InternalFunction,
+                        callers_of,
+                    )
+                    target = InternalFunction(
+                        file_path=args.file,
+                        name=args.function,
+                        line=line_start,
+                    )
+                    result = callers_of(
+                        inventory, target, exclude_test_files=True,
+                    )
+                    has_callers = len(result.all_callers) > 0
+                except (ImportError, TypeError, ValueError):
+                    pass
 
-        verdict = check_reachability(
-            file_path=args.file,
-            function_name=args.function,
-            checklist=checklist,
-            context_map=context_map,
-            inventory=inventory,
-        )
+        if not is_entry and has_callers is not None and not has_callers:
+            binary_absent = False
+            binary_tier = None
+            for fe in checklist.get("files", []):
+                if fe.get("path") != args.file:
+                    continue
+                for item in fe.get("items", []):
+                    if item.get("name") != args.function:
+                        continue
+                    bo = (item.get("metadata") or {}).get("binary_oracle")
+                    if bo:
+                        binary_absent = bo.get("classification") == "absent"
+                        binary_tier = "full"
+                        for b in bo.get("binaries", []):
+                            if b.get("tier") == "symbol_only":
+                                binary_tier = "symbol_only"
+                                break
+                    break
+                break
 
-        if not verdict.reachable:
-            reach_via = args.reach_via
-            if verdict.binary_absent and verdict.binary_tier == "full":
+            if binary_absent and binary_tier == "full":
                 print(
                     f"error [G7 REACHABILITY]: {func_key} has zero static "
                     f"callers AND binary oracle says absent (full DWARF). "
@@ -359,7 +413,7 @@ def cmd_record(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            elif not reach_via:
+            elif not args.reach_via:
                 print(
                     f"error [G7 REACHABILITY]: {func_key} has zero static "
                     f"callers. This may be dead code (honeyslop).\n"
@@ -374,22 +428,6 @@ def cmd_record(args: argparse.Namespace) -> int:
                 return 1
 
     # --- End gates ---
-
-    # Auto-resolve line numbers from the checklist when not provided
-    line_start = args.line_start or 0
-    line_end = args.line_end
-    if not line_start:
-        from core.audit.gaps import load_checklist
-        ck = load_checklist(out_dir)
-        for ck_file in ck.get("files", []):
-            if ck_file.get("path") == args.file:
-                for item in ck_file.get("items", []):
-                    if item.get("name") == args.function:
-                        line_start = item.get("line_start", 0)
-                        if not line_end:
-                            line_end = item.get("line_end")
-                        break
-                break
 
     strategies = args.strategies.split(",") if args.strategies else []
     if not isinstance(strategies, list):
