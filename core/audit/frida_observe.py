@@ -410,6 +410,61 @@ def _run_frida_session(
                 pass
 
 
+def _run_frida_session_pid(
+    pid: int,
+    script_source: str,
+    log_file: Path,
+    timeout: int = _OBSERVE_TIMEOUT_S,
+) -> bool:
+    """Run a Frida session by PID without requiring a config object.
+
+    Thin wrapper around the CLI invocation for use by auto-launch
+    callers that manage their own process lifecycle.
+    """
+    script_file = None
+    try:
+        fd, script_path = tempfile.mkstemp(suffix=".js", prefix="raptor_frida_")
+        os.close(fd)
+        script_file = Path(script_path)
+        script_file.write_text(script_source)
+
+        cmd = [
+            "frida",
+            "-p", str(pid),
+            "-l", str(script_file),
+            "--no-pause",
+            "-o", str(log_file),
+        ]
+
+        env = _safe_env()
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+
+        return result.returncode == 0 or log_file.stat().st_size > 0
+
+    except subprocess.TimeoutExpired:
+        logger.debug("Frida session timed out after %ds", timeout)
+        return log_file.exists() and log_file.stat().st_size > 0
+    except FileNotFoundError:
+        logger.debug("frida CLI not found")
+        return False
+    except Exception as exc:
+        logger.debug("Frida session error: %s", exc)
+        return False
+    finally:
+        if script_file and script_file.exists():
+            try:
+                script_file.unlink()
+            except OSError:
+                pass
+
+
 def _parse_observations(log_file: Path) -> List[FridaObservation]:
     """Parse JSONL observations from a Frida session log."""
     observations: List[FridaObservation] = []
