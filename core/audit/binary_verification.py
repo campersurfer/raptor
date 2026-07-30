@@ -11,6 +11,7 @@ Confirms function reachability at runtime.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import subprocess
@@ -22,6 +23,18 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _RULES_DIR = Path(__file__).parent / "rules" / "decompiler"
+
+
+def _safe_env() -> Dict[str, str]:
+    """Build a sanitised environment for binary subprocesses."""
+    try:
+        from core.config import RaptorConfig
+        return RaptorConfig.get_safe_env()
+    except Exception:
+        env = dict(os.environ)
+        for key in ("TERMINAL", "EDITOR", "VISUAL", "BROWSER", "PAGER"):
+            env.pop(key, None)
+        return env
 
 _CWE_RULE_MAP: Dict[str, List[str]] = {
     "CWE-134": ["format-string.yaml"],
@@ -116,7 +129,6 @@ def auto_launch_and_observe(
     the process is terminated.
     """
     try:
-        import importlib
         importlib.import_module("frida")
     except ImportError:
         logger.debug("frida not available — skipping auto-launch")
@@ -132,11 +144,14 @@ def auto_launch_and_observe(
         if stimulate_args:
             args.extend(stimulate_args)
 
+        safe_env = _safe_env()
+
         proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=safe_env,
         )
 
         time.sleep(0.3)

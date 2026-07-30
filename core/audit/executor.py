@@ -68,6 +68,7 @@ def run_executor_sync(
     budget_check: Callable[[], bool] | None = None,
     review_one_fn: Callable | None = None,
     on_tick: Callable[[dict[str, Any]], None] | None = None,
+    reviewed_outcomes: dict[str, Any] | None = None,
 ) -> ExecutorStats:
     """Serial executor — drop-in replacement for the current ``for gap`` loop.
 
@@ -111,6 +112,7 @@ def run_executor_sync(
                     budget_check=budget_check,
                     review_one_fn=review_one_fn,
                     on_tick=on_tick,
+                    reviewed_outcomes=reviewed_outcomes,
                 ),
             )
         finally:
@@ -137,6 +139,8 @@ def run_executor_sync(
             review_idx=review_idx,
             total=total,
             collector=collector,
+            graph=graph,
+            reviewed_outcomes=reviewed_outcomes,
         )
         for t in glance_batch:
             graph.mark_complete(t.key)
@@ -171,7 +175,11 @@ def run_executor_sync(
         task = tasks[0]
         stats.dispatched += 1
 
-        if batch_review_fn and _is_glance(task, shared):
+        if (
+            batch_review_fn
+            and _is_glance(task, shared)
+            and not task.gap.get("force_review")
+        ):
             glance_batch.append(task)
             if len(glance_batch) >= _GLANCE_BATCH_SIZE:
                 _flush_glance_batch()
@@ -195,6 +203,8 @@ def run_executor_sync(
                 review_idx=review_idx,
                 total=total,
                 collector=collector,
+                graph=graph,
+                reviewed_outcomes=reviewed_outcomes,
             )
         except RuntimeError as exc:
             if "budget exceeded" in str(exc).lower():
@@ -242,6 +252,8 @@ def run_executor_sync(
                     review_idx=review_idx,
                     total=total,
                     collector=collector,
+                    graph=graph,
+                    reviewed_outcomes=reviewed_outcomes,
                 )
             except RuntimeError as exc:
                 if "budget exceeded" in str(exc).lower():
@@ -275,6 +287,7 @@ async def _run_async(
     budget_check: Callable[[], bool] | None = None,
     review_one_fn: Callable | None = None,
     on_tick: Callable[[dict[str, Any]], None] | None = None,
+    reviewed_outcomes: dict[str, Any] | None = None,
 ) -> ExecutorStats:
     """Async executor with bounded concurrency via semaphore.
 
@@ -305,6 +318,7 @@ async def _run_async(
             budget_check=budget_check,
             review_one_fn=review_one_fn,
             on_tick=on_tick,
+            reviewed_outcomes=reviewed_outcomes,
         )
     finally:
         if throttle.signal_count:
@@ -336,6 +350,7 @@ async def _run_async_body(
     budget_check: Callable[[], bool] | None = None,
     review_one_fn: Callable | None = None,
     on_tick: Callable[[dict[str, Any]], None] | None = None,
+    reviewed_outcomes: dict[str, Any] | None = None,
 ) -> ExecutorStats:
     """Inner body of the async executor, separated so _run_async can
     wrap it in try/finally for throttle cleanup."""
@@ -370,7 +385,11 @@ async def _run_async_body(
     def _dispatch_ready(tasks: list[Any]) -> None:
         """Route ready tasks: glance-tier into batch queue, others individual."""
         for task in tasks:
-            if batch_review_fn and _is_glance(task, shared):
+            if (
+                batch_review_fn
+                and _is_glance(task, shared)
+                and not task.gap.get("force_review")
+            ):
                 glance_pending.append(task)
                 stats.dispatched += 1
             else:
@@ -427,6 +446,8 @@ async def _run_async_body(
                         review_idx=ri,
                         total=total,
                         collector=collector,
+                        graph=graph,
+                        reviewed_outcomes=reviewed_outcomes,
                     ),
                 )
             except RuntimeError as exc:
@@ -471,6 +492,8 @@ async def _run_async_body(
                         review_idx=i,
                         total=total,
                         collector=collector,
+                        graph=graph,
+                        reviewed_outcomes=reviewed_outcomes,
                     ),
                 )
             except RuntimeError as exc:
@@ -536,6 +559,8 @@ async def _run_async_body(
                             review_idx=i,
                             total=total,
                             collector=collector,
+                            graph=graph,
+                            reviewed_outcomes=reviewed_outcomes,
                         ),
                     )
                 except RuntimeError as exc:
@@ -614,6 +639,8 @@ def _process_glance_batch(
     review_idx: int = 0,
     total: int = 0,
     collector: Any = None,
+    graph: Any = None,
+    reviewed_outcomes: dict[str, Any] | None = None,
 ) -> None:
     """Process a batch of GLANCE tasks in a single LLM call.
 
@@ -668,6 +695,8 @@ def _process_glance_batch(
                     review_idx=review_idx + i,
                     total=total,
                     collector=collector,
+                    graph=graph,
+                    reviewed_outcomes=reviewed_outcomes,
                 )
             except RuntimeError as exc:
                 if "budget exceeded" in str(exc).lower():

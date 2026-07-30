@@ -3124,6 +3124,67 @@ class TestSageHypothesisPathway:
             _commit_outcome(config, outcome, gap)
             mock_store.assert_not_called()
 
+    def test_commit_outcome_chain_context_tag(self, tmp_path: Path):
+        """Chain-injected gaps tag evidence_tool with chain_context."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _commit_outcome
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+        )
+
+        outcome = ReviewOutcome(
+            file="src/auth.c", function="check_pw",
+            status="finding", body="vuln",
+            hypothesis="buffer overflow via chain",
+            evidence_tool="semgrep:rule",
+        )
+        gap = {
+            "file": "src/auth.c", "name": "check_pw",
+            "line_start": 1, "_sage_source_hash": "h123",
+            "force_review": True,
+        }
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock_store:
+            mock_store.return_value = True
+            _commit_outcome(config, outcome, gap)
+
+            mock_store.assert_called_once()
+            kw = mock_store.call_args
+            assert kw[1]["evidence_tool"] == "semgrep:rule+chain_context"
+
+    def test_commit_outcome_chain_context_tag_no_prior_tool(self, tmp_path: Path):
+        """Chain-injected gaps with no evidence_tool get bare chain_context."""
+        from unittest.mock import patch as _patch
+
+        from core.audit.orchestrator import _commit_outcome
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+        )
+
+        outcome = ReviewOutcome(
+            file="src/auth.c", function="check_pw",
+            status="finding", body="vuln",
+            hypothesis="buffer overflow via chain",
+        )
+        gap = {
+            "file": "src/auth.c", "name": "check_pw",
+            "line_start": 1, "_sage_source_hash": "h123",
+            "force_review": True,
+        }
+
+        with _patch("core.sage.hooks.store_audit_hypothesis_verdict") as mock_store:
+            mock_store.return_value = True
+            _commit_outcome(config, outcome, gap)
+
+            mock_store.assert_called_once()
+            kw = mock_store.call_args
+            assert kw[1]["evidence_tool"] == "chain_context"
+
     def test_source_hash_precompute_via_orchestrator(self, tmp_path: Path):
         """run_orchestrator pre-computes _sage_source_hash on gaps with line_start."""
         from unittest.mock import patch as _patch

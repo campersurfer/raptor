@@ -22,7 +22,7 @@ from core.audit.block_review import (
     try_build_cfg,
     _count_paths_to_dangerous,
     _is_branch_node,
-    _topological_sort,
+    _bfs_traversal,
 )
 
 
@@ -202,13 +202,13 @@ class TestBranchDetection:
         assert not _is_branch_node(cfg, exit_n)
 
 
-# ---- Topological sort ----
+# ---- BFS traversal ----
 
-class TestTopologicalSort:
+class TestBfsTraversal:
     def test_linear_preserves_order(self):
         cfg = _linear_cfg(3)
         nodes = list(cfg.nodes())
-        order = _topological_sort(cfg, nodes)
+        order = _bfs_traversal(cfg, nodes)
         assert order[0].kind == "entry"
         assert order[-1].kind == "exit"
         assert len(order) == len(nodes)
@@ -216,7 +216,7 @@ class TestTopologicalSort:
     def test_cyclic_cfg_terminates(self):
         cfg = _loop_cfg()
         nodes = list(cfg.nodes())
-        order = _topological_sort(cfg, nodes)
+        order = _bfs_traversal(cfg, nodes)
         assert len(order) == len(nodes)
         assert order[0].kind == "entry"
 
@@ -228,7 +228,7 @@ class TestTopologicalSort:
         adj = {id(entry): [exit_n], id(exit_n): [], id(orphan): []}
         cfg = _CFG(entry_node=entry, exit_node=exit_n,
                     _nodes=nodes, _adj=adj)
-        order = _topological_sort(cfg, nodes)
+        order = _bfs_traversal(cfg, nodes)
         assert len(order) == 3
         assert orphan in order
 
@@ -238,7 +238,7 @@ class TestTopologicalSort:
         nodes = [n1, n2]
         cfg = _CFG(_nodes=nodes, _adj={})
         cfg.entry_node = None
-        order = _topological_sort(cfg, nodes)
+        order = _bfs_traversal(cfg, nodes)
         assert order == nodes
 
 

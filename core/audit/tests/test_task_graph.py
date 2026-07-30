@@ -473,6 +473,138 @@ class TestGraphStats:
         assert "initial_ready" in d
 
 
+class TestInjectTask:
+    def test_inject_new_task(self) -> None:
+        """inject_task adds a brand-new task to the ready heap."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        assert len(g) == 1
+        added = g.inject_task(
+            "b.py:f2:0", _gap("b.py", "f2", 0.9), 0.9,
+        )
+        assert added is True
+        assert len(g) == 2
+        assert g.pending == 2
+
+    def test_inject_completed_returns_false(self) -> None:
+        """Injecting a completed task returns False and doesn't re-add."""
+        wq = [_gap("a.py", "f1")]
+        g = TaskGraph.from_workqueue(wq, [])
+        g.pop_ready(1)
+        g.mark_complete("a.py:f1:0")
+        result = g.inject_task("a.py:f1:0", _gap("a.py", "f1"), 1.0)
+        assert result is False
+        assert g.pending == 0
+
+    def test_inject_reprioritises_existing(self) -> None:
+        """Injecting an existing task at higher priority reprioritises it."""
+        wq = [
+            _gap("a.py", "low", 0.1),
+            _gap("a.py", "high", 0.9),
+        ]
+        g = TaskGraph.from_workqueue(wq, [])
+        g.inject_task("a.py:low:0", _gap("a.py", "low"), 2.0)
+        ready = g.pop_ready(2)
+        assert ready[0].key == "a.py:low:0"
+
+    def test_inject_lower_priority_no_change(self) -> None:
+        """Injecting at lower priority than existing doesn't demote."""
+        wq = [_gap("a.py", "high", 0.9)]
+        g = TaskGraph.from_workqueue(wq, [])
+        g.inject_task("a.py:high:0", _gap("a.py", "high"), 0.1)
+        ready = g.pop_ready(1)
+        assert ready[0].key == "a.py:high:0"
+
+    def test_injected_count(self) -> None:
+        """injected_count tracks tasks added after construction."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        assert g.injected_count == 0
+        g.inject_task("b.py:f2:0", _gap("b.py", "f2"), 0.5)
+        assert g.injected_count == 1
+        g.inject_task("c.py:f3:0", _gap("c.py", "f3"), 0.5)
+        assert g.injected_count == 2
+
+    def test_inject_interleaves_with_pop(self) -> None:
+        """Injected tasks appear in pop_ready based on priority."""
+        wq = [_gap("a.py", "first", 0.5)]
+        g = TaskGraph.from_workqueue(wq, [])
+        g.pop_ready(1)
+        g.inject_task("a.py:urgent:0", _gap("a.py", "urgent", 2.0), 2.0)
+        ready = g.pop_ready(1)
+        assert ready[0].key == "a.py:urgent:0"
+
+    def test_drain_with_injected_tasks(self) -> None:
+        """All tasks (original + injected) drain correctly."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        g.inject_task("b.py:f2:0", _gap("b.py", "f2"), 0.5)
+        completed = []
+        while g.pending > 0:
+            ready = g.pop_ready(10)
+            if not ready:
+                break
+            for t in ready:
+                g.mark_complete(t.key)
+                completed.append(t.key)
+        assert g.pending == 0
+        assert len(completed) == 2
+
+    def test_requeue_completed_task(self) -> None:
+        """requeue=True moves a completed task back to the ready queue."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        g.pop_ready(1)
+        g.mark_complete("a.py:f1:0")
+        assert g.pending == 0
+        result = g.inject_task(
+            "a.py:f1:0", _gap("a.py", "f1"), 5.0, requeue=True,
+        )
+        assert result is True
+        assert g.pending == 1
+        ready = g.pop_ready(1)
+        assert ready[0].key == "a.py:f1:0"
+
+    def test_requeue_only_once(self) -> None:
+        """A task can only be requeued once to prevent infinite loops."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        g.pop_ready(1)
+        g.mark_complete("a.py:f1:0")
+        g.inject_task("a.py:f1:0", _gap("a.py", "f1"), 5.0, requeue=True)
+        g.pop_ready(1)
+        g.mark_complete("a.py:f1:0")
+        result = g.inject_task(
+            "a.py:f1:0", _gap("a.py", "f1"), 5.0, requeue=True,
+        )
+        assert result is False
+        assert g.pending == 0
+
+    def test_requeue_false_default(self) -> None:
+        """Without requeue=True, completed tasks are not re-added."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        g.pop_ready(1)
+        g.mark_complete("a.py:f1:0")
+        result = g.inject_task("a.py:f1:0", _gap("a.py", "f1"), 5.0)
+        assert result is False
+
+    def test_requeue_updates_gap(self) -> None:
+        """Requeued task picks up the new gap dict."""
+        g = TaskGraph.from_workqueue([_gap("a.py", "f1")], [])
+        g.pop_ready(1)
+        g.mark_complete("a.py:f1:0")
+        new_gap = _gap("a.py", "f1")
+        new_gap["force_review"] = True
+        g.inject_task("a.py:f1:0", new_gap, 5.0, requeue=True)
+        ready = g.pop_ready(1)
+        assert ready[0].gap.get("force_review") is True
+
+    def test_reprioritise_merges_force_review(self) -> None:
+        """Reprioritising a pending task merges force_review into its gap."""
+        wq = [_gap("a.py", "f1", 0.1)]
+        g = TaskGraph.from_workqueue(wq, [])
+        new_gap = _gap("a.py", "f1")
+        new_gap["force_review"] = True
+        g.inject_task("a.py:f1:0", new_gap, 5.0)
+        ready = g.pop_ready(1)
+        assert ready[0].gap.get("force_review") is True
+
+
 class TestSameBareCrossEdge:
     def test_same_bare_key_edge_skipped(self) -> None:
         """Edge where caller and callee have the same bare key (e.g. Go

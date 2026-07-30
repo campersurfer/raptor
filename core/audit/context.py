@@ -873,6 +873,44 @@ def format_context_for_prompt(
                 cp.append(f"- Mechanical evidence: {cf['mechanical_evidence']}")
         sections.append(PromptSection("callee_findings", "\n".join(cp), 1))
 
+    if ctx.get("chain_findings"):
+        callers = [cf for cf in ctx["chain_findings"] if cf.get("direction") == "caller"]
+        callees = [cf for cf in ctx["chain_findings"] if cf.get("direction") != "caller"]
+        cp = ["\n### Connected findings (from this review pass)"]
+        if callees:
+            cp.append(
+                "The following functions CALLED BY this code were found "
+                "vulnerable or suspicious. Does this function pass "
+                "unsanitised or attacker-controlled input to them?",
+            )
+            for cf in callees:
+                label = f"callee, {cf.get('status', '?')}"
+                if cf.get("evidence_tool"):
+                    label += f", confirmed by {cf['evidence_tool']}"
+                cp.append(f"\n**`{cf['function']}`** ({label})")
+                if cf.get("hypothesis"):
+                    cp.append(f"- Hypothesis: {cf['hypothesis']}")
+                if cf.get("body"):
+                    cp.append(f"- Finding: {cf['body']}")
+        if callers:
+            cp.append(
+                "\nThe following CALLERS of this function were found "
+                "vulnerable or suspicious. Does this function consume "
+                "corrupted or attacker-controlled output from them, "
+                "or does a vulnerability in the caller depend on this "
+                "function's return value or side effects?",
+            )
+            for cf in callers:
+                label = f"caller, {cf.get('status', '?')}"
+                if cf.get("evidence_tool"):
+                    label += f", confirmed by {cf['evidence_tool']}"
+                cp.append(f"\n**`{cf['function']}`** ({label})")
+                if cf.get("hypothesis"):
+                    cp.append(f"- Hypothesis: {cf['hypothesis']}")
+                if cf.get("body"):
+                    cp.append(f"- Finding: {cf['body']}")
+        sections.append(PromptSection("chain_findings", "\n".join(cp), 1))
+
     if ctx.get("batch_context"):
         bp = [
             "\n### Batch review",

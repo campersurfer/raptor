@@ -130,6 +130,16 @@ class SharedState:
     # so callers don't need to re-extract from context_map every time.
     call_edges: list[dict[str, Any]] = field(default_factory=list)
 
+    # Adjacency index over call_edges: maps "file:function" → list of edges
+    # involving that function (as caller or callee).  Built once at loop
+    # setup; eliminates per-function linear scans during chain collection
+    # and injection.
+    call_edge_index: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+
+    # Checklist lookup: maps (file, function_name) → gap dict for O(1)
+    # lookups during chain injection.
+    checklist_index: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+
     # IRIS bypass findings loaded from a prior run; keyed by target function.
     iris_bypass_by_func: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
@@ -239,6 +249,28 @@ class SharedState:
         are optional so callers can pass ``None`` and rely on the dataclass
         defaults when the seed value is unknown at prep time.
         """
+        edge_index: dict[str, list[dict[str, Any]]] = {}
+        for edge in call_edges:
+            caller_bare = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
+            callee_file = edge.get("callee_file") or edge.get("caller_file", "")
+            callee_bare = f"{callee_file}:{edge.get('callee', '')}"
+            edge_index.setdefault(caller_bare, []).append(edge)
+            if callee_bare != caller_bare:
+                edge_index.setdefault(callee_bare, []).append(edge)
+
+        cl_index: dict[tuple[str, str], dict[str, Any]] = {}
+        for file_info in checklist.get("files", []):
+            fpath = file_info.get("path", "")
+            for item in file_info.get("items", file_info.get("functions", [])):
+                name = item.get("name", "")
+                if fpath and name:
+                    cl_index[(fpath, name)] = {
+                        "file": fpath,
+                        "name": name,
+                        "line_start": item.get("line_start", 0),
+                        "line_end": item.get("line_end"),
+                    }
+
         return cls(
             checklist=checklist,
             context_map=context_map,
@@ -271,6 +303,8 @@ class SharedState:
             prop_config=prop_config,
             iris_taint_specs=iris_taint_specs,
             call_edges=call_edges,
+            call_edge_index=edge_index,
+            checklist_index=cl_index,
             iris_bypass_by_func=iris_bypass_by_func if iris_bypass_by_func is not None else {},
             domain_model=domain_model,
             taint_summary_results=taint_summary_results if taint_summary_results is not None else {},

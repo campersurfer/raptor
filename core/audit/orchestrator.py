@@ -295,6 +295,27 @@ class OrchestratorResult:
     )
 
 
+class _LockedOutcomes:
+    """Thread-safe dict-like for reviewed_outcomes shared across workers."""
+
+    __slots__ = ("_data", "_lock")
+
+    def __init__(self) -> None:
+        self._data: Dict[str, ReviewOutcome] = {}
+        self._lock = _threading.Lock()
+
+    def __setitem__(self, key: str, value: ReviewOutcome) -> None:
+        with self._lock:
+            self._data[key] = value
+
+    def get(self, key: str) -> Optional[ReviewOutcome]:
+        with self._lock:
+            return self._data.get(key)
+
+    def __bool__(self) -> bool:
+        return True
+
+
 def _joern_target(config: OrchestratorConfig) -> Path:
     """Narrow the Joern CPG build target when scope allows it.
 
@@ -431,6 +452,8 @@ def review_one_function(
     review_idx=0,
     total=0,
     collector=None,
+    graph=None,
+    reviewed_outcomes=None,
 ):
     """Review a single function gap and return the outcome.
 
@@ -469,6 +492,8 @@ def review_one_function(
     fp_patterns = shared.fp_patterns
     prop_config = shared.prop_config
     call_edges = shared.call_edges
+    call_edge_index = shared.call_edge_index
+    checklist_index = shared.checklist_index
     mechanical_findings = shared.mechanical_findings
     provenance_map = shared.provenance_map
     security_decision_keys = shared.security_decision_keys
@@ -484,6 +509,18 @@ def review_one_function(
 
     gap_key = f"{gap['file']}:{gap['name']}"
     gap_key_lined = f"{gap_key}:{gap.get('line_start', 0)}"
+
+    # ── Chain re-review: un-tally the prior outcome ──────────────────
+    _prior_outcome = None
+    if gap.get("force_review") and reviewed_outcomes:
+        _prior_outcome = reviewed_outcomes.get(gap_key)
+        if _prior_outcome is not None:
+            with result._lock:
+                try:
+                    result.outcomes.remove(_prior_outcome)
+                except ValueError:
+                    pass
+            _untally_outcome(result, _prior_outcome)
 
     # ── Triage skip ───────────────────────────────────────────────────
     triage = triage_results.get(gap_key_lined) or triage_results.get(gap_key)
@@ -516,12 +553,19 @@ def review_one_function(
                 exc,
             )
         _tally_outcome(result, outcome)
+        if reviewed_outcomes is not None:
+            reviewed_outcomes[gap_key] = outcome
         if on_progress:
             on_progress(review_idx, total, outcome)
         return outcome
 
     # ── Dead-code gate (G7): skip LLM for provably dead functions ────
     _dead_reason = _dead_code_reason(gap)
+    if not _dead_reason and config.binary_verdicts:
+        _fn_name = gap.get("name", "")
+        _bo_verdict = config.binary_verdicts.get(_fn_name, "")
+        if _bo_verdict == "absent" and gap_key not in entry_points:
+            _dead_reason = "binary_oracle_absent (not present in compiled binary)"
     if _dead_reason:
         outcome = ReviewOutcome(
             file=gap["file"],
@@ -547,6 +591,8 @@ def review_one_function(
                 exc,
             )
         _tally_outcome(result, outcome)
+        if reviewed_outcomes is not None:
+            reviewed_outcomes[gap_key] = outcome
         if on_progress:
             on_progress(review_idx, total, outcome)
         return outcome
@@ -567,7 +613,7 @@ def review_one_function(
         pass
 
     # ── SAGE: recall prior hypothesis verdict → skip if clean/dormant ─
-    if not config.force and gap.get("_sage_source_hash"):
+    if not config.force and not gap.get("force_review") and gap.get("_sage_source_hash"):
         try:
             from core.sage.hooks import recall_audit_hypothesis_verdict
 
@@ -610,6 +656,8 @@ def review_one_function(
                     exc,
                 )
             _tally_outcome(result, outcome)
+            if reviewed_outcomes is not None:
+                reviewed_outcomes[gap_key] = outcome
             if on_progress:
                 on_progress(review_idx, total, outcome)
             return outcome
@@ -909,6 +957,15 @@ def review_one_function(
         if relevant:
             ctx["active_constraints"] = relevant
 
+    # ── Chain findings from connected functions ──────────────────────
+    if reviewed_outcomes and (call_edge_index or call_edges):
+        chain = _collect_chain_findings(
+            gap_key, call_edges, reviewed_outcomes,
+            call_edge_index=call_edge_index,
+        )
+        if chain:
+            ctx["chain_findings"] = chain
+
     # ── Prefilter ─────────────────────────────────────────────────────
     pf_result = None
     if config.prefilter:
@@ -944,6 +1001,8 @@ def review_one_function(
                     exc,
                 )
             _tally_outcome(result, outcome)
+            if reviewed_outcomes is not None:
+                reviewed_outcomes[gap_key] = outcome
             if on_progress:
                 on_progress(review_idx, total, outcome)
             return outcome
@@ -1302,6 +1361,74 @@ def review_one_function(
                 exc_info=True,
             )
 
+    # ── Publish outcome before chain injection ─────────────────────────
+    # The outcome, taint summaries, and constraints must be visible
+    # before chain injection pushes neighbours onto the ready queue —
+    # otherwise a concurrent worker can pop the re-queued neighbour
+    # and call _collect_chain_findings before our outcome is stored.
+    if reviewed_outcomes is not None:
+        reviewed_outcomes[gap_key] = outcome
+
+    if outcome.review_result and taint_summary_results is not None:
+        from core.analysis.summaries import (
+            summary_from_review_result,
+            propagate_taint_upward,
+        )
+
+        llm_summary = summary_from_review_result(
+            outcome.function,
+            outcome.file,
+            outcome.review_result,
+        )
+        if llm_summary:
+            with shared._taint_lock:
+                key = f"{outcome.file}:{outcome.function}"
+                if key not in taint_summary_results:
+                    taint_summary_results[key] = llm_summary
+
+                for edge in call_edges or []:
+                    callee_name = edge.get("callee", "")
+                    if callee_name != outcome.function:
+                        continue
+                    caller_key = f"{edge['caller_file']}:{edge['caller']}"
+                    caller_sum = taint_summary_results.get(caller_key)
+                    if caller_sum:
+                        call_args = edge.get("args", [])
+                        propagate_taint_upward(llm_summary, caller_sum, call_args)
+
+    if config.propagate_constraints and outcome.review_result:
+        with shared._constraints_lock:
+            shared.constraints = _extract_and_propagate(
+                outcome,
+                shared.constraints,
+                checklist,
+                entry_points,
+                prop_config,
+                tier_counters=result.tier_counters,
+            )
+
+    # ── Mid-loop chain injection ────────────────────────────────────────
+    if outcome.status in ("finding", "suspicious") and graph is not None:
+        try:
+            finding_prio = gap.get("priority_score", 0.0) + _CHAIN_PRIORITY_BOOST
+            _inject_chain_targets(
+                outcome,
+                graph,
+                call_edges,
+                checklist,
+                reviewed_outcomes=reviewed_outcomes,
+                finding_priority=finding_prio,
+                call_edge_index=call_edge_index,
+                checklist_index=checklist_index,
+            )
+        except Exception:
+            logger.debug(
+                "chain injection failed for %s:%s",
+                gap.get("file"),
+                gap.get("name"),
+                exc_info=True,
+            )
+
     # ── Commit ────────────────────────────────────────────────────────
     try:
         if collector is not None:
@@ -1315,6 +1442,8 @@ def review_one_function(
             gap["name"],
             exc,
         )
+
+    _tally_outcome(result, outcome)
 
     # ── Post-commit tracking ──────────────────────────────────────────
     review_result = getattr(outcome, "review_result", None)
@@ -1347,46 +1476,6 @@ def review_one_function(
                 exc_info=True,
             )
 
-    if config.propagate_constraints and outcome.review_result:
-        with shared._constraints_lock:
-            shared.constraints = _extract_and_propagate(
-                outcome,
-                shared.constraints,
-                checklist,
-                entry_points,
-                prop_config,
-                tier_counters=result.tier_counters,
-            )
-
-    if outcome.review_result and taint_summary_results is not None:
-        from core.analysis.summaries import (
-            summary_from_review_result,
-            propagate_taint_upward,
-        )
-
-        llm_summary = summary_from_review_result(
-            outcome.function,
-            outcome.file,
-            outcome.review_result,
-        )
-        if llm_summary:
-            with shared._taint_lock:
-                key = f"{outcome.file}:{outcome.function}"
-                if key not in taint_summary_results:
-                    taint_summary_results[key] = llm_summary
-
-                for edge in call_edges or []:
-                    callee_name = edge.get("callee", "")
-                    if callee_name != outcome.function:
-                        continue
-                    caller_key = f"{edge['caller_file']}:{edge['caller']}"
-                    caller_sum = taint_summary_results.get(caller_key)
-                    if caller_sum:
-                        call_args = edge.get("args", [])
-                        propagate_taint_upward(llm_summary, caller_sum, call_args)
-
-    _tally_outcome(result, outcome)
-
     if (
         pf_result
         and pf_result.hits
@@ -1408,6 +1497,18 @@ def review_one_function(
                 session_observations, outcome, gap,
                 sweep_pre_status=pre_sweep_status,
             )
+
+    # ── SAGE: chain re-review status change observation ──────────────
+    if _prior_outcome is not None and outcome.status != _prior_outcome.status:
+        source = f"{gap['file']}:{gap['name']}"
+        obs = (
+            f"[chain re-review] {source}: "
+            f"{_prior_outcome.status} → {outcome.status} "
+            f"after neighbour finding provided chain context"
+        )
+        if outcome.hypothesis:
+            obs += f" (hypothesis: {outcome.hypothesis[:200]})"
+        _sage_store_observation(obs, "chain_status_change", source)
 
     if (
         config.critique_interval > 0
@@ -2360,6 +2461,7 @@ def _run_audit_body(
 
     # --- Main executor pass ---
     graph = TaskGraph.from_workqueue(workqueue, call_edges)
+    reviewed_outcomes = _LockedOutcomes()
     executor_stats = run_executor_sync(
         graph,
         review_fn,
@@ -2377,6 +2479,7 @@ def _run_audit_body(
         collector=collector,
         budget_check=lambda: _check_budget(config, start_time, result),
         on_tick=_joern_tick,
+        reviewed_outcomes=reviewed_outcomes,
     )
     joern_future = joern_state["future"]
     if executor_stats.budget_stopped and not result.terminated_by:
@@ -3925,13 +4028,16 @@ def _commit_outcome(
         try:
             from core.sage.hooks import store_audit_hypothesis_verdict
 
+            evidence = outcome.evidence_tool or ""
+            if gap.get("force_review"):
+                evidence = f"{evidence}+chain_context" if evidence else "chain_context"
             store_audit_hypothesis_verdict(
                 repo_path=str(config.target_path),
                 file_path=outcome.file,
                 function=outcome.function,
                 hypothesis=outcome.hypothesis,
                 status=outcome.status,
-                evidence_tool=outcome.evidence_tool or "",
+                evidence_tool=evidence,
                 source_hash=src_hash,
             )
         except Exception:
@@ -4982,6 +5088,11 @@ def _read_raw_source(
 _R2_ABI_TABLES: Dict[str, List[str]] = {
     "amd64": ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
     "win64": ["rcx", "rdx", "r8", "r9"],
+    # x86-32: r2 lifts cdecl stack pushes into register-assignment
+    # pseudo-code (eax = arg1), so these match r2's output, not the
+    # hardware ABI.  For true fastcall the order is ecx, edx; for r2
+    # cdecl lifting the order varies — we accept all three as possible
+    # arg carriers and collect whichever appear before a call.
     "x86": ["eax", "ecx", "edx"],
     "aarch64": ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"],
     "arm": ["r0", "r1", "r2", "r3"],
@@ -5254,6 +5365,7 @@ def _run_tool_chain(
     tier_counters: Optional[Dict[str, "TierCounters"]] = None,
     evidence_index: Optional[Dict[str, "EvidenceRecord"]] = None,
     joern_server=None,
+    target_path_override: Optional[Path] = None,
 ) -> List[str]:
     """Run tools from *chain* in order, collecting all confirmations.
 
@@ -5265,6 +5377,7 @@ def _run_tool_chain(
     When *sarif_cache* is provided, semgrep sweeps check for prior
     SARIF results before spawning a subprocess.
     """
+    effective_target = target_path_override or config.target_path
     confirmed: List[str] = []
 
     for entry in chain:
@@ -5292,7 +5405,7 @@ def _run_tool_chain(
 
                 rule_path = tool_cfg["rule"]
                 sweep = run_semgrep_sweep(
-                    target_path=config.target_path,
+                    target_path=effective_target,
                     file_path=file_path,
                     function_name=function_name,
                     rule_config=rule_path,
@@ -5356,7 +5469,7 @@ def _run_tool_chain(
 
             elif tool_type == "coccinelle":
                 cocci_result = run_consistency_check(
-                    target_path=config.target_path,
+                    target_path=effective_target,
                     function_name=function_name,
                     cocci_rule=tool_cfg["rule"],
                 )
@@ -5419,7 +5532,7 @@ def _run_tool_chain(
                 from .sweep import run_codeql_sweep
 
                 codeql_result = run_codeql_sweep(
-                    target_path=config.target_path,
+                    target_path=effective_target,
                     file_path=file_path,
                     function_name=function_name,
                     query_path=tool_cfg["query"],
@@ -5651,25 +5764,20 @@ def _sweep_validate(
 
         dispatched = {step.get("type") for step in chain if step.get("type")}
 
-        saved_target = config.target_path
-        if is_binary and _decomp_tmp_dir is not None:
-            config.target_path = _decomp_tmp_dir
-        try:
-            confirmed = _run_tool_chain(
-                chain,
-                config=config,
-                file_path=effective_file,
-                function_name=outcome.function,
-                source=source,
-                hypothesis=hypothesis,
-                line_start=0 if is_binary else outcome.line,
-                sarif_cache=sarif_cache,
-                tier_counters=tier_counters,
-                evidence_index=evidence_index,
-                joern_server=joern_server,
-            )
-        finally:
-            config.target_path = saved_target
+        confirmed = _run_tool_chain(
+            chain,
+            config=config,
+            file_path=effective_file,
+            function_name=outcome.function,
+            source=source,
+            hypothesis=hypothesis,
+            line_start=0 if is_binary else outcome.line,
+            sarif_cache=sarif_cache,
+            tier_counters=tier_counters,
+            evidence_index=evidence_index,
+            joern_server=joern_server,
+            target_path_override=_decomp_tmp_dir if is_binary and _decomp_tmp_dir else None,
+        )
 
         # Frida auto-launch — last resort for binary targets.
         # Requires explicit opt-in (config.dynamic_validation) because
@@ -6919,6 +7027,143 @@ def _find_gap_in_checklist(
                     "line_end": item.get("line_end"),
                 }
     return None
+
+
+_CHAIN_PRIORITY_BOOST = 5.0
+_MAX_CHAIN_INJECTIONS_PER_FINDING = 10
+_MAX_CHAIN_CONTEXT_ITEMS = 5
+
+
+def _collect_chain_findings(
+    fn_key: str,
+    call_edges: list,
+    reviewed_outcomes: Dict[str, ReviewOutcome],
+    call_edge_index: Optional[Dict[str, list]] = None,
+) -> List[Dict[str, str]]:
+    """Collect findings from 1-hop neighbours for chain context.
+
+    Returns a list of dicts suitable for the ``chain_findings`` context
+    section — callers and callees that were already reviewed and found
+    vulnerable or suspicious.
+
+    When *call_edge_index* is provided (built once at loop setup),
+    only edges involving *fn_key* are examined instead of the full
+    edge list.
+    """
+    edges = call_edge_index.get(fn_key, ()) if call_edge_index else call_edges
+    chain: List[Dict[str, str]] = []
+    seen: set = set()
+    for edge in edges:
+        caller_bare = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
+        callee_file = edge.get("callee_file") or edge.get("caller_file", "")
+        callee_bare = f"{callee_file}:{edge.get('callee', '')}"
+
+        neighbour = None
+        direction = ""
+        if caller_bare == fn_key:
+            neighbour = callee_bare
+            direction = "callee"
+        elif callee_bare == fn_key:
+            neighbour = caller_bare
+            direction = "caller"
+
+        if neighbour is None or neighbour in seen:
+            continue
+        seen.add(neighbour)
+
+        prior = reviewed_outcomes.get(neighbour)
+        if prior and prior.status in ("finding", "suspicious"):
+            entry: Dict[str, str] = {
+                "function": f"{prior.file}:{prior.function}",
+                "status": prior.status,
+                "direction": direction,
+            }
+            if prior.hypothesis:
+                entry["hypothesis"] = prior.hypothesis
+            if prior.body:
+                entry["body"] = prior.body[:300]
+            if prior.evidence_tool:
+                entry["evidence_tool"] = prior.evidence_tool
+            chain.append(entry)
+            if len(chain) >= _MAX_CHAIN_CONTEXT_ITEMS:
+                break
+    return chain
+
+
+def _inject_chain_targets(
+    outcome: ReviewOutcome,
+    graph,
+    call_edges: list,
+    checklist: Dict[str, Any],
+    reviewed_outcomes: Optional[Dict[str, ReviewOutcome]] = None,
+    finding_priority: float = 0.0,
+    call_edge_index: Optional[Dict[str, list]] = None,
+    checklist_index: Optional[Dict[tuple, dict]] = None,
+) -> int:
+    """Inject callers and callees of a confirmed finding into the TaskGraph.
+
+    When a finding is confirmed mid-loop, its immediate neighbours in the
+    call graph should be reviewed next (or re-prioritised if already queued):
+
+    - **Callers** that might pass unsanitised input to the vulnerable function.
+    - **Callees** that consume corrupted output from the vulnerable function.
+
+    Returns the number of tasks injected or reprioritised.
+    """
+    if graph is None:
+        return 0
+
+    fn_bare = f"{outcome.file}:{outcome.function}"
+    edges = call_edge_index.get(fn_bare, ()) if call_edge_index else call_edges
+    if not edges:
+        return 0
+    injected = 0
+
+    for edge in edges:
+        if injected >= _MAX_CHAIN_INJECTIONS_PER_FINDING:
+            break
+
+        caller_bare = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
+        callee_file = edge.get("callee_file") or edge.get("caller_file", "")
+        callee_bare = f"{callee_file}:{edge.get('callee', '')}"
+
+        target_bare = None
+        if callee_bare == fn_bare:
+            target_bare = caller_bare
+        elif caller_bare == fn_bare:
+            target_bare = callee_bare
+
+        if target_bare is None:
+            continue
+
+        if reviewed_outcomes:
+            prior = reviewed_outcomes.get(target_bare)
+            if prior and prior.status in ("finding", "suspicious"):
+                continue
+
+        t_file, t_name = target_bare.split(":", 1)
+        if checklist_index is not None:
+            gap = checklist_index.get((t_file, t_name))
+            if gap is not None:
+                gap = dict(gap)
+            else:
+                gap = None
+        else:
+            gap = _find_gap_in_checklist(checklist, t_file, t_name)
+        if not gap:
+            continue
+
+        gap["force_review"] = True
+        key = f"{t_file}:{t_name}:{gap.get('line_start', 0)}"
+        if graph.inject_task(key, gap, finding_priority, requeue=True):
+            injected += 1
+
+    if injected:
+        logger.info(
+            "chain injection: %d targets from %s:%s",
+            injected, outcome.file, outcome.function,
+        )
+    return injected
 
 
 def _untally_outcome(result: OrchestratorResult, outcome: ReviewOutcome) -> None:

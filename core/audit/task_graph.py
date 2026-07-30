@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import heapq
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -179,6 +180,8 @@ class TaskGraph:
     _completed: set[str] = field(default_factory=set)
     _repass_keys: frozenset[str] = field(default_factory=frozenset)
     _effective_priority: dict[str, float] = field(default_factory=dict)
+    _requeued: set[str] = field(default_factory=set)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     stats: GraphStats = field(default_factory=GraphStats)
 
     @classmethod
@@ -289,29 +292,31 @@ class TaskGraph:
 
     def pop_ready(self, n: int = 1) -> list[ReviewTask]:
         """Pop up to *n* highest-priority ready tasks."""
-        result: list[ReviewTask] = []
-        while self._ready and len(result) < n:
-            _, key = heapq.heappop(self._ready)
-            if key in self._completed:
-                continue
-            result.append(self._tasks[key])
-        return result
+        with self._lock:
+            result: list[ReviewTask] = []
+            while self._ready and len(result) < n:
+                _, key = heapq.heappop(self._ready)
+                if key in self._completed:
+                    continue
+                result.append(self._tasks[key])
+            return result
 
     def mark_complete(self, key: str) -> list[str]:
         """Mark *key* done. Returns keys of newly-ready tasks."""
-        self._completed.add(key)
-        newly_ready: list[str] = []
-        for dep_key in self._dependents.get(key, []):
-            remaining = self._remaining_deps.get(dep_key)
-            if remaining is not None:
-                remaining.discard(key)
-                if not remaining and dep_key not in self._completed:
-                    ep = self._effective_priority.get(
-                        dep_key, self._tasks[dep_key].priority,
-                    )
-                    heapq.heappush(self._ready, (-ep, dep_key))
-                    newly_ready.append(dep_key)
-        return newly_ready
+        with self._lock:
+            self._completed.add(key)
+            newly_ready: list[str] = []
+            for dep_key in self._dependents.get(key, []):
+                remaining = self._remaining_deps.get(dep_key)
+                if remaining is not None:
+                    remaining.discard(key)
+                    if not remaining and dep_key not in self._completed:
+                        ep = self._effective_priority.get(
+                            dep_key, self._tasks[dep_key].priority,
+                        )
+                        heapq.heappush(self._ready, (-ep, dep_key))
+                        newly_ready.append(dep_key)
+            return newly_ready
 
     @property
     def pending(self) -> int:
@@ -327,6 +332,87 @@ class TaskGraph:
         tasks = [self._tasks[k] for k in self._repass_keys]
         tasks.sort(key=lambda t: t.priority, reverse=True)
         return tasks
+
+    def inject_task(
+        self,
+        key: str,
+        gap: dict[str, Any],
+        priority: float,
+        *,
+        requeue: bool = False,
+    ) -> bool:
+        """Inject a new task or reprioritise an existing one.
+
+        Used for mid-loop chain following: when a finding is confirmed,
+        its callers/callees are injected at elevated priority so the
+        executor reviews them next rather than waiting for a post-loop
+        pass.
+
+        When *requeue* is True, a completed task is moved back to the
+        ready queue for re-review with chain context.  Each task can be
+        requeued at most once to prevent infinite cascades.
+
+        Returns True if the task was injected or reprioritised, False if
+        already completed and not eligible for requeue.
+        """
+        with self._lock:
+            return self._inject_task_locked(key, gap, priority, requeue=requeue)
+
+    def _inject_task_locked(
+        self,
+        key: str,
+        gap: dict[str, Any],
+        priority: float,
+        *,
+        requeue: bool = False,
+    ) -> bool:
+        if key in self._completed:
+            if not requeue or key in self._requeued:
+                return False
+            self._completed.discard(key)
+            self._requeued.add(key)
+            old_task = self._tasks[key]
+            self._tasks[key] = ReviewTask(
+                key=key, gap=gap, depends_on=old_task.depends_on,
+                priority=priority,
+            )
+            self._effective_priority[key] = priority
+            heapq.heappush(self._ready, (-priority, key))
+            logger.debug(
+                "inject_task: requeued %s at priority %.1f",
+                key.rsplit(":", 1)[0], priority,
+            )
+            return True
+        if key in self._tasks:
+            existing_gap = self._tasks[key].gap
+            if gap.get("force_review"):
+                existing_gap["force_review"] = True
+            old_ep = self._effective_priority.get(key, 0.0)
+            if priority > old_ep:
+                self._effective_priority[key] = priority
+                heapq.heappush(self._ready, (-priority, key))
+                logger.debug(
+                    "inject_task: reprioritised %s (%.1f -> %.1f)",
+                    key.rsplit(":", 1)[0], old_ep, priority,
+                )
+            return True
+        task = ReviewTask(
+            key=key, gap=gap, depends_on=frozenset(), priority=priority,
+        )
+        self._tasks[key] = task
+        self._remaining_deps[key] = set()
+        self._effective_priority[key] = priority
+        heapq.heappush(self._ready, (-priority, key))
+        logger.debug(
+            "inject_task: added %s at priority %.1f",
+            key.rsplit(":", 1)[0], priority,
+        )
+        return True
+
+    @property
+    def injected_count(self) -> int:
+        """Tasks added after initial construction."""
+        return len(self._tasks) - self.stats.total_tasks
 
     def __len__(self) -> int:
         return len(self._tasks)

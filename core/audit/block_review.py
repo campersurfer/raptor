@@ -306,7 +306,7 @@ def build_block_review_plan(
     if entry is not None:
         current_taint[id(entry)] = set(tainted_names)
 
-    topo_order = _topological_sort(cfg, nodes)
+    topo_order = _bfs_traversal(cfg, nodes)
 
     for idx, node in enumerate(topo_order):
         nid = id(node)
@@ -380,10 +380,12 @@ def build_block_review_plan(
     )
 
 
-def _topological_sort(cfg, nodes: list) -> list:
-    """Best-effort topological ordering of CFG nodes.
+def _bfs_traversal(cfg, nodes: list) -> list:
+    """BFS traversal of CFG nodes from the entry node.
 
-    Falls back to BFS from entry on cyclic graphs (loops).
+    On cyclic graphs (loops) this visits each node at most once —
+    taint propagation over the result is a single-pass approximation,
+    not a fixpoint.
     """
     entry = cfg.entry if hasattr(cfg, "entry") else getattr(cfg, "entry_node", None)
     if entry is None:
@@ -510,6 +512,23 @@ def try_build_cfg(
             logger.debug(
                 "C/C++ CFG build failed for %s:%s",
                 file_path, function_name, exc_info=True,
+            )
+            return None
+
+    if ext in (".go", ".java", ".js", ".ts", ".tsx", ".rs"):
+        try:
+            from core.analysis.cfg_builder_generic import build_generic_cfg
+            return build_generic_cfg(full_path, function_name, language=ext.lstrip("."))
+        except ImportError:
+            logger.debug(
+                "no CFG builder for %s — block-level review unavailable for %s:%s",
+                ext, file_path, function_name,
+            )
+            return None
+        except Exception:
+            logger.debug(
+                "%s CFG build failed for %s:%s",
+                ext, file_path, function_name, exc_info=True,
             )
             return None
 
