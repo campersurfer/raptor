@@ -155,6 +155,7 @@ class StudyItem:
     calls: list[str] = field(default_factory=list)
     flag_checks: list[str] = field(default_factory=list)
     alloc_frees: list[str] = field(default_factory=list)
+    resource_lifecycle: list[str] = field(default_factory=list)
     state_transitions: list[str] = field(default_factory=list)
     gate_checks: list[str] = field(default_factory=list)
     dispatch_tables: list[str] = field(default_factory=list)

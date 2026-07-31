@@ -16,7 +16,9 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
+import pickle
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -553,7 +555,88 @@ def run_smt_verb_direct(
     Extracts operands from the hypothesis text and calls the verb
     function.  Falls back to inconclusive if operands can't be extracted
     or Z3 is unavailable.
+
+    Runs in a forked subprocess so Z3 assertion failures (segfaults in
+    the C++ core) return inconclusive instead of killing the parent.
     """
+    return _smt_verb_in_subprocess(
+        file_path=file_path,
+        function_name=function_name,
+        verb=verb,
+        source=source,
+        hypothesis=hypothesis,
+    )
+
+
+_SMT_VERB_CHILD_SCRIPT = (
+    "import sys,os,pickle\n"
+    "sys.path.insert(0,os.environ['RAPTOR_DIR'])\n"
+    "from core.audit.sweep import _run_smt_verb_inner\n"
+    "r=_run_smt_verb_inner(**pickle.loads(sys.stdin.buffer.read()))\n"
+    "sys.stdout.buffer.write(pickle.dumps(r))\n"
+)
+
+
+def _smt_verb_in_subprocess(
+    *,
+    file_path: str,
+    function_name: str,
+    verb: str,
+    source: str,
+    hypothesis: str,
+    timeout: int = 10,
+) -> SweepResult:
+    """Run SMT verb in an isolated subprocess.
+
+    Uses subprocess.Popen (fork+exec) rather than bare os.fork() so the
+    child gets a clean, single-threaded process image -- safe when the
+    parent has worker threads.
+    """
+    payload = pickle.dumps({
+        "file_path": file_path,
+        "function_name": function_name,
+        "verb": verb,
+        "source": source,
+        "hypothesis": hypothesis,
+    })
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _SMT_VERB_CHILD_SCRIPT],
+            input=payload, capture_output=True, timeout=timeout,
+        )
+        if proc.returncode == 0:
+            try:
+                sr = pickle.loads(proc.stdout)
+                if isinstance(sr, SweepResult):
+                    return sr
+            except Exception:
+                pass
+        logger.warning(
+            "SMT subprocess exited %d for %s:%s verb=%s",
+            proc.returncode, file_path, function_name, verb,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "SMT subprocess timed out for %s:%s verb=%s",
+            file_path, function_name, verb,
+        )
+    return SweepResult(
+        tool="smt", file_path=file_path,
+        function_name=function_name, outcome="inconclusive",
+        errors=["Z3 subprocess crashed or timed out"],
+        rule_id=f"smt:{verb}",
+    )
+
+
+def _run_smt_verb_inner(
+    *,
+    file_path: str,
+    function_name: str,
+    verb: str,
+    source: str,
+    hypothesis: str,
+) -> SweepResult:
+    """Actual SMT verb execution (runs inside forked child)."""
     try:
         if verb == "check-negative-bypass":
             from packages.exploit_feasibility.smt_verbs import check_negative_bypass

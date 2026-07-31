@@ -45,6 +45,7 @@ class AuditPipelineOpts:
     joern_overrides: Optional[Dict[str, Any]] = None
     joern_server: Optional[Any] = None
     on_progress: Optional[Callable] = None
+    study_root: Optional[Path] = None
 
 
 def run_audit_pipeline(opts: AuditPipelineOpts):
@@ -68,9 +69,11 @@ def run_audit_pipeline(opts: AuditPipelineOpts):
         llm_cfg = LLMConfig(max_cost_per_scan=opts.max_cost_usd)
     client = LLMClient(config=llm_cfg)
 
-    review_fn = make_review_fn(client, task_type="audit")
-
     models = opts.models or ["default"]
+    primary_model = models[0] if models[0] != "default" else None
+    review_fn = make_review_fn(
+        client, task_type="audit", model_name=primary_model,
+    )
     config = OrchestratorConfig(
         target_path=opts.target_path,
         out_dir=opts.out_dir,
@@ -95,6 +98,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts):
         functions=opts.functions,
         joern_overrides=opts.joern_overrides,
         joern_server=opts.joern_server,
+        study_root=opts.study_root,
     )
 
     return run_orchestrator(config, review_fn, on_progress=opts.on_progress)

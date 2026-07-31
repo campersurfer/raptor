@@ -368,12 +368,17 @@ REVIEW_SCHEMA = {
         "reading_list": {
             "type": "array",
             "description": (
-                "Types, macros, domain-specific constructs, or API "
-                "contracts you encountered while reviewing this function "
-                "that you do not understand well enough to audit "
-                "confidently. Each item is a question the study loop "
-                "will resolve. Do not generate empty arrays — omit if "
-                "you had sufficient context to review confidently."
+                "C/C++ targets only — omit for all other languages. "
+                "Domain knowledge you relied on for your verdict that "
+                "was NOT defined in the provided source context. List "
+                "every type, macro, API contract, or invariant whose "
+                "semantics you assumed from training knowledge rather "
+                "than reading in the provided code. The study loop "
+                "will verify these assumptions against the actual "
+                "source. Most non-trivial C functions reference at "
+                "least one external contract — an empty list means "
+                "you made zero assumptions beyond what was shown, "
+                "which is rare."
             ),
             "items": {
                 "type": "object",
@@ -381,19 +386,22 @@ REVIEW_SCHEMA = {
                     "question": {
                         "type": "string",
                         "description": (
-                            "The specific knowledge gap, phrased as a "
+                            "The assumption phrased as a verifiable "
                             "question. Be precise: name the type, macro, "
-                            "function, or contract you need explained."
+                            "function, or contract. E.g. 'Does rcu_read_lock "
+                            "prevent the task_struct from being freed?' or "
+                            "'Does skb_cow_data handle shared frags by "
+                            "copying them?'"
                         ),
                     },
                     "priority": {
                         "type": "string",
                         "enum": ["critical", "high", "normal", "low"],
                         "description": (
-                            "critical = blocks the review verdict entirely. "
-                            "high = likely changes the verdict. "
-                            "normal = would improve confidence. "
-                            "low = nice to know."
+                            "critical = verdict depends entirely on this. "
+                            "high = likely changes the verdict if wrong. "
+                            "normal = would change confidence. "
+                            "low = background assumption."
                         ),
                     },
                     "resolution": {
@@ -409,9 +417,8 @@ REVIEW_SCHEMA = {
                     "context": {
                         "type": "string",
                         "description": (
-                            "Why you need this answered — what part of "
-                            "your review was blocked or weakened by this "
-                            "knowledge gap."
+                            "How this assumption influenced your verdict — "
+                            "what would change if the assumption is wrong."
                         ),
                     },
                 },
@@ -548,14 +555,20 @@ _DEFAULT_SYSTEM_PROMPT = (
     "your final status value. The status must follow from the "
     "reasoning, never the reverse. Do not generate empty arrays or "
     "objects as placeholder values — omit optional fields entirely "
-    "when they do not apply.\n\n"
-    "KNOWLEDGE GAPS: If you encounter types, macros, API contracts, "
-    "or domain-specific constructs that you do not understand well "
-    "enough to audit confidently, list them in reading_list. Each "
-    "item should be a precise question — e.g. 'What does IPC_NOID "
-    "flag control in ipc_addid?' or 'What invariant does "
-    "rcu_read_lock guarantee here?'. Only emit items when missing "
-    "knowledge genuinely weakened your review.\n\n"
+    "when they do not apply (exception: reading_list for C/C++ "
+    "targets — see ASSUMED KNOWLEDGE).\n\n"
+    "ASSUMED KNOWLEDGE (C/C++ only): When reviewing C or C++ code, "
+    "state in reading_list every domain fact you relied on that was "
+    "NOT defined in the provided source context — type semantics, "
+    "API contracts, macro expansions, locking invariants, allocator "
+    "contracts, error-handling conventions. Phrase each as a "
+    "verifiable question: 'Does rcu_read_lock prevent the "
+    "task_struct from being freed here?' or 'Does EVP_CIPHER_CTX_new "
+    "return NULL on allocation failure?'. Most non-trivial C "
+    "functions reference at least one external contract. If your "
+    "verdict would change if any assumption is wrong, mark it "
+    "critical. For non-C/C++ targets, omit reading_list entirely — "
+    "the study loop cannot resolve assumptions in other languages.\n\n"
     "OPERATOR NOTES: The operator may attach advisory notes in "
     "``<operator_note>`` blocks (visible in your context under "
     "'Previous annotation'). Read these for context — the operator's "

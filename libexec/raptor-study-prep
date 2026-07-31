@@ -71,15 +71,18 @@ _C_EXTENSIONS = frozenset((".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"))
 # ------------------------------------------------------------------
 
 _LOCK_NAMES = frozenset({
+    # kernel spinlocks
     "spin_lock", "spin_lock_irq", "spin_lock_irqsave",
     "spin_lock_bh", "spin_lock_nested",
     "spin_trylock", "spin_trylock_irq", "spin_trylock_irqsave",
     "spin_unlock", "spin_unlock_irq", "spin_unlock_irqrestore",
     "spin_unlock_bh",
+    # kernel mutexes / rwsems
     "mutex_lock", "mutex_lock_interruptible", "mutex_lock_killable",
     "mutex_lock_nested", "mutex_trylock", "mutex_unlock",
     "down_read", "down_read_trylock", "up_read",
     "down_write", "down_write_trylock", "up_write",
+    # kernel rwlocks
     "read_lock", "read_lock_irq", "read_lock_irqsave",
     "read_unlock", "read_unlock_irq", "read_unlock_irqrestore",
     "write_lock", "write_lock_irq", "write_lock_irqsave",
@@ -88,8 +91,24 @@ _LOCK_NAMES = frozenset({
     "raw_spin_unlock", "raw_spin_unlock_irq", "raw_spin_unlock_irqrestore",
     "spin_lock_init", "mutex_init", "rwlock_init",
     "ipc_lock_object", "ipc_unlock_object",
-    "pthread_mutex_lock", "pthread_mutex_unlock",
+    # POSIX threads
+    "pthread_mutex_lock", "pthread_mutex_trylock", "pthread_mutex_unlock",
+    "pthread_mutex_init", "pthread_mutex_destroy",
     "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "pthread_rwlock_unlock",
+    "pthread_rwlock_init", "pthread_rwlock_destroy",
+    "pthread_spin_lock", "pthread_spin_trylock", "pthread_spin_unlock",
+    "pthread_cond_wait", "pthread_cond_timedwait",
+    "pthread_cond_signal", "pthread_cond_broadcast",
+    # POSIX semaphores
+    "sem_wait", "sem_trywait", "sem_timedwait", "sem_post",
+    # C11 threads
+    "mtx_lock", "mtx_trylock", "mtx_timedlock", "mtx_unlock",
+    "cnd_wait", "cnd_timedwait", "cnd_signal", "cnd_broadcast",
+    # stdio locking
+    "flockfile", "ftrylockfile", "funlockfile",
+    # OpenSSL CRYPTO_THREAD
+    "CRYPTO_THREAD_read_lock", "CRYPTO_THREAD_write_lock",
+    "CRYPTO_THREAD_unlock", "CRYPTO_THREAD_lock_new", "CRYPTO_THREAD_lock_free",
 })
 
 _LOCK_PATTERN = re.compile(
@@ -113,12 +132,31 @@ _RCU_PATTERN = re.compile(
 )
 
 _ORDERING_NAMES = frozenset({
+    # kernel barriers
     "smp_store_release", "smp_load_acquire",
     "smp_mb", "smp_mb__before_atomic", "smp_mb__after_atomic",
     "smp_rmb", "smp_wmb",
     "READ_ONCE", "WRITE_ONCE", "data_race",
     "smp_acquire__after_ctrl_dep",
     "__smp_store_release", "__smp_load_acquire",
+    # C11 atomics
+    "atomic_load", "atomic_load_explicit",
+    "atomic_store", "atomic_store_explicit",
+    "atomic_exchange", "atomic_exchange_explicit",
+    "atomic_compare_exchange_strong", "atomic_compare_exchange_weak",
+    "atomic_compare_exchange_strong_explicit",
+    "atomic_compare_exchange_weak_explicit",
+    "atomic_fetch_add", "atomic_fetch_sub",
+    "atomic_fetch_or", "atomic_fetch_and",
+    "atomic_thread_fence", "atomic_signal_fence",
+    # GCC/Clang builtins
+    "__atomic_load_n", "__atomic_store_n",
+    "__atomic_exchange_n", "__atomic_compare_exchange_n",
+    "__atomic_add_fetch", "__atomic_sub_fetch",
+    "__atomic_thread_fence",
+    "__sync_synchronize",
+    "__sync_val_compare_and_swap", "__sync_bool_compare_and_swap",
+    "__sync_fetch_and_add", "__sync_fetch_and_sub",
 })
 
 _ORDERING_PATTERN = re.compile(
@@ -126,10 +164,19 @@ _ORDERING_PATTERN = re.compile(
 )
 
 _BOUNDS_NAMES = frozenset({
+    # kernel user-copy
     "array_index_nospec",
     "access_ok", "copy_from_user", "copy_to_user",
     "get_user", "put_user", "__get_user", "__put_user",
     "check_object_size", "strnlen_user", "strncpy_from_user",
+    # userspace bounded string ops
+    "strlcpy", "strlcat", "strncpy", "strncat", "strnlen", "strndup",
+    "snprintf", "vsnprintf",
+    # C11 Annex K bounds-checking
+    "memcpy_s", "memmove_s", "strcpy_s", "strncpy_s", "strcat_s",
+    "strncat_s", "sprintf_s", "snprintf_s",
+    # POSIX safe reads
+    "fgets", "getline",
 })
 
 _BOUNDS_PATTERN = re.compile(
@@ -146,6 +193,24 @@ _CLAMP_PATTERN = re.compile(
     r"\b(" + "|".join(sorted(_CLAMP_NAMES, key=len, reverse=True)) + r")\s*\(",
 )
 
+_RESOURCE_LIFECYCLE_NAMES = frozenset({
+    "open", "close", "fopen", "fclose", "fdopen", "freopen",
+    "socket", "accept", "connect", "bind", "listen", "shutdown",
+    "pipe", "pipe2", "socketpair",
+    "dup", "dup2", "dup3", "fcntl",
+    "opendir", "closedir", "fdopendir",
+    "dlopen", "dlclose",
+    "popen", "pclose",
+    "tmpfile", "mkstemp", "mkdtemp",
+    "epoll_create", "epoll_create1", "epoll_ctl",
+    "eventfd", "signalfd", "timerfd_create",
+    "inotify_init", "inotify_init1", "inotify_add_watch",
+})
+
+_RESOURCE_LIFECYCLE_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(_RESOURCE_LIFECYCLE_NAMES, key=len, reverse=True)) + r")\s*\(",
+)
+
 _OWNED_TYPE_PATTERN = re.compile(r"\bstruct\s+(\w+)\s*\*")
 
 _FLEX_ARRAY_PATTERN = re.compile(r"(\w+)\s+(\w+)\s*\[\s*(?:0|1)?\s*\]\s*;")
@@ -155,22 +220,54 @@ _FLAG_CHECK_PATTERN = re.compile(
 )
 
 _ALLOC_NAMES = frozenset({
+    # kernel allocators
     "kmalloc", "kzalloc", "kcalloc", "kvmalloc", "kvzalloc",
     "vmalloc", "vzalloc",
     "alloc_pages", "alloc_page", "__get_free_pages", "__get_free_page",
     "kmem_cache_alloc", "kmem_cache_zalloc",
     "devm_kmalloc", "devm_kzalloc",
     "krealloc", "kvrealloc",
-    "malloc", "calloc", "realloc",
+    # libc
+    "malloc", "calloc", "realloc", "reallocarray", "aligned_alloc",
+    "posix_memalign", "memalign", "valloc", "pvalloc",
+    "strdup", "strndup", "asprintf", "vasprintf",
+    "mmap",
+    # OpenSSL
+    "OPENSSL_malloc", "OPENSSL_zalloc", "OPENSSL_realloc",
+    "OPENSSL_strdup", "OPENSSL_strndup",
+    "CRYPTO_malloc", "CRYPTO_zalloc",
+    "BN_new", "BN_CTX_new", "EVP_MD_CTX_new", "EVP_CIPHER_CTX_new",
+    "SSL_CTX_new", "SSL_new", "BIO_new", "X509_new",
+    # GLib
+    "g_malloc", "g_malloc0", "g_realloc", "g_new", "g_new0",
+    "g_strdup", "g_strndup", "g_strdup_printf",
+    # cURL
+    "curl_malloc", "curl_calloc", "curl_realloc", "curl_strdup",
+    # FFmpeg
+    "av_malloc", "av_mallocz", "av_calloc", "av_realloc",
+    "av_strdup", "av_strndup",
 })
 
 _FREE_NAMES = frozenset({
+    # kernel
     "kfree", "kvfree", "vfree",
     "free_pages", "free_page", "__free_pages",
     "kmem_cache_free",
     "devm_kfree",
     "put_page", "release_pages",
-    "free",
+    # libc
+    "free", "munmap",
+    # OpenSSL
+    "OPENSSL_free", "OPENSSL_clear_free", "OPENSSL_cleanse",
+    "BN_free", "BN_clear_free", "BN_CTX_free",
+    "EVP_MD_CTX_free", "EVP_CIPHER_CTX_free",
+    "SSL_CTX_free", "SSL_free", "BIO_free", "BIO_free_all", "X509_free",
+    # GLib
+    "g_free", "g_clear_pointer",
+    # cURL
+    "curl_free",
+    # FFmpeg
+    "av_free", "av_freep",
 })
 
 _ALLOC_FREE_PATTERN = re.compile(
@@ -213,6 +310,7 @@ _ALLOC_THEN_CHECK_PATTERN = re.compile(
 )
 
 _INFRA_TYPES = frozenset({
+    # kernel infrastructure
     "list_head", "hlist_node", "hlist_head",
     "rcu_head", "callback_head",
     "rb_node", "rb_root",
@@ -220,6 +318,16 @@ _INFRA_TYPES = frozenset({
     "timer_list", "hrtimer",
     "kobject", "kref", "module",
     "dentry", "inode",
+    # POSIX / libc infrastructure
+    "sockaddr", "sockaddr_in", "sockaddr_in6", "sockaddr_un",
+    "addrinfo", "hostent",
+    "iovec", "msghdr", "cmsghdr",
+    "pollfd", "epoll_event", "fd_set",
+    "sigaction", "sigset_t", "siginfo_t",
+    "timespec", "timeval", "tm",
+    "stat", "dirent",
+    # GLib
+    "GList", "GSList", "GHashTable", "GString", "GArray",
 })
 
 
@@ -327,6 +435,7 @@ def _extract_structural_signals(body: str) -> dict:
         "clamping_patterns": sorted(set(_CLAMP_PATTERN.findall(body))),
         "flag_checks": flag_checks,
         "alloc_frees": sorted(set(_ALLOC_FREE_PATTERN.findall(body))),
+        "resource_lifecycle": sorted(set(_RESOURCE_LIFECYCLE_PATTERN.findall(body))),
         "state_transitions": state_transitions,
         "gate_checks": sorted(gate_checks_raw),
         "dispatch_tables": dispatch_tables,
@@ -1155,6 +1264,7 @@ def _build_study_items(
             clamping_patterns=signals.get("clamping_patterns", []),
             flag_checks=flag_checks,
             alloc_frees=alloc_frees,
+            resource_lifecycle=signals.get("resource_lifecycle", []),
             usage_class=_fn_usage.get(f["name"]),
         ))
 
@@ -1274,7 +1384,7 @@ def _load_reading_list(path: Path) -> tuple[list[str], list[str]]:
                 seen.add(q)
                 concepts.append(q)
             continue
-        ctx = item.get("context", "")
+        ctx = item.get("context") or ""
         m = _CONTEXT_NAME_RE.search(ctx)
         if m:
             name = m.group(1)
@@ -1288,6 +1398,96 @@ def _load_reading_list(path: Path) -> tuple[list[str], list[str]]:
                 seen.add(name)
                 identifiers.append(name)
     return identifiers, concepts
+
+
+def _scope_from_reading_list(
+    rl_path: Path,
+    source_root: Path,
+    search_dirs: list[Path],
+    *,
+    max_depth: int = 2,
+) -> list[Path] | None:
+    """Build a targeted file set by chasing includes from reading-list source files.
+
+    Starts from the source_file entries in reading-list.json, resolves
+    their #include directives against search_dirs, and recurses up to
+    max_depth levels.  Returns the scoped file list, or None if the
+    reading list has no source_file entries (fall back to full rglob).
+    """
+    if not rl_path.is_file():
+        return None
+    try:
+        raw = json.loads(rl_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    seed_files: set[str] = set()
+    for item in raw.get("items", []):
+        sf = item.get("source_file", "")
+        if sf:
+            seed_files.add(sf)
+    if not seed_files:
+        return None
+
+    collected: set[Path] = set()
+    frontier: set[Path] = set()
+    for sf in seed_files:
+        p = (source_root / sf).resolve()
+        if p.is_file():
+            frontier.add(p)
+
+    for _depth in range(max_depth + 1):
+        if not frontier:
+            break
+        new_frontier: set[Path] = set()
+        for fpath in frontier:
+            if fpath in collected:
+                continue
+            collected.add(fpath)
+            try:
+                src = fpath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for inc in _extract_includes(src):
+                resolved = _resolve_include(inc, search_dirs, source_root)
+                if resolved and resolved not in collected:
+                    new_frontier.add(resolved)
+        frontier = new_frontier
+
+    return sorted(collected) if collected else None
+
+
+def _grep_scope(
+    source_files: list[Path],
+    identifier_arg: str,
+    target: Path,
+) -> list[Path]:
+    """Narrow a large file set to those containing identifier hits.
+
+    When the target tree has >500 files and --identifier is set, a full
+    AST parse is too slow.  Instead, grep for the identifiers and only
+    parse files with hits (plus their direct includes, added later in
+    the external-header pass).
+    """
+    terms = {t.strip() for t in identifier_arg.split(",") if t.strip()}
+    if not terms:
+        return source_files
+    pattern = "|".join(re.escape(t) for t in sorted(terms))
+    hit_files: list[Path] = []
+    regex = re.compile(pattern)
+    for sf in source_files:
+        try:
+            text = sf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if regex.search(text):
+            hit_files.append(sf)
+    print(
+        f"study-prep: grep-scoped {len(source_files)} -> {len(hit_files)} "
+        f"files ({len(terms)} identifiers)",
+        file=sys.stderr,
+    )
+    return hit_files if hit_files else source_files
 
 
 def _llm_seed_concepts_from_names(
@@ -1327,16 +1527,8 @@ def _llm_seed_concepts_from_names(
         "Return 20-80 identifiers.  No explanation, just the JSON array."
     )
     try:
-        resp = client.chat(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-        )
-        if isinstance(resp, str):
-            text = resp
-        elif getattr(resp, "content", None) and len(resp.content) > 0:
-            text = resp.content[0].text
-        else:
-            return []
+        resp = client.generate(prompt, max_tokens=4096)
+        text = resp.content if isinstance(resp.content, str) else str(resp.content)
         text = text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -1545,11 +1737,31 @@ def main() -> None:
     if target.is_file():
         source_files = [target]
     else:
-        source_files = sorted(
-            f for f in target.rglob("*")
-            if f.suffix in _C_EXTENSIONS and f.is_file()
-            and not f.is_symlink()
-        )
+        scoped = None
+        if parsed.reading_list:
+            scoped = _scope_from_reading_list(
+                Path(parsed.reading_list), source_root, search_dirs,
+            )
+        if scoped is not None:
+            source_files = [
+                f for f in scoped
+                if f.suffix in _C_EXTENSIONS and f.is_file()
+            ]
+            print(
+                f"study-prep: scoped to {len(source_files)} files "
+                f"via include-chase from reading-list",
+                file=sys.stderr,
+            )
+        else:
+            source_files = sorted(
+                f for f in target.rglob("*")
+                if f.suffix in _C_EXTENSIONS and f.is_file()
+                and not f.is_symlink()
+            )
+            if len(source_files) > 500 and parsed.identifier:
+                source_files = _grep_scope(
+                    source_files, parsed.identifier, target,
+                )
 
     headers = [f for f in source_files if f.suffix in _HEADER_EXTENSIONS]
     c_files = [f for f in source_files if f.suffix in _SOURCE_EXTENSIONS]

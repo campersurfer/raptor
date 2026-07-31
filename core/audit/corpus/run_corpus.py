@@ -258,6 +258,7 @@ def _run_audit(
     *,
     model: str = "",
     out_dir: Optional[Path] = None,
+    full_source_dirs: Optional[Dict[str, Path]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
@@ -297,9 +298,14 @@ def _run_audit(
                     })
                 continue
 
+            full_src = (
+                full_source_dirs.get(repo_key)
+                if full_source_dirs else None
+            )
+            study_root = full_src if full_src and full_src != src_dir else None
             outcomes, audit_dir = _run_audit_on_target(
                 src_dir, repo_labels, model=model, out_dir=out_dir,
-                joern_server=joern_srv,
+                joern_server=joern_srv, study_root=study_root,
             )
             if audit_dir:
                 run_dirs.append(audit_dir)
@@ -384,6 +390,7 @@ def _run_audit_on_target(
     model: str = "",
     out_dir: Optional[Path] = None,
     joern_server: Optional[Any] = None,
+    study_root: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
     """Run /audit orchestrator on a target (in-process).
 
@@ -428,10 +435,11 @@ def _run_audit_on_target(
             scope=scope_dirs or None,
             functions=fn_specs,
             models=[model] if model else None,
-            max_cost_usd=50.0,
+            max_cost_usd=150.0,
             no_binary_oracle=True,
             joern_server=joern_server,
             on_progress=on_progress,
+            study_root=study_root,
         )
         run_audit_pipeline(pipeline_opts)
         rc = 0
@@ -1166,6 +1174,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             results, run_dirs = _run_audit(
                 labels, audit_dirs,
                 model=model, out_dir=args.out,
+                full_source_dirs=source_dirs if excerpt_dirs else None,
             )
         finally:
             if excerpt_dirs:

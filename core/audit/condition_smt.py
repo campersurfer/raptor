@@ -15,7 +15,10 @@ A guard `if (n < 4096)` doesn't prevent overflow into a 256-byte buffer.
 from __future__ import annotations
 
 import logging
+import pickle
 import re
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -218,7 +221,11 @@ def _try_z3_check(
     buffer_size: Optional[int],
     sink_api: str,
 ) -> Optional[Tuple[bool, str]]:
-    """Try Z3 SMT check. Returns None if Z3 unavailable."""
+    """Try Z3 SMT check. Returns None if Z3 unavailable.
+
+    Runs in a forked subprocess so Z3 assertion failures (segfaults in
+    the C++ core) don't kill the parent process.
+    """
     try:
         import importlib.util
         if importlib.util.find_spec("z3") is None:
@@ -226,7 +233,54 @@ def _try_z3_check(
     except ImportError:
         return None
 
-    # Memory copy sinks: check if constrained length can exceed buffer
+    return _z3_in_subprocess(constraints, buffer_size, sink_api)
+
+
+_Z3_CHILD_SCRIPT = (
+    "import sys,os,pickle\n"
+    "sys.path.insert(0,os.environ['RAPTOR_DIR'])\n"
+    "from core.audit.condition_smt import _z3_dispatch\n"
+    "r=_z3_dispatch(*pickle.loads(sys.stdin.buffer.read()))\n"
+    "sys.stdout.buffer.write(pickle.dumps(r))\n"
+)
+
+
+def _z3_in_subprocess(
+    constraints: List["BoundsConstraint"],
+    buffer_size: Optional[int],
+    sink_api: str,
+    *,
+    timeout: int = 10,
+) -> Optional[Tuple[bool, str]]:
+    """Run Z3 in a subprocess; return None on crash or timeout.
+
+    Uses subprocess.Popen (fork+exec) rather than bare os.fork() so the
+    child gets a clean, single-threaded process image -- safe when the
+    parent has worker threads.
+    """
+    payload = pickle.dumps((constraints, buffer_size, sink_api))
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _Z3_CHILD_SCRIPT],
+            input=payload, capture_output=True, timeout=timeout,
+        )
+        if proc.returncode == 0:
+            try:
+                return pickle.loads(proc.stdout)
+            except Exception:
+                pass
+        logger.debug("Z3 subprocess exited with code %d", proc.returncode)
+    except subprocess.TimeoutExpired:
+        logger.debug("Z3 subprocess timed out after %ds", timeout)
+    return None
+
+
+def _z3_dispatch(
+    constraints: List["BoundsConstraint"],
+    buffer_size: Optional[int],
+    sink_api: str,
+) -> Optional[Tuple[bool, str]]:
+    """Route to the appropriate Z3 check."""
     memcpy_sinks = {
         "memcpy", "memmove", "strncpy", "strncat", "bcopy",
         "copy_from_user", "copy_to_user", "wmemcpy",
@@ -243,7 +297,6 @@ def _try_z3_check(
     elif api_base in alloc_sinks:
         return _z3_integer_overflow_check(constraints)
 
-    # Generic: check if constraints are internally consistent
     return _z3_consistency_check(constraints)
 
 

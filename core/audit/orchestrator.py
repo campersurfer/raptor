@@ -206,6 +206,7 @@ class OrchestratorConfig:
     max_workers: int = 0  # 0 = auto (derive from model RPM), 1 = serial
     functions: Optional[List[str]] = None
     joern_server: Optional[Any] = None  # pre-started server; caller owns lifecycle
+    study_root: Optional[Path] = None  # full source root for study loop (when target_path is an excerpt)
 
 
 @dataclass
@@ -364,6 +365,11 @@ def get_reviewed_set(out_dir: Path) -> set:
                 if head and tail.isdigit():
                     reviewed.add(head)
     return reviewed
+
+
+def _line_near(line: int, target_lines: set, *, tolerance: int = 3) -> bool:
+    """Check if *line* is within *tolerance* of any line in *target_lines*."""
+    return any(abs(line - t) <= tolerance for t in target_lines)
 
 
 def run_orchestrator(
@@ -2122,8 +2128,8 @@ def _run_audit_body(
             qual_key = f"{gap['file']}:{cls}.{gap['name']}" if cls else key
             in_simple = key in simple or qual_key in simple
             in_lined = (
-                line in lined.get(key, set())
-                or line in lined.get(qual_key, set())
+                _line_near(line, lined.get(key, set()))
+                or _line_near(line, lined.get(qual_key, set()))
             )
             if not in_simple and not in_lined:
                 result.skipped += 1
@@ -2856,7 +2862,13 @@ def _run_audit_body(
     )
 
     # --- Study loop: enrich domain model, then re-review affected functions ---
-    if reading_list_functions and config.out_dir:
+    # Study-prep only handles C/C++ — skip for other languages.
+    _C_STUDY_SUFFIXES = frozenset((".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"))
+    _has_c_files = any(
+        Path(fn.rsplit(":", 1)[0]).suffix.lower() in _C_STUDY_SUFFIXES
+        for fn in reading_list_functions
+    )
+    if reading_list_functions and config.out_dir and _has_c_files:
         study_succeeded = False
 
         # Flush accumulated reading-list items to disk (single-writer,
@@ -2890,6 +2902,9 @@ def _run_audit_body(
         try:
             rl_path = config.out_dir / "reading-list.json"
             if rl_path.exists():
+                study_target = str(
+                    config.study_root or config.target_path
+                )
                 study_cmd = [
                     sys.executable,
                     str(
@@ -2897,7 +2912,7 @@ def _run_audit_body(
                         / "libexec"
                         / "raptor-study-loop"
                     ),
-                    str(config.target_path),
+                    study_target,
                     str(config.out_dir),
                 ]
                 if config.models and config.models[0] != "default":
