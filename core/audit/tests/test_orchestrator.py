@@ -2610,6 +2610,7 @@ class TestDeepenSuspicious:
             budget=10, batch_sloc_threshold=0,
             deepen_suspicious=True,
             max_refinements=0,
+            sweep_validate_findings=False,
         )
         result = run_orchestrator(config, review_fn)
 
