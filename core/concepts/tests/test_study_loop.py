@@ -1,11 +1,29 @@
 """Tests for libexec/raptor-study-loop orchestrator."""
 
+import importlib.machinery
+import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import MagicMock, patch
 
 RAPTOR_DIR = Path(__file__).resolve().parents[3]
 STUDY_LOOP = str(RAPTOR_DIR / "libexec" / "raptor-study-loop")
+
+
+def _load_loop_module() -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader("raptor_study_loop", STUDY_LOOP)
+    spec = importlib.util.spec_from_file_location(
+        "raptor_study_loop", STUDY_LOOP, loader=loader,
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_loop = _load_loop_module()
 
 
 def _run_loop(args: list[str], env_extra: dict | None = None) -> subprocess.CompletedProcess:
@@ -94,3 +112,101 @@ class TestReadingListDrain:
         idents, concepts = mod._extract_rl_identifiers(pending)
         assert "page" in idents
         assert "memory aliasing semantics" in concepts
+
+
+class TestResolveCoveredItems:
+    def _write_rl(self, out_dir, items):
+        rl_path = out_dir / "reading-list.json"
+        rl_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+        return rl_path
+
+    def _write_dm(self, out_dir, concepts=None, contracts=None):
+        dm = {
+            "concepts": concepts or [],
+            "contracts": contracts or [],
+            "invariants": [],
+        }
+        (out_dir / "domain-model.json").write_text(
+            json.dumps(dm), encoding="utf-8")
+
+    def test_resolves_by_local_domain_model(self, tmp_path):
+        self._write_dm(tmp_path, concepts=[
+            {"id": "page_ownership", "description": "page ownership semantics"},
+        ])
+        self._write_rl(tmp_path, [
+            {"question": "what is `page_ownership`?", "resolved": False},
+        ])
+        count = _loop._resolve_covered_items(tmp_path)
+        assert count == 1
+        data = json.loads((tmp_path / "reading-list.json").read_text())
+        assert data["items"][0]["resolved"] is True
+
+    def test_skips_already_resolved(self, tmp_path):
+        self._write_dm(tmp_path, concepts=[
+            {"id": "foo", "description": "foo thing"},
+        ])
+        self._write_rl(tmp_path, [
+            {"question": "what is `foo`?", "resolved": True},
+        ])
+        count = _loop._resolve_covered_items(tmp_path)
+        assert count == 0
+
+    def test_sage_fallback_resolves(self, tmp_path):
+        self._write_dm(tmp_path)
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+        self._write_rl(tmp_path, [
+            {"question": "what is the lifetime of crypto_alg?",
+             "resolved": False},
+        ])
+        mock_client = MagicMock()
+        mock_client.query.return_value = [{"confidence": 0.9, "content": "known"}]
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            count = _loop._resolve_covered_items(tmp_path)
+        assert count == 1
+        data = json.loads((tmp_path / "reading-list.json").read_text())
+        assert data["items"][0]["resolved"] is True
+
+    def test_no_sage_when_local_covers(self, tmp_path):
+        """SAGE is not queried when local domain-model already resolves."""
+        self._write_dm(tmp_path, concepts=[
+            {"id": "crypto_alg", "description": "crypto algorithm structure"},
+        ])
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+        self._write_rl(tmp_path, [
+            {"question": "what is `crypto_alg`?", "resolved": False},
+        ])
+        mock_client = MagicMock()
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            count = _loop._resolve_covered_items(tmp_path)
+        assert count == 1
+        mock_client.query.assert_not_called()
+
+    def test_no_resolution_when_nothing_matches(self, tmp_path):
+        self._write_dm(tmp_path)
+        self._write_rl(tmp_path, [
+            {"question": "what is `totally_unknown`?", "resolved": False},
+        ])
+        count = _loop._resolve_covered_items(tmp_path)
+        assert count == 0
+
+    def test_sage_unavailable_degrades_gracefully(self, tmp_path):
+        self._write_dm(tmp_path)
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+        self._write_rl(tmp_path, [
+            {"question": "what is the lifetime of crypto_alg?",
+             "resolved": False},
+        ])
+        with patch.dict("sys.modules", {"core.sage.hooks": None}):
+            count = _loop._resolve_covered_items(tmp_path)
+        assert count == 0

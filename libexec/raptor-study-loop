@@ -123,36 +123,81 @@ def _extract_rl_identifiers(pending: list[dict]) -> tuple[list[str], list[str]]:
     return identifiers, concepts
 
 
-def _resolve_covered_items(output_dir: Path) -> int:
-    """Mark reading-list items as resolved if domain-model covers them.
+def _sage_resolve_item(question: str, target: str) -> bool:
+    """Check if SAGE already has a high-confidence answer for a question."""
+    try:
+        from core.sage.hooks import _get_client, _concepts_domain
+    except ImportError:
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    domain = _concepts_domain(target)
+    try:
+        results = client.query(
+            question, domain_tag=domain,
+            top_k=1, min_confidence=0.75,
+        )
+    except Exception:
+        return False
+    return bool(results)
 
-    Compares pending item questions/identifiers against concept IDs and
-    descriptions in domain-model.json.  Returns count of items resolved.
+
+def _infer_target_from_study_list(output_dir: Path) -> str:
+    """Extract target path from study-list.json for SAGE domain lookup."""
+    for candidate in (output_dir / "study-list.json",
+                      output_dir.parent / "study-list.json"):
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                target = data.get("target", "")
+                if target:
+                    return target
+            except (OSError, json.JSONDecodeError):
+                continue
+    return ""
+
+
+def _resolve_covered_items(output_dir: Path) -> int:
+    """Mark reading-list items as resolved if domain-model or SAGE covers them.
+
+    Checks local domain-model.json first (cheap), then SAGE for cross-session
+    knowledge (network call).  Returns count of items resolved.
     """
-    dm_path = output_dir / "domain-model.json"
     rl_path = output_dir / "reading-list.json"
-    if not dm_path.is_file() or not rl_path.is_file():
+    if not rl_path.is_file():
         return 0
 
     try:
-        dm = json.loads(dm_path.read_text(encoding="utf-8"))
         rl_data = json.loads(rl_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return 0
 
-    concept_ids = {(c.get("id") or "").lower() for c in dm.get("concepts", [])}
-    concept_descs = " ".join(
-        (c.get("description") or "") for c in dm.get("concepts", [])
-    ).lower()
-    contract_fns = {(c.get("function") or "").lower() for c in dm.get("contracts", [])}
+    # Local domain-model check
+    concept_ids: set[str] = set()
+    concept_descs = ""
+    contract_fns: set[str] = set()
+    dm_path = output_dir / "domain-model.json"
+    if dm_path.is_file():
+        try:
+            dm = json.loads(dm_path.read_text(encoding="utf-8"))
+            concept_ids = {(c.get("id") or "").lower() for c in dm.get("concepts", [])}
+            concept_descs = " ".join(
+                (c.get("description") or "") for c in dm.get("concepts", [])
+            ).lower()
+            contract_fns = {(c.get("function") or "").lower() for c in dm.get("contracts", [])}
+        except (OSError, json.JSONDecodeError):
+            pass
 
     def _word_in_corpus(word: str) -> bool:
-        """Word-boundary match against the concatenated descriptions."""
         if len(word) < 4:
             return False
         return bool(re.search(r"\b" + re.escape(word) + r"\b", concept_descs))
 
+    sage_target = _infer_target_from_study_list(output_dir)
     resolved_count = 0
+    sage_resolved = 0
+
     for item in rl_data.get("items", []):
         if item.get("resolved"):
             continue
@@ -160,7 +205,6 @@ def _resolve_covered_items(output_dir: Path) -> int:
         if not q:
             continue
 
-        # Check if any concrete identifier from the question appears in concepts
         backtick = re.search(r"`([a-z_]\w*)`", q)
         ident = backtick.group(1) if backtick else None
 
@@ -176,6 +220,12 @@ def _resolve_covered_items(output_dir: Path) -> int:
             if terms:
                 hits = sum(1 for t in terms if _word_in_corpus(t))
                 covered = hits >= len(terms) * 0.6
+
+        # SAGE fallback for items not covered by local domain model
+        if not covered and sage_target:
+            covered = _sage_resolve_item(q, sage_target)
+            if covered:
+                sage_resolved += 1
 
         if covered:
             item["resolved"] = True
@@ -193,8 +243,10 @@ def _resolve_covered_items(output_dir: Path) -> int:
         except BaseException:
             Path(tmp_name).unlink(missing_ok=True)
             raise
-        print(f"study-loop: resolved {resolved_count} reading-list items "
-              f"(covered by domain model)", file=sys.stderr)
+        parts = [f"study-loop: resolved {resolved_count} reading-list items"]
+        if sage_resolved:
+            parts.append(f" ({sage_resolved} via SAGE)")
+        print("".join(parts), file=sys.stderr)
 
     return resolved_count
 

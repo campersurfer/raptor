@@ -106,9 +106,7 @@ _LOCK_NAMES = frozenset({
     "cnd_wait", "cnd_timedwait", "cnd_signal", "cnd_broadcast",
     # stdio locking
     "flockfile", "ftrylockfile", "funlockfile",
-    # OpenSSL CRYPTO_THREAD
-    "CRYPTO_THREAD_read_lock", "CRYPTO_THREAD_write_lock",
-    "CRYPTO_THREAD_unlock", "CRYPTO_THREAD_lock_new", "CRYPTO_THREAD_lock_free",
+    # Library-specific locking (OpenSSL CRYPTO_THREAD etc.) discovered by Layer 1.
 })
 
 _LOCK_PATTERN = re.compile(
@@ -232,20 +230,8 @@ _ALLOC_NAMES = frozenset({
     "posix_memalign", "memalign", "valloc", "pvalloc",
     "strdup", "strndup", "asprintf", "vasprintf",
     "mmap",
-    # OpenSSL
-    "OPENSSL_malloc", "OPENSSL_zalloc", "OPENSSL_realloc",
-    "OPENSSL_strdup", "OPENSSL_strndup",
-    "CRYPTO_malloc", "CRYPTO_zalloc",
-    "BN_new", "BN_CTX_new", "EVP_MD_CTX_new", "EVP_CIPHER_CTX_new",
-    "SSL_CTX_new", "SSL_new", "BIO_new", "X509_new",
-    # GLib
-    "g_malloc", "g_malloc0", "g_realloc", "g_new", "g_new0",
-    "g_strdup", "g_strndup", "g_strdup_printf",
-    # cURL
-    "curl_malloc", "curl_calloc", "curl_realloc", "curl_strdup",
-    # FFmpeg
-    "av_malloc", "av_mallocz", "av_calloc", "av_realloc",
-    "av_strdup", "av_strndup",
+    # Library-specific allocators (OpenSSL, GLib, cURL, FFmpeg) are
+    # discovered transitively by Layer 1 from these seeds.
 })
 
 _FREE_NAMES = frozenset({
@@ -257,17 +243,7 @@ _FREE_NAMES = frozenset({
     "put_page", "release_pages",
     # libc
     "free", "munmap",
-    # OpenSSL
-    "OPENSSL_free", "OPENSSL_clear_free", "OPENSSL_cleanse",
-    "BN_free", "BN_clear_free", "BN_CTX_free",
-    "EVP_MD_CTX_free", "EVP_CIPHER_CTX_free",
-    "SSL_CTX_free", "SSL_free", "BIO_free", "BIO_free_all", "X509_free",
-    # GLib
-    "g_free", "g_clear_pointer",
-    # cURL
-    "curl_free",
-    # FFmpeg
-    "av_free", "av_freep",
+    # Library-specific deallocators discovered by Layer 1.
 })
 
 _ALLOC_FREE_PATTERN = re.compile(
