@@ -127,6 +127,7 @@ def test_regression_verdict_when_proposed_does_not_clear(tmp_path: Path) -> None
     assert "New: **0**" in delta_md
 
 
+@pytest.mark.slow
 def test_findings_path_lets_caller_skip_baseline_run(tmp_path: Path) -> None:
     """When ``--findings`` points at an existing file we don't re-run
     analyse on the original target."""
@@ -224,6 +225,7 @@ def test_overlay_preserves_non_overlaid_files(tmp_path: Path) -> None:
         == "import vuln_pkg\n"
 
 
+@pytest.mark.slow
 def test_delta_json_records_applied_files(tmp_path: Path) -> None:
     target = _build_target(tmp_path)
     proposed = _build_proposed(tmp_path, "2.0.0")

@@ -348,6 +348,7 @@ def test_bump_proxy_allowlist_covers_helm_repository_hosts(
     )
 
 
+@pytest.mark.slow
 def test_bump_pr_comment_lists_skipped_locators(
     tmp_path: Path,
 ) -> None:
