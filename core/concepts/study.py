@@ -29,6 +29,63 @@ from .model import (
 
 logger = logging.getLogger(__name__)
 
+
+# ------------------------------------------------------------------
+# Project-level promotion
+# ------------------------------------------------------------------
+
+def _promote_to_project(per_run_path: Path, output_dir: Path) -> None:
+    """Copy per-run domain-model.json to the project-level canonical location.
+
+    Target: ``<project>/concepts/domain-model.json``.  Only promotes when
+    the run directory's parent looks like a project directory (has the
+    ``project.json`` marker that ProjectManager writes, or lives under
+    ``out/projects/``).
+    """
+    import os
+    import shutil
+    import tempfile
+
+    project_dir = output_dir.parent
+    if not (
+        (project_dir / "project.json").is_file()
+        or _is_under_projects_base(project_dir)
+    ):
+        return
+
+    concepts_dir = project_dir / "concepts"
+    concepts_dir.mkdir(parents=True, exist_ok=True)
+    canonical = concepts_dir / "domain-model.json"
+
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir=str(concepts_dir), suffix=".tmp", prefix="domain-model-",
+        )
+        os.close(fd)
+        shutil.copy2(str(per_run_path), tmp)
+        Path(tmp).rename(canonical)
+        logger.info("promoted domain-model.json to %s", canonical)
+    except OSError:
+        logger.debug("domain-model promotion failed", exc_info=True)
+        if tmp:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _is_under_projects_base(directory: Path) -> bool:
+    """Check if directory is under the default projects output base."""
+    try:
+        from core.project.project import DEFAULT_OUTPUT_BASE
+
+        directory.resolve().relative_to(DEFAULT_OUTPUT_BASE.resolve())
+        return True
+    except (ValueError, Exception):
+        return False
+
+
 # ------------------------------------------------------------------
 # Documentation context loading (with injection defence)
 # ------------------------------------------------------------------
@@ -1865,6 +1922,8 @@ def run_study(
 
     out_path = output_dir / "domain-model.json"
     model.save(out_path)
+
+    _promote_to_project(out_path, output_dir)
 
     # SAGE: store concepts for cross-session recall (N1)
     # Skip store when everything came from SAGE (nothing new learned).

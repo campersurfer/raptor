@@ -1463,3 +1463,116 @@ class TestSingleFileScoped:
         }]
         items_scoped = prep._build_study_items([], funcs, [], scoped=True)
         assert len([i for i in items_scoped if i.name == "empty_fn"]) == 1
+
+
+# ------------------------------------------------------------------
+# Layer 2: reading-list anchored function inclusion
+# ------------------------------------------------------------------
+
+
+class TestReadingListAnchors:
+    def test_name_match(self) -> None:
+        """Functions whose name matches an identifier are anchored."""
+        funcs = [
+            {"name": "pool_alloc", "signature": "void *pool_alloc(size_t n)",
+             "body": "{ return NULL; }"},
+            {"name": "unrelated", "signature": "void unrelated(void)",
+             "body": "{ return; }"},
+        ]
+        anchors = prep._find_reading_list_anchors(funcs, ["pool_alloc"])
+        assert "pool_alloc" in anchors
+        assert "unrelated" not in anchors
+
+    def test_body_reference(self) -> None:
+        """Functions whose body references an identifier are anchored."""
+        funcs = [
+            {"name": "consumer", "signature": "void consumer(void)",
+             "body": "{ pool_alloc(100); }"},
+        ]
+        anchors = prep._find_reading_list_anchors(funcs, ["pool_alloc"])
+        assert "consumer" in anchors
+
+    def test_signature_reference(self) -> None:
+        """Functions whose signature references an identifier are anchored."""
+        funcs = [
+            {"name": "init", "signature": "void init(struct my_ctx *ctx)",
+             "body": "{ }"},
+        ]
+        anchors = prep._find_reading_list_anchors(funcs, ["my_ctx"])
+        assert "init" in anchors
+
+    def test_struct_prefix_stripped(self) -> None:
+        """'struct foo' identifier matches 'foo' in body."""
+        funcs = [
+            {"name": "user", "signature": "void user(void)",
+             "body": "{ struct foo *p; }"},
+        ]
+        anchors = prep._find_reading_list_anchors(funcs, ["struct foo"])
+        assert "user" in anchors
+
+    def test_empty_identifiers(self) -> None:
+        funcs = [{"name": "f", "signature": "void f(void)", "body": "{}"}]
+        assert prep._find_reading_list_anchors(funcs, []) == set()
+
+    def test_anchor_included_via_build_study_items(self) -> None:
+        """Anchored functions pass the has_content gate."""
+        funcs = [{
+            "name": "bare_fn",
+            "file": "test.c",
+            "line": 1,
+            "signature": "void bare_fn(void)",
+            "doc_comment": "",
+            "signals": {
+                "lock_sites": [], "rcu_usage": [],
+                "ordering_annotations": [], "bounds_guards": [],
+                "error_gotos": [], "clamping_patterns": [],
+                "flag_checks": [], "alloc_frees": [],
+            },
+            "body": "{ return; }",
+        }]
+        items_no_anchor = prep._build_study_items([], funcs, [])
+        items_anchored = prep._build_study_items(
+            [], funcs, [], anchor_names={"bare_fn"},
+        )
+        assert len([i for i in items_no_anchor if i.name == "bare_fn"]) == 0
+        assert len([i for i in items_anchored if i.name == "bare_fn"]) == 1
+
+
+# ------------------------------------------------------------------
+# Layer 3: call-graph expansion
+# ------------------------------------------------------------------
+
+
+class TestCallGraphExpansion:
+    def test_depth_1_expansion(self) -> None:
+        graph = {"a": ["b", "c"], "b": ["d"], "c": [], "d": []}
+        expanded = prep._expand_via_call_graph({"a"}, graph, max_depth=1)
+        assert expanded == {"a", "b", "c"}
+
+    def test_depth_2_expansion(self) -> None:
+        graph = {"a": ["b"], "b": ["c"], "c": ["d"], "d": []}
+        expanded = prep._expand_via_call_graph({"a"}, graph, max_depth=2)
+        assert expanded == {"a", "b", "c"}
+
+    def test_fan_out_cap(self) -> None:
+        graph = {"a": ["b", "c", "d", "e", "f", "g"], "b": [], "c": [],
+                 "d": [], "e": [], "f": [], "g": []}
+        expanded = prep._expand_via_call_graph(
+            {"a"}, graph, max_depth=1, max_fan=3,
+        )
+        assert "a" in expanded
+        assert len(expanded) == 4  # a + 3 callees
+
+    def test_no_cycles(self) -> None:
+        graph = {"a": ["b"], "b": ["a"]}
+        expanded = prep._expand_via_call_graph({"a"}, graph, max_depth=5)
+        assert expanded == {"a", "b"}
+
+    def test_empty_seed(self) -> None:
+        graph = {"a": ["b"]}
+        assert prep._expand_via_call_graph(set(), graph) == set()
+
+    def test_multiple_seeds(self) -> None:
+        graph = {"a": ["c"], "b": ["d"], "c": [], "d": []}
+        expanded = prep._expand_via_call_graph({"a", "b"}, graph, max_depth=1)
+        assert expanded == {"a", "b", "c", "d"}

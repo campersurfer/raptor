@@ -1190,6 +1190,76 @@ def _discover_project_patterns(
     return discovered
 
 
+def _find_reading_list_anchors(
+    functions: list[dict],
+    identifiers: list[str],
+) -> set[str]:
+    """Layer 2: find functions that reference reading-list identifiers.
+
+    A function is an anchor if its name matches an identifier, or its
+    body or signature references one (word-boundary match).  Returns
+    the set of function names.
+    """
+    if not identifiers:
+        return set()
+
+    ident_set: set[str] = set()
+    patterns: list[re.Pattern[str]] = []
+    for ident in identifiers:
+        bare = re.sub(r"^(?:struct|union|enum)\s+", "", ident.strip())
+        if not bare:
+            continue
+        ident_set.add(bare)
+        ident_set.add(bare.lower())
+        patterns.append(re.compile(r"\b" + re.escape(bare) + r"\b"))
+
+    anchors: set[str] = set()
+    for f in functions:
+        name = f["name"]
+        if name in ident_set or name.lower() in ident_set:
+            anchors.add(name)
+            continue
+        sig = f.get("signature", "")
+        body = f.get("body", "")
+        text = sig + " " + body
+        for pat in patterns:
+            if pat.search(text):
+                anchors.add(name)
+                break
+
+    return anchors
+
+
+def _expand_via_call_graph(
+    seed_names: set[str],
+    call_graph: dict[str, list[str]],
+    *,
+    max_depth: int = 2,
+    max_fan: int = 5,
+) -> set[str]:
+    """Layer 3: expand seed set by walking callees in the call graph.
+
+    BFS from seed_names, following at most max_fan callees per function,
+    up to max_depth levels.  Returns the expanded set (includes seeds).
+    """
+    expanded = set(seed_names)
+    frontier = set(seed_names)
+
+    for _depth in range(max_depth):
+        next_frontier: set[str] = set()
+        for fn in frontier:
+            callees = call_graph.get(fn, [])
+            for callee in callees[:max_fan]:
+                if callee not in expanded:
+                    expanded.add(callee)
+                    next_frontier.add(callee)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return expanded
+
+
 def _build_call_graph(functions: list[dict]) -> dict[str, list[str]]:
     """Build forward call graph: for each function, which known functions it calls."""
     known_names = {f["name"] for f in functions}
@@ -1276,11 +1346,13 @@ def _build_study_items(
     *,
     scoped: bool = False,
     discovered_patterns: dict[str, str] | None = None,
+    anchor_names: set[str] | None = None,
 ) -> list[StudyItem]:
     call_graph = _build_call_graph(functions)
     type_ref_index = type_ref_index or {}
     discovered_patterns = discovered_patterns or {}
     discovered_names = set(discovered_patterns.keys())
+    anchor_names = anchor_names or set()
 
     def _type_ref_names(type_name: str) -> set[str]:
         """Extract just the function names for a type from the index."""
@@ -1402,6 +1474,7 @@ def _build_study_items(
             or f["name"] in all_paired
             or f["name"] in type_ref_fns
             or f["name"] in discovered_names
+            or f["name"] in anchor_names
         )
         if not scoped and not has_content:
             continue
@@ -2199,11 +2272,29 @@ def main() -> None:
         print(f"study-prep: layer 1 discovered {len(discovered_patterns)} "
               f"patterns ({role_summary})", file=sys.stderr)
 
+    # Layer 2: reading-list anchored function inclusion
+    rl_anchors: set[str] = set()
+    if identifiers:
+        rl_anchors = _find_reading_list_anchors(all_functions, identifiers)
+
+    # Layer 3: call-graph expansion from anchors
+    expanded_anchors: set[str] = set()
+    if rl_anchors:
+        preliminary_cg = _build_call_graph(combined_fns)
+        expanded_anchors = _expand_via_call_graph(
+            rl_anchors, preliminary_cg, max_depth=2, max_fan=5,
+        )
+        n_expanded = len(expanded_anchors) - len(rl_anchors)
+        print(f"study-prep: layer 2+3: {len(rl_anchors)} reading-list anchors"
+              f"{f', +{n_expanded} via call-graph expansion' if n_expanded else ''}",
+              file=sys.stderr)
+
     pairs = _find_paired_operations(combined_fns)
     items = _build_study_items(
         all_structs, combined_fns, pairs, type_ref_index,
         scoped=is_scoped,
         discovered_patterns=discovered_patterns,
+        anchor_names=expanded_anchors,
     )
     t4 = time.monotonic()
     print(f"study-prep: reduce (type-ref + pairs + items) [{t4 - t3:.1f}s]"
@@ -2461,6 +2552,52 @@ def main() -> None:
             raise
         print(f"study-prep: wrote {patterns_path} "
               f"({len(discovered_patterns)} patterns)", file=sys.stderr)
+
+        _promote_to_project_concepts(patterns_path, output_dir)
+
+
+def _is_under_projects_base(directory: Path) -> bool:
+    try:
+        from core.project.project import DEFAULT_OUTPUT_BASE
+
+        directory.resolve().relative_to(DEFAULT_OUTPUT_BASE.resolve())
+        return True
+    except (ValueError, Exception):
+        return False
+
+
+def _promote_to_project_concepts(src: Path, output_dir: Path) -> None:
+    """Copy a file to ``<project>/concepts/`` if inside a project."""
+    import shutil
+
+    project_dir = output_dir.parent
+    if not (
+        (project_dir / "project.json").is_file()
+        or _is_under_projects_base(project_dir)
+    ):
+        return
+
+    concepts_dir = project_dir / "concepts"
+    concepts_dir.mkdir(parents=True, exist_ok=True)
+    canonical = concepts_dir / src.name
+
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir=str(concepts_dir), suffix=".tmp", prefix=f"{src.stem}-",
+        )
+        os.close(fd)
+        shutil.copy2(str(src), tmp)
+        Path(tmp).rename(canonical)
+        print(f"study-prep: promoted {src.name} to {canonical}",
+              file=sys.stderr)
+    except OSError as exc:
+        print(f"study-prep: promotion failed: {exc}", file=sys.stderr)
+        if tmp:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

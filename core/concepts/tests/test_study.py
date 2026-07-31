@@ -28,6 +28,7 @@ from core.concepts.study import (
     _normalise_id,
     _parse_batch_response,
     _prioritise_items,
+    _promote_to_project,
     _queue_unresolved,
     check_evidence_staleness,
     run_phase2,
@@ -1307,3 +1308,76 @@ class TestApplySagePrior:
         assert len(remaining) == 3
         assert "page" in seed
         assert "get_page" in seed
+
+
+# ------------------------------------------------------------------
+# Project-level domain-model promotion
+# ------------------------------------------------------------------
+
+
+class TestPromoteToProject:
+    def test_promotes_when_project_json_present(self, tmp_path: Path) -> None:
+        """Promotes domain-model.json when project.json marker exists."""
+        project_dir = tmp_path / "myproject"
+        run_dir = project_dir / "audit-20260731-120000"
+        run_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text("{}", encoding="utf-8")
+
+        per_run = run_dir / "domain-model.json"
+        per_run.write_text('{"version": "1"}', encoding="utf-8")
+
+        _promote_to_project(per_run, run_dir)
+
+        canonical = project_dir / "concepts" / "domain-model.json"
+        assert canonical.is_file()
+        assert json.loads(canonical.read_text(encoding="utf-8")) == {"version": "1"}
+
+    def test_no_promotion_without_project_marker(self, tmp_path: Path) -> None:
+        """Does not promote when no project.json exists."""
+        run_dir = tmp_path / "standalone-run"
+        run_dir.mkdir(parents=True)
+
+        per_run = run_dir / "domain-model.json"
+        per_run.write_text('{"version": "1"}', encoding="utf-8")
+
+        _promote_to_project(per_run, run_dir)
+
+        canonical = tmp_path / "concepts" / "domain-model.json"
+        assert not canonical.exists()
+
+    def test_promotion_overwrites_stale(self, tmp_path: Path) -> None:
+        """Promotion replaces an existing stale project-level file."""
+        project_dir = tmp_path / "proj"
+        run_dir = project_dir / "run-1"
+        run_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text("{}", encoding="utf-8")
+
+        concepts_dir = project_dir / "concepts"
+        concepts_dir.mkdir()
+        stale = concepts_dir / "domain-model.json"
+        stale.write_text('{"version": "0", "stale": true}', encoding="utf-8")
+
+        per_run = run_dir / "domain-model.json"
+        per_run.write_text('{"version": "1", "fresh": true}', encoding="utf-8")
+
+        _promote_to_project(per_run, run_dir)
+
+        result = json.loads(stale.read_text(encoding="utf-8"))
+        assert result == {"version": "1", "fresh": True}
+
+    def test_promotion_is_atomic(self, tmp_path: Path) -> None:
+        """Promotion uses atomic rename — no partial writes."""
+        project_dir = tmp_path / "proj"
+        run_dir = project_dir / "run-1"
+        run_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text("{}", encoding="utf-8")
+
+        per_run = run_dir / "domain-model.json"
+        per_run.write_text('{"complete": true}', encoding="utf-8")
+
+        _promote_to_project(per_run, run_dir)
+
+        canonical = project_dir / "concepts" / "domain-model.json"
+        assert canonical.is_file()
+        tmps = list((project_dir / "concepts").glob("*.tmp"))
+        assert len(tmps) == 0

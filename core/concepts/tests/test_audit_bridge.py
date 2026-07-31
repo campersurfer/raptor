@@ -1,15 +1,18 @@
 """Tests for core.concepts.audit_bridge."""
 
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.concepts.audit_bridge import (
     _extract_cwe_id,
     _find_domain_model,
+    _infer_repo_path,
     _match_pass_cwe,
     _match_pass_mechanism,
     _relevance_score,
+    _sage_recall_for_context,
     domain_model_context,
     guard_contradicts_finding,
     invariant_violations_for_hypothesis,
@@ -251,6 +254,38 @@ def enriched_dir(enriched_model, tmp_path):
     return tmp_path
 
 
+class TestDomainModelContextWithSage:
+    def test_sage_only_when_no_local_match(self, tmp_path):
+        """SAGE provides standalone value even when local model is empty."""
+        dm = {
+            "version": "1",
+            "target": "/src",
+            "source_root": "/src",
+            "concepts": [],
+            "invariants": [],
+            "contracts": [],
+        }
+        (tmp_path / "domain-model.json").write_text(
+            json.dumps(dm), encoding="utf-8")
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"confidence": 0.85, "content": "validate_token must check expiry"},
+        ]
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            block = domain_model_context(
+                tmp_path, "auth/token.c", "validate_token")
+            assert block is not None
+            assert "Cross-Session Knowledge" in block
+            assert "validate_token must check expiry" in block
+
+
 class TestExtractCweId:
     def test_already_prefixed(self):
         assert _extract_cwe_id("CWE-787") == "CWE-787"
@@ -468,3 +503,164 @@ class TestQueueReadingListItem:
         data = json.loads(
             (tmp_path / "reading-list.json").read_text(encoding="utf-8"))
         assert data["items"][0]["priority"] == "critical"
+
+
+class TestInferRepoPath:
+    def test_from_study_list_in_out_dir(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/home/user/myrepo"}), encoding="utf-8")
+        assert _infer_repo_path(tmp_path) == "/home/user/myrepo"
+
+    def test_from_study_list_in_parent(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/linux"}), encoding="utf-8")
+        child = tmp_path / "sub"
+        child.mkdir()
+        assert _infer_repo_path(child) == "/repos/linux"
+
+    def test_returns_none_when_missing(self, tmp_path):
+        child = tmp_path / "run001"
+        child.mkdir()
+        assert _infer_repo_path(child) is None
+
+    def test_returns_none_on_empty_target(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": ""}), encoding="utf-8")
+        assert _infer_repo_path(tmp_path) is None
+
+    def test_returns_none_on_invalid_json(self, tmp_path):
+        (tmp_path / "study-list.json").write_text("not json", encoding="utf-8")
+        assert _infer_repo_path(tmp_path) is None
+
+
+class TestSageRecallForContext:
+    def test_returns_none_when_sage_not_installed(self, tmp_path):
+        with patch.dict("sys.modules", {"core.sage.hooks": None}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is None
+
+    def test_returns_none_when_client_unavailable(self, tmp_path):
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = None
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is None
+
+    def test_returns_formatted_block(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"confidence": 0.85, "content": "mutex_lock must pair with mutex_unlock"},
+            {"confidence": 0.72, "content": "refcount_inc requires matching refcount_dec"},
+        ]
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "raptor-concepts-myproj"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "kernel/locking.c", "do_lock")
+
+        assert result is not None
+        assert "Cross-Session Knowledge" in result
+        assert "85%" in result
+        assert "mutex_lock" in result
+        assert "72%" in result
+
+    def test_returns_none_on_empty_results(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        mock_client = MagicMock()
+        mock_client.query.return_value = []
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is None
+
+    def test_returns_none_on_query_exception(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        mock_client = MagicMock()
+        mock_client.query.side_effect = ConnectionError("SAGE down")
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is None
+
+    def test_truncates_long_content(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        long_content = "x" * 500 + "\nsecond line"
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"confidence": 0.9, "content": long_content},
+        ]
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is not None
+            assert "second line" not in result
+            assert len(result.split("\n")[-1]) <= 210
+
+    def test_handles_none_confidence_and_content(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"confidence": None, "content": None},
+            {"confidence": 0.8, "content": "valid result"},
+        ]
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is not None
+            assert "valid result" in result
+
+    def test_returns_none_when_no_repo_path(self, tmp_path):
+        """When _infer_repo_path returns None, SAGE is skipped."""
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = MagicMock()
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            result = _sage_recall_for_context(tmp_path, "foo.c", "bar")
+            assert result is None
+
+    def test_respects_max_results(self, tmp_path):
+        (tmp_path / "study-list.json").write_text(
+            json.dumps({"target": "/repos/myproj"}), encoding="utf-8")
+
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"confidence": 0.9, "content": "result 1"},
+        ]
+        mock_hooks = MagicMock()
+        mock_hooks._get_client.return_value = mock_client
+        mock_hooks._concepts_domain.return_value = "test-domain"
+
+        with patch.dict("sys.modules", {"core.sage.hooks": mock_hooks}):
+            _sage_recall_for_context(
+                tmp_path, "foo.c", "bar",
+                max_results=5, min_confidence=0.5,
+            )
+            mock_client.query.assert_called_once_with(
+                "bar foo.c",
+                domain_tag="test-domain",
+                top_k=5,
+                min_confidence=0.5,
+            )

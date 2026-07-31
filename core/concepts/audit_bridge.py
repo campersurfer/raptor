@@ -182,7 +182,9 @@ def domain_model_context(
     invariants = model.get("invariants", [])
     contracts = model.get("contracts", [])
 
-    if not concepts and not invariants and not contracts:
+    sage_block = _sage_recall_for_context(out_dir, file_path, function_name)
+
+    if not concepts and not invariants and not contracts and not sage_block:
         return None
 
     scored_concepts = sorted(
@@ -205,7 +207,12 @@ def domain_model_context(
     relevant_invariants = [i for i, s in scored_invariants[:max_invariants] if s > 1.0]
     relevant_contracts = [c for c, s in scored_contracts[:max_contracts] if s > 1.0]
 
-    if not relevant_concepts and not relevant_invariants and not relevant_contracts:
+    if (
+        not relevant_concepts
+        and not relevant_invariants
+        and not relevant_contracts
+        and not sage_block
+    ):
         return None
 
     parts: list[str] = ["## Domain Knowledge (from /understand --study)\n"]
@@ -258,7 +265,82 @@ def domain_model_context(
             if c.get("implication"):
                 parts.append(f"  - Implication: {c['implication']}")
 
+    if sage_block:
+        parts.append(sage_block)
+
     return "\n".join(parts)
+
+
+def _sage_recall_for_context(
+    out_dir: Path,
+    file_path: str,
+    function_name: str,
+    *,
+    max_results: int = 3,
+    min_confidence: float = 0.7,
+) -> str | None:
+    """Query SAGE for cross-session domain knowledge about a function.
+
+    Supplements the local domain-model.json with knowledge accumulated
+    across prior runs.  Returns a formatted prompt section or None.
+    """
+    try:
+        from core.sage.hooks import _get_client, _concepts_domain
+    except ImportError:
+        return None
+
+    client = _get_client()
+    if client is None:
+        return None
+
+    target = _infer_repo_path(out_dir)
+    if not target:
+        return None
+
+    domain = _concepts_domain(target)
+    query = f"{function_name} {file_path}"
+
+    try:
+        results = client.query(
+            query, domain_tag=domain,
+            top_k=max_results, min_confidence=min_confidence,
+        )
+    except Exception:
+        logger.debug("SAGE recall failed", exc_info=True)
+        return None
+
+    if not results:
+        return None
+
+    parts = ["\n### Cross-Session Knowledge (SAGE)\n"]
+    for r in results:
+        conf = r.get("confidence") or 0.0
+        content = r.get("content") or ""
+        first_line = content.split("\n", 1)[0][:200]
+        try:
+            parts.append(f"- [{conf:.0%}] {first_line}")
+        except (TypeError, ValueError):
+            parts.append(f"- {first_line}")
+
+    return "\n".join(parts) if len(parts) > 1 else None
+
+
+def _infer_repo_path(out_dir: Path) -> str | None:
+    """Infer the target repository path from a run's study-list.json."""
+    candidates = [
+        out_dir / "study-list.json",
+        out_dir.parent / "study-list.json",
+    ]
+    for c in candidates:
+        if c.is_file():
+            try:
+                data = json.loads(c.read_text(encoding="utf-8"))
+                target = data.get("target", "")
+                if target:
+                    return target
+            except (OSError, json.JSONDecodeError):
+                continue
+    return None
 
 
 def primers_from_domain_model(
