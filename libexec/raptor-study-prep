@@ -1651,6 +1651,11 @@ def _load_reading_list(path: Path) -> tuple[list[str], list[str]]:
                 seen.add(q)
                 concepts.append(q)
             continue
+        # source_function is the strongest anchor — always include it
+        src_fn = (item.get("source_function") or "").strip()
+        if src_fn and src_fn not in seen:
+            seen.add(src_fn)
+            identifiers.append(src_fn)
         ctx = item.get("context") or ""
         m = _CONTEXT_NAME_RE.search(ctx)
         if m:

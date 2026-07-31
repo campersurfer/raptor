@@ -1470,6 +1470,44 @@ class TestSingleFileScoped:
 # ------------------------------------------------------------------
 
 
+class TestLoadReadingList:
+    def test_extracts_source_function(self, tmp_path) -> None:
+        rl = {"items": [
+            {"id": "rl-1", "question": "ownership semantics of crypto_alg?",
+             "source_function": "crypto_register_alg", "resolved": False,
+             "resolution": "identifier"},
+        ]}
+        rl_path = tmp_path / "reading-list.json"
+        rl_path.write_text(__import__("json").dumps(rl))
+        idents, concepts = prep._load_reading_list(rl_path)
+        assert "crypto_register_alg" in idents
+
+    def test_skips_resolved_items(self, tmp_path) -> None:
+        rl = {"items": [
+            {"id": "rl-1", "question": "foo?",
+             "source_function": "do_foo", "resolved": True,
+             "resolution": "identifier"},
+        ]}
+        rl_path = tmp_path / "reading-list.json"
+        rl_path.write_text(__import__("json").dumps(rl))
+        idents, _ = prep._load_reading_list(rl_path)
+        assert idents == []
+
+    def test_deduplicates(self, tmp_path) -> None:
+        rl = {"items": [
+            {"id": "rl-1", "question": "foo?",
+             "source_function": "do_thing", "resolved": False,
+             "resolution": "identifier"},
+            {"id": "rl-2", "question": "bar?",
+             "source_function": "do_thing", "resolved": False,
+             "resolution": "identifier"},
+        ]}
+        rl_path = tmp_path / "reading-list.json"
+        rl_path.write_text(__import__("json").dumps(rl))
+        idents, _ = prep._load_reading_list(rl_path)
+        assert idents.count("do_thing") == 1
+
+
 class TestReadingListAnchors:
     def test_name_match(self) -> None:
         """Functions whose name matches an identifier are anchored."""
