@@ -1135,3 +1135,331 @@ void caller(void)
         }]
         items = prep._build_study_items([], funcs, [])
         assert len([i for i in items if i.name == "noop"]) == 0
+
+
+# ------------------------------------------------------------------
+# Layer 1: transitive pattern discovery
+# ------------------------------------------------------------------
+
+
+class TestDiscoverProjectPatterns:
+    def test_allocator_discovered(self) -> None:
+        """A function that calls malloc and returns a pointer is an allocator."""
+        funcs = [
+            {"name": "my_alloc", "signature": "void *my_alloc(size_t n)",
+             "body": "{ return malloc(n); }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert patterns.get("my_alloc") == "allocator"
+
+    def test_deallocator_discovered(self) -> None:
+        """A function that calls free and returns void is a deallocator."""
+        funcs = [
+            {"name": "my_free", "signature": "void my_free(void *p)",
+             "body": "{ free(p); }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert patterns.get("my_free") == "deallocator"
+
+    def test_lock_wrapper_discovered(self) -> None:
+        """A function that takes a mutex param and calls a lock is a lock_wrapper."""
+        funcs = [
+            {"name": "my_lock",
+             "signature": "void my_lock(pthread_mutex_t *m)",
+             "body": "{ pthread_mutex_lock(m); }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert patterns.get("my_lock") == "lock_wrapper"
+
+    def test_lock_wrapper_needs_lock_param(self) -> None:
+        """A function calling a lock but without a lock-type param is not a wrapper."""
+        funcs = [
+            {"name": "do_work",
+             "signature": "void do_work(int x)",
+             "body": "{ pthread_mutex_lock(&global_mtx); do_stuff(); "
+                     "pthread_mutex_unlock(&global_mtx); }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert "do_work" not in patterns
+
+    def test_resource_wrapper_discovered(self) -> None:
+        """A function that calls socket and returns int is a resource_wrapper."""
+        funcs = [
+            {"name": "make_socket",
+             "signature": "int make_socket(int domain)",
+             "body": "{ return socket(domain, SOCK_STREAM, 0); }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert patterns.get("make_socket") == "resource_wrapper"
+
+    def test_transitive_discovery(self) -> None:
+        """Wrappers of discovered wrappers are found in subsequent passes."""
+        funcs = [
+            {"name": "base_alloc", "signature": "void *base_alloc(size_t n)",
+             "body": "{ return malloc(n); }"},
+            {"name": "pool_alloc", "signature": "void *pool_alloc(int pool, size_t n)",
+             "body": "{ return base_alloc(n); }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs, max_passes=2)
+        assert patterns.get("base_alloc") == "allocator"
+        assert patterns.get("pool_alloc") == "allocator"
+
+    def test_no_false_positives_on_non_wrappers(self) -> None:
+        """A function calling malloc but returning int is not an allocator."""
+        funcs = [
+            {"name": "init_stuff", "signature": "int init_stuff(void)",
+             "body": "{ buf = malloc(100); return 0; }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert "init_stuff" not in patterns
+
+    def test_empty_body_skipped(self) -> None:
+        """Functions without bodies produce no patterns."""
+        funcs = [
+            {"name": "proto", "signature": "void *proto(size_t n)", "body": ""},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert len(patterns) == 0
+
+
+# ------------------------------------------------------------------
+# Layer 4: scoped mode bypasses has_content gate
+# ------------------------------------------------------------------
+
+
+class TestScopedMode:
+    def test_empty_function_included_when_scoped(self) -> None:
+        """In scoped mode, functions without signals are still emitted."""
+        funcs = [{
+            "name": "trivial",
+            "file": "test.c",
+            "line": 1,
+            "signature": "void trivial(void)",
+            "doc_comment": "",
+            "signals": {
+                "lock_sites": [], "rcu_usage": [],
+                "ordering_annotations": [], "bounds_guards": [],
+                "error_gotos": [], "clamping_patterns": [],
+                "flag_checks": [], "alloc_frees": [],
+            },
+            "body": "{ return; }",
+        }]
+        items_unscoped = prep._build_study_items([], funcs, [])
+        items_scoped = prep._build_study_items([], funcs, [], scoped=True)
+        assert len([i for i in items_unscoped if i.name == "trivial"]) == 0
+        assert len([i for i in items_scoped if i.name == "trivial"]) == 1
+
+    def test_scoped_mode_preserves_signal_items(self) -> None:
+        """Scoped mode doesn't break items that would pass the gate anyway."""
+        src = """\
+void alloc_thing(void)
+{
+    void *p = malloc(100);
+    free(p);
+}
+"""
+        funcs = prep._extract_functions(src, "test.c")
+        items = prep._build_study_items([], funcs, [], scoped=True)
+        assert any(i.name == "alloc_thing" for i in items)
+
+
+# ------------------------------------------------------------------
+# Signal augmentation from discovered patterns
+# ------------------------------------------------------------------
+
+
+class TestSignalAugmentation:
+    def test_discovered_allocator_augments_alloc_frees(self) -> None:
+        """Calling a discovered allocator adds it to alloc_frees."""
+        funcs = [
+            {"name": "my_alloc", "signature": "void *my_alloc(size_t n)",
+             "body": "{ return malloc(n); }", "file": "t.c", "line": 1,
+             "doc_comment": "", "signals": {"alloc_frees": ["malloc"],
+             "lock_sites": [], "rcu_usage": [], "ordering_annotations": [],
+             "bounds_guards": [], "error_gotos": [], "clamping_patterns": [],
+             "flag_checks": []}},
+            {"name": "consumer", "signature": "void consumer(void)",
+             "body": "{ void *p = my_alloc(10); }", "file": "t.c", "line": 10,
+             "doc_comment": "", "signals": {"alloc_frees": [],
+             "lock_sites": [], "rcu_usage": [], "ordering_annotations": [],
+             "bounds_guards": [], "error_gotos": [], "clamping_patterns": [],
+             "flag_checks": []}},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert patterns.get("my_alloc") == "allocator"
+        items = prep._build_study_items(
+            [], funcs, [], discovered_patterns=patterns,
+        )
+        consumer_item = [i for i in items if i.name == "consumer"][0]
+        assert "my_alloc" in consumer_item.alloc_frees
+
+    def test_discovered_lock_augments_lock_sites(self) -> None:
+        """Calling a discovered lock wrapper adds it to lock_sites."""
+        funcs = [
+            {"name": "my_lock",
+             "signature": "void my_lock(pthread_mutex_t *m)",
+             "body": "{ pthread_mutex_lock(m); }", "file": "t.c", "line": 1,
+             "doc_comment": "", "signals": {"lock_sites": ["pthread_mutex_lock"],
+             "rcu_usage": [], "ordering_annotations": [],
+             "bounds_guards": [], "error_gotos": [], "clamping_patterns": [],
+             "flag_checks": [], "alloc_frees": []}},
+            {"name": "safe_op",
+             "signature": "void safe_op(pthread_mutex_t *m)",
+             "body": "{ my_lock(m); do_work(); }",
+             "file": "t.c", "line": 10,
+             "doc_comment": "", "signals": {"lock_sites": [],
+             "rcu_usage": [], "ordering_annotations": [],
+             "bounds_guards": [], "error_gotos": [], "clamping_patterns": [],
+             "flag_checks": [], "alloc_frees": []}},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        items = prep._build_study_items(
+            [], funcs, [], discovered_patterns=patterns,
+        )
+        safe_item = [i for i in items if i.name == "safe_op"][0]
+        assert "my_lock" in safe_item.lock_sites
+
+
+# ------------------------------------------------------------------
+# Layer 1: thin-wrapper false-positive guard
+# ------------------------------------------------------------------
+
+
+class TestThinWrapperGuard:
+    def test_builder_not_classified_as_allocator(self) -> None:
+        """A struct builder that calls malloc but does more work is not an allocator."""
+        funcs = [
+            {"name": "build_response",
+             "signature": "struct response *build_response(int code, const char *body)",
+             "body": ("{ struct response *r = malloc(sizeof(*r)); "
+                      "r->code = code; r->body = strdup(body); "
+                      "r->headers = NULL; r->status = 200; return r; }")},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert "build_response" not in patterns
+
+    def test_many_calls_not_classified(self) -> None:
+        """A function with >4 distinct call sites is not a wrapper."""
+        funcs = [
+            {"name": "complex_init",
+             "signature": "void *complex_init(void)",
+             "body": ("{ void *p = malloc(100); memset(p, 0, 100); "
+                      "setup(p); configure(p); validate(p); return p; }")},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert "complex_init" not in patterns
+
+    def test_thin_wrapper_still_classified(self) -> None:
+        """A genuine thin wrapper is still classified."""
+        funcs = [
+            {"name": "xmalloc", "signature": "void *xmalloc(size_t n)",
+             "body": "{ void *p = malloc(n); if (!p) abort(); return p; }"},
+        ]
+        patterns = prep._discover_project_patterns(funcs)
+        assert patterns.get("xmalloc") == "allocator"
+
+
+# ------------------------------------------------------------------
+# Prototype dedup regression
+# ------------------------------------------------------------------
+
+
+class TestPrototypeDedup:
+    def test_prototype_does_not_overwrite_body_calls(self) -> None:
+        """When both a prototype and body version exist, call graph keeps body's calls."""
+        funcs_body = [
+            {"name": "helper", "file": "a.c", "line": 1,
+             "signature": "void helper(void)", "body": "{ }",
+             "doc_comment": "", "signals": {}},
+            {"name": "worker", "file": "a.c", "line": 5,
+             "signature": "void worker(void)",
+             "body": "{ helper(); }",
+             "doc_comment": "", "signals": {}},
+        ]
+        protos = [
+            {"name": "worker", "file": "a.h", "line": 1,
+             "signature": "void worker(void)", "body": "",
+             "doc_comment": "", "signals": {}},
+        ]
+        fns_with_body = {f["name"] for f in funcs_body if f.get("body")}
+        deduped_protos = [p for p in protos if p["name"] not in fns_with_body]
+        combined = funcs_body + deduped_protos
+        graph = prep._build_call_graph(combined)
+        assert "helper" in graph["worker"], \
+            "prototype overwrote body version — call graph lost edges"
+
+    def test_without_dedup_calls_are_lost(self) -> None:
+        """Demonstrates the bug: without dedup, prototype's empty calls win."""
+        funcs_body = [
+            {"name": "leaf", "file": "a.c", "line": 1,
+             "signature": "void leaf(void)", "body": "{ }",
+             "doc_comment": "", "signals": {}},
+            {"name": "caller", "file": "a.c", "line": 5,
+             "signature": "void caller(void)",
+             "body": "{ leaf(); }",
+             "doc_comment": "", "signals": {}},
+        ]
+        protos = [
+            {"name": "caller", "file": "a.h", "line": 1,
+             "signature": "void caller(void)", "body": "",
+             "doc_comment": "", "signals": {}},
+        ]
+        combined_no_dedup = funcs_body + protos
+        graph = prep._build_call_graph(combined_no_dedup)
+        assert graph["caller"] == [], \
+            "Expected empty calls (prototype wins via dict-last-wins)"
+
+
+# ------------------------------------------------------------------
+# __attribute__ return-type helpers
+# ------------------------------------------------------------------
+
+
+class TestAttributeSignatures:
+    def test_returns_pointer_with_attribute(self) -> None:
+        sig = '__attribute__((visibility("default"))) void *my_alloc(size_t n)'
+        assert prep._returns_pointer(sig) is True
+
+    def test_returns_void_with_attribute(self) -> None:
+        sig = '__attribute__((noinline)) void my_free(void *p)'
+        assert prep._returns_void(sig) is True
+
+    def test_returns_int_with_attribute(self) -> None:
+        sig = '__attribute__((warn_unused_result)) int open_file(const char *path)'
+        assert prep._returns_int(sig) is True
+
+    def test_nested_attribute_parens(self) -> None:
+        sig = '__attribute__((format(printf, 1, 2))) int my_printf(const char *fmt, ...)'
+        assert prep._returns_int(sig) is True
+        assert prep._returns_pointer(sig) is False
+
+    def test_no_attribute_unchanged(self) -> None:
+        assert prep._returns_pointer("void *foo(int x)") is True
+        assert prep._returns_void("void bar(int x)") is True
+        assert prep._returns_int("int baz(void)") is True
+
+
+# ------------------------------------------------------------------
+# Single-file target sets is_scoped
+# ------------------------------------------------------------------
+
+
+class TestSingleFileScoped:
+    def test_single_file_bypasses_has_content_gate(self) -> None:
+        """A single-file target should include all functions (is_scoped=True)."""
+        funcs = [{
+            "name": "empty_fn",
+            "file": "single.c",
+            "line": 1,
+            "signature": "void empty_fn(void)",
+            "doc_comment": "",
+            "signals": {
+                "lock_sites": [], "rcu_usage": [],
+                "ordering_annotations": [], "bounds_guards": [],
+                "error_gotos": [], "clamping_patterns": [],
+                "flag_checks": [], "alloc_frees": [],
+            },
+            "body": "{ return; }",
+        }]
+        items_scoped = prep._build_study_items([], funcs, [], scoped=True)
+        assert len([i for i in items_scoped if i.name == "empty_fn"]) == 1

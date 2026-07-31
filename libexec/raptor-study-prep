@@ -1028,6 +1028,168 @@ def _build_type_reference_index(
 _CALL_SITE_RE = re.compile(r"\b(\w+)\s*\(")
 
 
+# ------------------------------------------------------------------
+# Layer 1: transitive wrapper discovery
+# ------------------------------------------------------------------
+
+_RESOURCE_OPENER_NAMES = frozenset({
+    "open", "fopen", "socket", "accept", "pipe", "pipe2",
+    "socketpair", "dup", "dup2", "dup3", "epoll_create",
+    "epoll_create1", "eventfd", "signalfd", "timerfd_create",
+    "inotify_init", "inotify_init1", "mkstemp",
+})
+
+_LOCK_PARAM_RE = re.compile(
+    r"\b(?:pthread_mutex_t|pthread_rwlock_t|pthread_spinlock_t|"
+    r"mtx_t|sem_t|mutex|spinlock_t|rwlock_t|CRYPTO_RWLOCK"
+    r"|spinlock|rwsem|semaphore)\b",
+)
+
+
+def _param_paren_pos(sig: str) -> int:
+    """Find the opening paren of the parameter list, skipping __attribute__((...))."""
+    i = 0
+    while i < len(sig):
+        p = sig.find("(", i)
+        if p == -1:
+            return -1
+        prefix = sig[:p].rstrip()
+        if prefix.endswith("__attribute__"):
+            depth = 1
+            j = p + 1
+            while j < len(sig) and depth > 0:
+                if sig[j] == "(":
+                    depth += 1
+                elif sig[j] == ")":
+                    depth -= 1
+                j += 1
+            i = j
+            continue
+        return p
+    return -1
+
+
+def _returns_pointer(sig: str) -> bool:
+    paren = _param_paren_pos(sig)
+    if paren == -1:
+        return False
+    return "*" in sig[:paren]
+
+
+def _returns_void(sig: str) -> bool:
+    paren = _param_paren_pos(sig)
+    if paren == -1:
+        return False
+    before = sig[:paren].strip()
+    return "void" in before.split() and "*" not in before
+
+
+def _returns_int(sig: str) -> bool:
+    paren = _param_paren_pos(sig)
+    if paren == -1:
+        return False
+    before = sig[:paren].strip()
+    return "int" in before.split() and "*" not in before
+
+
+_MAX_WRAPPER_DISTINCT_CALLS = 4
+
+
+def _is_thin_wrapper(body: str, calls: set[str]) -> bool:
+    """True if body looks like a thin wrapper (few statements, few call sites)."""
+    stmts = [s.strip() for s in body.split(";") if s.strip()]
+    if len(stmts) > 6:
+        return False
+    if len(calls) > _MAX_WRAPPER_DISTINCT_CALLS:
+        return False
+    return True
+
+
+def _discover_project_patterns(
+    functions: list[dict],
+    *,
+    max_passes: int = 2,
+) -> dict[str, str]:
+    """Discover project-specific wrapper patterns via transitive analysis.
+
+    Starting from known primitives (_ALLOC_NAMES, _FREE_NAMES, etc.),
+    discovers functions that wrap known allocators, deallocators, lock
+    primitives, or resource-lifecycle calls.  Transitive: if my_alloc
+    wraps malloc, then pool_alloc wrapping my_alloc is also discovered.
+
+    Only thin wrappers qualify — functions with >6 statements or >4
+    distinct call sites are skipped (builders, not wrappers).
+
+    Returns {function_name: role} where role is one of:
+    allocator, deallocator, lock_wrapper, resource_wrapper.
+    """
+    known_alloc = set(_ALLOC_NAMES)
+    known_dealloc = set(_FREE_NAMES)
+    known_lock = set(_LOCK_NAMES)
+    known_resource = set(_RESOURCE_OPENER_NAMES)
+
+    fn_calls: dict[str, set[str]] = {}
+    fn_sigs: dict[str, str] = {}
+    fn_bodies: dict[str, str] = {}
+    for f in functions:
+        name = f["name"]
+        fn_sigs[name] = f.get("signature", "")
+        body = f.get("body", "")
+        fn_bodies[name] = body
+        if body:
+            fn_calls[name] = {m.group(1) for m in _CALL_SITE_RE.finditer(body)}
+        else:
+            fn_calls[name] = set()
+
+    discovered: dict[str, str] = {}
+
+    for _pass_num in range(max_passes):
+        new_found = 0
+        for f in functions:
+            name = f["name"]
+            if name in discovered:
+                continue
+
+            calls = fn_calls.get(name, set())
+            if not calls:
+                continue
+
+            body = fn_bodies.get(name, "")
+            if not _is_thin_wrapper(body, calls):
+                continue
+
+            sig = fn_sigs.get(name, "")
+
+            if calls & known_alloc and _returns_pointer(sig):
+                discovered[name] = "allocator"
+                known_alloc.add(name)
+                new_found += 1
+                continue
+
+            if calls & known_dealloc and _returns_void(sig):
+                discovered[name] = "deallocator"
+                known_dealloc.add(name)
+                new_found += 1
+                continue
+
+            if calls & known_lock and _LOCK_PARAM_RE.search(sig):
+                discovered[name] = "lock_wrapper"
+                known_lock.add(name)
+                new_found += 1
+                continue
+
+            if calls & known_resource and _returns_int(sig):
+                discovered[name] = "resource_wrapper"
+                known_resource.add(name)
+                new_found += 1
+                continue
+
+        if new_found == 0:
+            break
+
+    return discovered
+
+
 def _build_call_graph(functions: list[dict]) -> dict[str, list[str]]:
     """Build forward call graph: for each function, which known functions it calls."""
     known_names = {f["name"] for f in functions}
@@ -1111,9 +1273,14 @@ def _build_study_items(
     functions: list[dict],
     pairs: list[tuple[str, str]],
     type_ref_index: dict[str, list[tuple[str, str]]] | None = None,
+    *,
+    scoped: bool = False,
+    discovered_patterns: dict[str, str] | None = None,
 ) -> list[StudyItem]:
     call_graph = _build_call_graph(functions)
     type_ref_index = type_ref_index or {}
+    discovered_patterns = discovered_patterns or {}
+    discovered_names = set(discovered_patterns.keys())
 
     def _type_ref_names(type_name: str) -> set[str]:
         """Extract just the function names for a type from the index."""
@@ -1234,8 +1401,9 @@ def _build_study_items(
             or has_type_info
             or f["name"] in all_paired
             or f["name"] in type_ref_fns
+            or f["name"] in discovered_names
         )
-        if not has_content:
+        if not scoped and not has_content:
             continue
         item_id = f"func_{f['name']}"
         if item_id in seen_ids:
@@ -1267,6 +1435,32 @@ def _build_study_items(
             resource_lifecycle=signals.get("resource_lifecycle", []),
             usage_class=_fn_usage.get(f["name"]),
         ))
+
+    if discovered_patterns:
+        disc_alloc = {n for n, r in discovered_patterns.items()
+                      if r == "allocator"}
+        disc_dealloc = {n for n, r in discovered_patterns.items()
+                        if r == "deallocator"}
+        disc_lock = {n for n, r in discovered_patterns.items()
+                     if r == "lock_wrapper"}
+        disc_resource = {n for n, r in discovered_patterns.items()
+                         if r == "resource_wrapper"}
+        for item in items:
+            if item.kind != "function":
+                continue
+            item_calls = set(item.calls)
+            for name in sorted(item_calls & disc_alloc):
+                if name not in item.alloc_frees:
+                    item.alloc_frees.append(name)
+            for name in sorted(item_calls & disc_dealloc):
+                if name not in item.alloc_frees:
+                    item.alloc_frees.append(name)
+            for name in sorted(item_calls & disc_lock):
+                if name not in item.lock_sites:
+                    item.lock_sites.append(name)
+            for name in sorted(item_calls & disc_resource):
+                if name not in item.resource_lifecycle:
+                    item.resource_lifecycle.append(name)
 
     return items
 
@@ -1734,8 +1928,10 @@ def main() -> None:
             if p.is_dir() and p not in search_dirs:
                 search_dirs.append(p)
 
+    is_scoped = False
     if target.is_file():
         source_files = [target]
+        is_scoped = True
     else:
         scoped = None
         if parsed.reading_list:
@@ -1743,6 +1939,7 @@ def main() -> None:
                 Path(parsed.reading_list), source_root, search_dirs,
             )
         if scoped is not None:
+            is_scoped = True
             source_files = [
                 f for f in scoped
                 if f.suffix in _C_EXTENSIONS and f.is_file()
@@ -1980,14 +2177,37 @@ def main() -> None:
 
     t3 = time.monotonic()
 
+    # Final dedup: prototypes extracted in pass 1 may now have body
+    # versions from pass 2/3.  Remove those prototypes so they don't
+    # overwrite call-graph entries in _build_call_graph (dict-last-wins).
+    fns_with_body = {f["name"] for f in all_functions if f.get("body")}
+    all_prototypes[:] = [
+        p for p in all_prototypes if p["name"] not in fns_with_body
+    ]
+
     # Build type-reference index from prototypes + functions
     combined_fns = all_functions + all_prototypes
     type_ref_index = _build_type_reference_index(all_prototypes, all_functions)
 
+    # Layer 1: discover project-specific wrapper patterns
+    discovered_patterns = _discover_project_patterns(all_functions)
+    if discovered_patterns:
+        by_role: dict[str, int] = {}
+        for _r in discovered_patterns.values():
+            by_role[_r] = by_role.get(_r, 0) + 1
+        role_summary = ", ".join(f"{r}={c}" for r, c in sorted(by_role.items()))
+        print(f"study-prep: layer 1 discovered {len(discovered_patterns)} "
+              f"patterns ({role_summary})", file=sys.stderr)
+
     pairs = _find_paired_operations(combined_fns)
-    items = _build_study_items(all_structs, combined_fns, pairs, type_ref_index)
+    items = _build_study_items(
+        all_structs, combined_fns, pairs, type_ref_index,
+        scoped=is_scoped,
+        discovered_patterns=discovered_patterns,
+    )
     t4 = time.monotonic()
-    print(f"study-prep: reduce (type-ref + pairs + items) [{t4 - t3:.1f}s]",
+    print(f"study-prep: reduce (type-ref + pairs + items) [{t4 - t3:.1f}s]"
+          f"{' [scoped — has_content gate bypassed]' if is_scoped else ''}",
           file=sys.stderr)
 
     # Deferred concept seeding: when --concept was passed without a prior
@@ -2217,6 +2437,30 @@ def main() -> None:
         Path(tmp_name).unlink(missing_ok=True)
         raise
     print(f"study-prep: wrote {out_path} ({len(items)} items)", file=sys.stderr)
+
+    if discovered_patterns:
+        patterns_path = output_dir / "patterns.json"
+        patterns_data = {
+            "target": str(target),
+            "source_root": str(source_root),
+            "patterns": {
+                name: {"role": role}
+                for name, role in sorted(discovered_patterns.items())
+            },
+        }
+        fd2, tmp2 = tempfile.mkstemp(
+            dir=str(output_dir), suffix=".tmp", prefix="patterns-",
+        )
+        try:
+            with os.fdopen(fd2, "w", encoding="utf-8") as f2:
+                json.dump(patterns_data, f2, indent=2)
+                f2.write("\n")
+            Path(tmp2).rename(patterns_path)
+        except BaseException:
+            Path(tmp2).unlink(missing_ok=True)
+            raise
+        print(f"study-prep: wrote {patterns_path} "
+              f"({len(discovered_patterns)} patterns)", file=sys.stderr)
 
 
 if __name__ == "__main__":
