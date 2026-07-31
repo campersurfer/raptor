@@ -19,6 +19,7 @@ import faulthandler
 import json
 import re
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1892,6 +1893,133 @@ def _discover_docs(
     return results
 
 
+def _chase_reading_list_definitions(
+    rl_path: Path,
+    source_root: Path,
+    target: Path,
+) -> list[Path]:
+    """Find files outside target that define reading-list identifiers.
+
+    When the reading list references types/functions defined outside the
+    study target (e.g. scatterlist.h when target is crypto/), this finds
+    their definitions so the LLM can study them.  Uses subprocess grep
+    for speed.
+    """
+    if not rl_path.is_file():
+        return []
+    try:
+        raw = json.loads(rl_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    # Collect concrete identifiers from unresolved items
+    _CTX_FULL_RE = re.compile(
+        r"(?:Unresolved|Dependency)\s+\w+:\s+"
+        r"(?:(?:struct|union|enum)\s+)?([A-Za-z_]\w+)"
+    )
+    idents: set[str] = set()
+    for item in raw.get("items", []):
+        if item.get("resolved"):
+            continue
+        ctx = item.get("context", "")
+        q = item.get("question", "")
+        # "Unresolved type: struct scatterlist" → scatterlist
+        m = _CTX_FULL_RE.search(ctx)
+        if m:
+            name = m.group(1)
+            if len(name) >= 3:
+                idents.add(name)
+            continue
+        # Backtick-quoted in question
+        for bm in re.finditer(r"`([A-Za-z_]\w+)`", q):
+            name = bm.group(1)
+            if len(name) >= 3:
+                idents.add(name)
+
+    if not idents:
+        return []
+
+    target_resolved = target.resolve()
+    candidates: set[Path] = set()
+
+    def _collect_grep(dest: set[Path]) -> None:
+        """Find files containing struct/function/typedef definitions."""
+        def_patterns: list[str] = []
+        for ident in sorted(idents):
+            escaped = re.escape(ident)
+            def_patterns.append(rf"struct\s+{escaped}\s*\{{")
+            def_patterns.append(rf"\}}\s+{escaped}\s*;")
+            def_patterns.append(rf"^[A-Za-z_].*\b{escaped}\s*\(")
+        if not def_patterns:
+            return
+        combined = "|".join(def_patterns[:300])
+        try:
+            proc = subprocess.run(
+                ["grep", "-rlE", "--include=*.c", "--include=*.h",
+                 combined, str(source_root)],
+                capture_output=True, text=True, timeout=60,
+            )
+            for line in proc.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                p = Path(line).resolve()
+                if p.is_file() and not p.is_relative_to(target_resolved):
+                    dest.add(p)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    def _collect_find(dest: set[Path]) -> None:
+        """Find files named after reading-list identifiers."""
+        long_idents = [i for i in idents if len(i) >= 6]
+        if not long_idents:
+            return
+        name_args: list[str] = []
+        for ident in long_idents:
+            il = ident.lower()
+            if name_args:
+                name_args.append("-o")
+            name_args.extend(["-name", f"{il}.*"])
+            name_args.extend(["-o", "-name", f"*_{il}.*"])
+            name_args.extend(["-o", "-name", f"{il}_*.*"])
+        try:
+            proc = subprocess.run(
+                ["find", str(source_root), "-type", "f", "("]
+                + name_args + [")"],
+                capture_output=True, text=True, timeout=30,
+            )
+            for line in proc.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                p = Path(line).resolve()
+                if p.suffix in (".c", ".h") \
+                        and not p.is_relative_to(target_resolved):
+                    dest.add(p)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    _collect_grep(candidates)
+    _collect_find(candidates)
+
+    # Prioritise definition locations over consumers:
+    # include/, lib/ before drivers/, arch/, tools/, etc.
+    def _priority(p: Path) -> int:
+        for part in p.parts:
+            if part == "include":
+                return 0
+            if part == "lib":
+                return 1
+            if part in ("kernel", "mm", "net", "fs", "security"):
+                return 2
+        return 3
+
+    if candidates:
+        print(f"study-prep: chased {len(candidates)} external definition files "
+              f"for {len(idents)} reading-list identifiers",
+              file=sys.stderr)
+
+    return sorted(candidates, key=_priority)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         prog="raptor-study-prep",
@@ -2013,6 +2141,24 @@ def main() -> None:
                 source_files = _grep_scope(
                     source_files, parsed.identifier, target,
                 )
+
+        # Chase reading-list identifiers to their definitions outside target.
+        # This pulls in files like include/linux/scatterlist.h and
+        # lib/scatterlist.c when the reading list references scatterlist.
+        if parsed.reading_list and source_root != target:
+            ext_defs = _chase_reading_list_definitions(
+                Path(parsed.reading_list), source_root, target,
+            )
+            if ext_defs:
+                existing = {f.resolve() for f in source_files}
+                added = [f for f in ext_defs
+                         if f.suffix in _C_EXTENSIONS and f.resolve() not in existing]
+                if added:
+                    is_scoped = True
+                    source_files.extend(added)
+                    print(f"study-prep: added {len(added)} external definition "
+                          f"files to study scope",
+                          file=sys.stderr)
 
     headers = [f for f in source_files if f.suffix in _HEADER_EXTENSIONS]
     c_files = [f for f in source_files if f.suffix in _SOURCE_EXTENSIONS]

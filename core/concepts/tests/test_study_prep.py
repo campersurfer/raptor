@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -1614,3 +1615,157 @@ class TestCallGraphExpansion:
         graph = {"a": ["c"], "b": ["d"], "c": [], "d": []}
         expanded = prep._expand_via_call_graph({"a", "b"}, graph, max_depth=1)
         assert expanded == {"a", "b", "c", "d"}
+
+
+# ------------------------------------------------------------------
+# External definition chase
+# ------------------------------------------------------------------
+
+
+class TestChaseReadingListDefinitions:
+    def _write_rl(self, out_dir, items):
+        rl_path = out_dir / "reading-list.json"
+        rl_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+        return rl_path
+
+    def test_finds_file_by_name(self, tmp_path) -> None:
+        """A file named after the identifier is found."""
+        target = tmp_path / "crypto"
+        target.mkdir()
+        (target / "cipher.c").write_text("int cipher_fn(void) {}", encoding="utf-8")
+
+        ext = tmp_path / "lib"
+        ext.mkdir()
+        (ext / "scatterlist.c").write_text(
+            "void sg_init_table(struct scatterlist *sg, int n) {}",
+            encoding="utf-8",
+        )
+
+        rl = self._write_rl(tmp_path, [
+            {"question": "What is struct scatterlist?",
+             "context": "Unresolved type: struct scatterlist",
+             "resolved": False, "resolution": "identifier"},
+        ])
+
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        names = {p.name for p in result}
+        assert "scatterlist.c" in names
+
+    def test_skips_files_inside_target(self, tmp_path) -> None:
+        """Files inside the target directory are not returned."""
+        target = tmp_path / "crypto"
+        target.mkdir()
+        (target / "scatterlist.c").write_text(
+            "void sg_init(void) {}", encoding="utf-8",
+        )
+
+        rl = self._write_rl(tmp_path, [
+            {"question": "What is struct scatterlist?",
+             "context": "Unresolved type: struct scatterlist",
+             "resolved": False, "resolution": "identifier"},
+        ])
+
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        target_resolved = target.resolve()
+        for p in result:
+            assert not p.is_relative_to(target_resolved)
+
+    def test_skips_resolved_items(self, tmp_path) -> None:
+        """Already-resolved items don't trigger a chase."""
+        target = tmp_path / "crypto"
+        target.mkdir()
+
+        ext = tmp_path / "lib"
+        ext.mkdir()
+        (ext / "scatterlist.c").write_text("void sg(void) {}", encoding="utf-8")
+
+        rl = self._write_rl(tmp_path, [
+            {"question": "What is struct scatterlist?",
+             "context": "Unresolved type: struct scatterlist",
+             "resolved": True, "resolution": "identifier"},
+        ])
+
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        assert len(result) == 0
+
+    def test_grep_finds_struct_definition(self, tmp_path) -> None:
+        """Grep strategy finds struct definitions even without filename match."""
+        target = tmp_path / "crypto"
+        target.mkdir()
+        (target / "main.c").write_text("int main(void) {}", encoding="utf-8")
+
+        ext = tmp_path / "include"
+        ext.mkdir()
+        (ext / "types.h").write_text(
+            "struct crypto_spawn {\n    int dummy;\n};\n",
+            encoding="utf-8",
+        )
+
+        rl = self._write_rl(tmp_path, [
+            {"question": "What is `crypto_spawn`?",
+             "context": "Unresolved type: crypto_spawn",
+             "resolved": False, "resolution": "identifier"},
+        ])
+
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        names = {p.name for p in result}
+        assert "types.h" in names
+
+    def test_finds_all_matching_files(self, tmp_path) -> None:
+        """All matching files are returned without artificial cap."""
+        target = tmp_path / "crypto"
+        target.mkdir()
+        (target / "main.c").write_text("int main(void) {}", encoding="utf-8")
+
+        ext = tmp_path / "lib"
+        ext.mkdir()
+        for i in range(10):
+            (ext / f"scatter_{i}.c").write_text(
+                f"void scatter_{i}(void) {{}}", encoding="utf-8",
+            )
+
+        rl = self._write_rl(tmp_path, [
+            {"question": "What is scatter?",
+             "context": "Unresolved type: scatter",
+             "resolved": False, "resolution": "identifier"},
+        ])
+
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        assert len(result) >= 10
+
+    def test_empty_reading_list(self, tmp_path) -> None:
+        target = tmp_path / "crypto"
+        target.mkdir()
+        rl = self._write_rl(tmp_path, [])
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        assert result == []
+
+    def test_no_reading_list_file(self, tmp_path) -> None:
+        target = tmp_path / "crypto"
+        target.mkdir()
+        result = prep._chase_reading_list_definitions(
+            tmp_path / "nonexistent.json", tmp_path, target,
+        )
+        assert result == []
+
+    def test_backtick_idents_in_question(self, tmp_path) -> None:
+        """Backtick-quoted identifiers in question are extracted."""
+        target = tmp_path / "crypto"
+        target.mkdir()
+        (target / "main.c").write_text("int main(void) {}", encoding="utf-8")
+
+        ext = tmp_path / "include"
+        ext.mkdir()
+        (ext / "local_lock.h").write_text(
+            "typedef struct { int x; } local_lock_t;\n",
+            encoding="utf-8",
+        )
+
+        rl = self._write_rl(tmp_path, [
+            {"question": "What are the semantics of `local_lock_t`?",
+             "context": "", "resolved": False, "resolution": "identifier"},
+        ])
+
+        result = prep._chase_reading_list_definitions(rl, tmp_path, target)
+        names = {p.name for p in result}
+        assert "local_lock.h" in names
