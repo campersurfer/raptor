@@ -630,8 +630,10 @@ def _model_config_from_entry(entry: Dict) -> 'ModelConfig':
     if not api_key and provider == "bedrock":
         api_key = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
 
-    limits = MODEL_LIMITS.get(model_name, {})
-    costs = MODEL_COSTS.get(model_name, {})
+    from core.llm.model_data import _strip_dated_alias
+    undated = _strip_dated_alias(model_name)
+    limits = MODEL_LIMITS.get(model_name, {}) or MODEL_LIMITS.get(undated, {})
+    costs = MODEL_COSTS.get(model_name, {}) or MODEL_COSTS.get(undated, {})
     cost_per_1k = (costs.get("input", 0.005) + costs.get("output", 0.005)) / 2
 
     # Honour the operator-configured remote Ollama host (see

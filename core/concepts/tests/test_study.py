@@ -407,7 +407,7 @@ class TestParseResponse:
                 "ownership_transfer": "borrow",
             }],
         }
-        concepts, invariants, contracts = _parse_batch_response(raw)
+        concepts, invariants, contracts, bug_patterns, _ = _parse_batch_response(raw)
         assert len(concepts) == 1
         assert concepts[0].id == "page_ownership"
         assert concepts[0].confidence == "corroborated"
@@ -421,11 +421,14 @@ class TestParseResponse:
         assert contracts[0].function == "get_page"
         assert contracts[0].ownership_transfer == "borrow"
 
+        assert bug_patterns == []
+
     def test_empty_response(self) -> None:
-        concepts, invariants, contracts = _parse_batch_response({})
+        concepts, invariants, contracts, bug_patterns, _ = _parse_batch_response({})
         assert concepts == []
         assert invariants == []
         assert contracts == []
+        assert bug_patterns == []
 
     def test_missing_optional_fields(self) -> None:
         raw = {
@@ -439,7 +442,7 @@ class TestParseResponse:
             "invariants": [],
             "contracts": [{"function": "foo", "file": "b.c"}],
         }
-        concepts, _, contracts = _parse_batch_response(raw)
+        concepts, _, contracts, _, _ = _parse_batch_response(raw)
         assert concepts[0].evidence[0].line is None
         assert contracts[0].input_semantics == ""
 
@@ -588,7 +591,7 @@ class TestRunPhase2:
         mock_client = MagicMock()
         mock_client.generate_structured.return_value = mock_response
 
-        concepts, invariants, contracts = run_phase2(
+        concepts, invariants, contracts, _, _ = run_phase2(
             items, "test/", mock_client,
         )
         assert len(concepts) >= 1
@@ -602,7 +605,7 @@ class TestRunPhase2:
         mock_client = MagicMock()
         mock_client.generate_structured.side_effect = RuntimeError("API down")
 
-        concepts, invariants, contracts = run_phase2(
+        concepts, invariants, contracts, _, _ = run_phase2(
             items, "t/", mock_client,
         )
         assert concepts == []
@@ -639,7 +642,7 @@ class TestRunPhase2:
             lambda _model: 4,
         )
 
-        concepts, invariants, contracts = run_phase2(
+        concepts, invariants, contracts, _, _ = run_phase2(
             items, "test/", mock_client,
         )
         assert len(concepts) >= 1
@@ -668,7 +671,7 @@ class TestRunPhase2:
         mock_client = MagicMock()
         mock_client.generate_structured.return_value = mock_response
 
-        concepts, _, _ = run_phase2(
+        concepts, _, _, _, _ = run_phase2(
             items, "/data/linux/ipc", mock_client,
             source_root="/data/linux",
         )
@@ -894,7 +897,8 @@ class TestQueueUnresolved:
         assert len(rl.pending()) == 1
         assert "task_struct" in rl.pending()[0].question
 
-    def test_context_item_heuristic(self) -> None:
+    def test_context_items_not_auto_promoted(self) -> None:
+        """Context items mentioned by the LLM are not auto-promoted."""
         from core.concepts.reading_list import ReadingList
         rl = ReadingList()
         result = {
@@ -910,8 +914,7 @@ class TestQueueUnresolved:
                       file="include/linux/ipc.h"),
         ]
         queued = _queue_unresolved(rl, result, context)
-        assert queued == 1
-        assert "ipc_perm" in rl.pending()[0].question
+        assert queued == 0
 
     def test_short_names_skipped(self) -> None:
         from core.concepts.reading_list import ReadingList
@@ -962,7 +965,7 @@ class TestEvidenceStaleHashing:
             "invariants": [],
             "contracts": [],
         }
-        concepts, _, _ = _parse_batch_response(
+        concepts, _, _, _, _ = _parse_batch_response(
             raw, source_root=tmp_path,
         )
         assert concepts[0].evidence[0].hash is not None
@@ -982,7 +985,7 @@ class TestEvidenceStaleHashing:
             "invariants": [],
             "contracts": [],
         }
-        concepts, _, _ = _parse_batch_response(raw)
+        concepts, _, _, _, _ = _parse_batch_response(raw)
         assert concepts[0].evidence[0].hash is None
 
     def test_evidence_no_line_skipped(self, tmp_path: Path) -> None:
@@ -1000,7 +1003,7 @@ class TestEvidenceStaleHashing:
             "invariants": [],
             "contracts": [],
         }
-        concepts, _, _ = _parse_batch_response(
+        concepts, _, _, _, _ = _parse_batch_response(
             raw, source_root=tmp_path,
         )
         assert concepts[0].evidence[0].hash is None
@@ -1024,7 +1027,7 @@ class TestEvidenceStaleHashing:
                 "output_semantics": "refcount++",
             }],
         }
-        _, _, contracts = _parse_batch_response(
+        _, _, contracts, _, _ = _parse_batch_response(
             raw, source_root=tmp_path, focus_items=focus,
         )
         assert contracts[0].hash is not None
@@ -1041,10 +1044,83 @@ class TestEvidenceStaleHashing:
             "invariants": [],
             "contracts": [{"function": "unrelated", "file": "a.c"}],
         }
-        _, _, contracts = _parse_batch_response(
+        _, _, contracts, _, _ = _parse_batch_response(
             raw, source_root=tmp_path, focus_items=focus,
         )
         assert contracts[0].hash is None
+
+
+# ------------------------------------------------------------------
+# Struct annotation parsing
+# ------------------------------------------------------------------
+
+class TestStructAnnotationParsing:
+    def test_nested_format(self) -> None:
+        raw = {
+            "concepts": [],
+            "invariants": [],
+            "contracts": [],
+            "bug_patterns": [],
+            "struct_annotations": [
+                {
+                    "struct_name": "scatterlist",
+                    "fields": [
+                        {"field_name": "page_link", "annotation": "encodes page + offset + chain bit"},
+                        {"field_name": "length", "annotation": "byte count, unchecked"},
+                    ],
+                },
+                {
+                    "struct_name": "scatter_walk",
+                    "fields": [
+                        {"field_name": "offset", "annotation": "advances past sg boundary"},
+                    ],
+                },
+            ],
+        }
+        _, _, _, _, sa = _parse_batch_response(raw)
+        assert len(sa) == 3
+        assert sa[0] == {"struct_name": "scatterlist", "field_name": "page_link",
+                         "annotation": "encodes page + offset + chain bit"}
+        assert sa[1] == {"struct_name": "scatterlist", "field_name": "length",
+                         "annotation": "byte count, unchecked"}
+        assert sa[2] == {"struct_name": "scatter_walk", "field_name": "offset",
+                         "annotation": "advances past sg boundary"}
+
+    def test_flat_format_backward_compat(self) -> None:
+        raw = {
+            "concepts": [],
+            "invariants": [],
+            "contracts": [],
+            "bug_patterns": [],
+            "struct_annotations": [
+                {"struct_name": "scatterlist", "field_name": "page_link",
+                 "annotation": "encodes page"},
+            ],
+        }
+        _, _, _, _, sa = _parse_batch_response(raw)
+        assert len(sa) == 1
+        assert sa[0]["struct_name"] == "scatterlist"
+        assert sa[0]["field_name"] == "page_link"
+
+    def test_skips_invalid_entries(self) -> None:
+        raw = {
+            "concepts": [],
+            "invariants": [],
+            "contracts": [],
+            "bug_patterns": [],
+            "struct_annotations": [
+                {"struct_name": ""},
+                {"no_name": True},
+                "garbage",
+                {"struct_name": "ok", "fields": [
+                    {"field_name": "", "annotation": "x"},
+                    {"field_name": "valid", "annotation": "y"},
+                ]},
+            ],
+        }
+        _, _, _, _, sa = _parse_batch_response(raw)
+        assert len(sa) == 1
+        assert sa[0]["field_name"] == "valid"
 
 
 # ------------------------------------------------------------------

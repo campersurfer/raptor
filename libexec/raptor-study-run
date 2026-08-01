@@ -74,27 +74,13 @@ def main() -> int:
     from packages.llm_analysis import get_client
 
     if parsed.model:
-        from core.llm.config import (
-            LLMConfig, get_configured_models, model_config_from_entry,
-        )
-        from core.security.llm_family import bare_model_id, provider_of
+        from core.llm.config import LLMConfig
 
-        name = parsed.model
-        provider = provider_of(name)
-        bare = bare_model_id(name)
-        entry = {"model": bare, "provider": provider}
-        for cfg_entry in get_configured_models():
-            if provider and cfg_entry.get("provider") != provider:
-                continue
-            cfg_name = cfg_entry.get("model")
-            cfg_alias = cfg_entry.get("_configured_model")
-            if (cfg_name == bare or cfg_alias == bare) and cfg_entry.get("api_key"):
-                entry["api_key"] = cfg_entry["api_key"]
-                break
-        mc = model_config_from_entry(entry)
+        cfg = LLMConfig()
+        mc = cfg.config_for_model(parsed.model)
         if not mc.api_key:
             print(
-                f"study-run: no API key for --model {name}\n"
+                f"study-run: no API key for --model {parsed.model}\n"
                 f"  Set the provider env var or add the key to models.json",
                 file=sys.stderr,
             )
