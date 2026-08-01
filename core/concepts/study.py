@@ -2004,6 +2004,7 @@ def _dedup_bug_patterns(patterns: list[BugPattern]) -> list[BugPattern]:
 _KERNEL_MARKERS = frozenset({
     "MODULE_LICENSE", "MODULE_AUTHOR",
     "module_init(", "module_exit(", "EXPORT_SYMBOL",
+    "#include <linux/module.h>",
     "printk(", "kmalloc(", "kfree(",
     "\nmutex_lock(", "rcu_read_lock(",
     "copy_from_user(", "copy_to_user(",
