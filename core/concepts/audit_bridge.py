@@ -265,6 +265,20 @@ def domain_model_context(
             if c.get("implication"):
                 parts.append(f"  - Implication: {c['implication']}")
 
+    bug_patterns = model.get("bug_patterns", [])
+    if bug_patterns:
+        parts.append("\n### Bug Patterns (from study)\n")
+        parts.append(
+            "These are common mistake classes for this subsystem. "
+            "Check whether the function under review matches any:\n",
+        )
+        for bp in bug_patterns:
+            desc = bp.get("description", bp.get("id", ""))
+            parts.append(f"- {desc}")
+            grep_hint = bp.get("what_to_grep", "")
+            if grep_hint:
+                parts.append(f"  - Grep: `{grep_hint}`")
+
     if sage_block:
         parts.append(sage_block)
 
@@ -464,18 +478,6 @@ def primers_from_domain_model(
     return [text for _, text in candidates]
 
 
-def _guard_in_scope(inv: dict[str, Any], finding_file: str) -> bool:
-    """Check if a guard invariant's scope covers the finding's file."""
-    scope = inv.get("scope")
-    if not scope:
-        return True
-    files = scope.get("files")
-    if not files:
-        return True
-    finding_base = PurePosixPath(finding_file).name
-    return finding_base in files or finding_file in files
-
-
 def _inv_to_result(inv: dict[str, Any], *, match_pass: str = "") -> dict[str, str]:
     """Convert a raw invariant dict to a match result dict."""
     return {
@@ -483,7 +485,6 @@ def _inv_to_result(inv: dict[str, Any], *, match_pass: str = "") -> dict[str, st
         "statement": inv.get("statement", ""),
         "negation": inv.get("negation", ""),
         "mechanical_rule": inv.get("mechanical_rule") or "",
-        "role": inv.get("role", "boost"),
         "confidence": inv.get("confidence", "inferred"),
         "match_pass": match_pass,
     }
@@ -512,47 +513,23 @@ def _match_pass_cwe(
     return norm in inv_cwes
 
 
-def _match_pass_mechanism(
-    inv: dict[str, Any],
-    hyp_lower: str,
-) -> bool:
-    """Pass 2: match if mechanism keywords from the invariant appear in the hypothesis.
-
-    Uses the invariant's curated ``mechanism_keywords`` list (stamped at
-    study time).  Requires >=2 keyword hits for a match — same threshold
-    as the old keyword matcher, but with domain-specific terms instead of
-    generic word overlap.
-    """
-    keywords = inv.get("mechanism_keywords", [])
-    if not keywords:
-        return False
-    hits = sum(1 for kw in keywords if kw and kw.lower() in hyp_lower)
-    return hits >= 2
-
 
 def invariant_violations_for_hypothesis(
     out_dir: Path,
     hypothesis: str,
     *,
-    role: str | None = None,
     finding_file: str = "",
     finding_cwe: str = "",
 ) -> list[dict[str, str]]:
     """Find invariants whose domain aligns with a hypothesis.
 
     Two-pass matching:
-      Pass 1 (CWE): finding CWE ∈ invariant's ``relevant_cwes``.
-      Pass 2 (mechanism): >=2 of the invariant's ``mechanism_keywords``
-        appear in the hypothesis text.
-
-    Guards are file-scoped on both passes.  Boosts are scope-free —
-    cross-file semantic relationships are the whole point.
-
-    Falls back to the legacy keyword-overlap matcher for invariants
-    that lack the new enrichment fields (backward compatibility).
+      Pass 1 (CWE): finding CWE is in invariant's ``relevant_cwes``.
+      Pass 2 (keyword): keyword overlap between invariant negation/id
+        and hypothesis text.
 
     Returns a list of dicts with 'invariant_id', 'statement', 'negation',
-    'mechanical_rule', 'role', 'confidence', 'match_pass'.
+    'mechanical_rule', 'confidence', 'match_pass'.
     """
     model = _find_domain_model(out_dir)
     if not model:
@@ -563,59 +540,41 @@ def invariant_violations_for_hypothesis(
     matched_ids: set[str] = set()
 
     for inv in model.get("invariants", []):
-        inv_role = inv.get("role", "boost")
         inv_id = inv.get("id", "")
-        if role is not None and inv_role != role:
+
+        if _match_pass_cwe(inv, finding_cwe):
+            results.append(_inv_to_result(inv, match_pass="cwe"))
+            matched_ids.add(inv_id)
             continue
 
-        if inv_role == "guard" and finding_file:
-            if not _guard_in_scope(inv, finding_file):
-                continue
+        negation = (inv.get("negation") or "").lower()
+        id_parts = re.split(r"[_\-.]", inv_id.lower())
+        significant_parts = [p for p in id_parts if len(p) > 3]
 
-        has_enrichment = bool(
-            inv.get("relevant_cwes") or inv.get("mechanism_keywords"),
-        )
+        if not negation and not significant_parts:
+            continue
 
-        if has_enrichment:
-            if _match_pass_cwe(inv, finding_cwe):
-                results.append(_inv_to_result(inv, match_pass="cwe"))
-                matched_ids.add(inv_id)
-                continue
+        match = False
+        if negation:
+            neg_terms = [
+                w for w in negation.split()
+                if len(w) > 4 and w not in _STOPWORDS
+            ]
+            hits = sum(1 for w in neg_terms if w in hyp_lower)
+            match = hits >= 2
+        if not match and significant_parts:
+            match = sum(
+                1 for p in significant_parts if p in hyp_lower
+            ) >= 2
 
-            if _match_pass_mechanism(inv, hyp_lower):
-                results.append(_inv_to_result(inv, match_pass="mechanism"))
-                matched_ids.add(inv_id)
-                continue
-        else:
-            # Legacy fallback for invariants without enrichment fields
-            negation = (inv.get("negation") or "").lower()
-            id_parts = re.split(r"[_\-.]", inv_id.lower())
-            significant_parts = [p for p in id_parts if len(p) > 3]
-
-            if not negation and not significant_parts:
-                continue
-
-            match = False
-            if negation:
-                neg_terms = [
-                    w for w in negation.split()
-                    if len(w) > 4 and w not in _STOPWORDS
-                ]
-                hits = sum(1 for w in neg_terms if w in hyp_lower)
-                match = hits >= 2
-            if not match and significant_parts:
-                match = sum(
-                    1 for p in significant_parts if p in hyp_lower
-                ) >= 2
-
-            if match:
-                results.append(_inv_to_result(inv, match_pass="legacy"))
-                matched_ids.add(inv_id)
+        if match:
+            results.append(_inv_to_result(inv, match_pass="keyword"))
+            matched_ids.add(inv_id)
 
     return results
 
 
-def guard_contradicts_finding(
+def invariants_contradicting_finding(
     out_dir: Path,
     hypothesis: str,
     preconditions: list[dict[str, Any]],
@@ -623,31 +582,31 @@ def guard_contradicts_finding(
     finding_file: str = "",
     finding_cwe: str = "",
 ) -> list[dict[str, str]]:
-    """Find guard invariants that contradict a finding's hypothesis or preconditions.
+    """Find invariants that contradict a finding's hypothesis or preconditions.
 
     Checks the hypothesis text and each precondition's assumption text
-    against guard invariants. Returns all matching guards (deduplicated).
+    against all invariants. Returns matching invariants (deduplicated).
     """
-    guards = invariant_violations_for_hypothesis(
-        out_dir, hypothesis, role="guard",
+    matches = invariant_violations_for_hypothesis(
+        out_dir, hypothesis,
         finding_file=finding_file, finding_cwe=finding_cwe,
     )
-    seen_ids = {g["invariant_id"] for g in guards}
+    seen_ids = {m["invariant_id"] for m in matches}
 
     for pre in preconditions:
         assumption = pre.get("assumption", "")
         if not assumption:
             continue
-        pre_guards = invariant_violations_for_hypothesis(
-            out_dir, assumption, role="guard",
+        pre_matches = invariant_violations_for_hypothesis(
+            out_dir, assumption,
             finding_file=finding_file, finding_cwe=finding_cwe,
         )
-        for g in pre_guards:
-            if g["invariant_id"] not in seen_ids:
-                guards.append(g)
-                seen_ids.add(g["invariant_id"])
+        for m in pre_matches:
+            if m["invariant_id"] not in seen_ids:
+                matches.append(m)
+                seen_ids.add(m["invariant_id"])
 
-    return guards
+    return matches
 
 
 def queue_reading_list_item(
