@@ -147,6 +147,7 @@ def test_bump_whatif_emits_valid_json(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.slow
 def test_bump_discovery_finds_each_surface(tmp_path: Path) -> None:
     """The fixture has 7 declared surfaces (Dockerfile ARG x2 +
     FROM + 2 inline pip + 2 GHA uses + Helm + submodule). Each
@@ -187,6 +188,7 @@ def test_bump_discovery_finds_each_surface(tmp_path: Path) -> None:
 # Tier 3b: --whatif is non-mutating; --apply only mutates Clean
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_bump_whatif_does_not_mutate_tree(tmp_path: Path) -> None:
     """``--whatif`` (default) MUST NOT touch any file."""
     repo = tmp_path / "repo"
@@ -212,6 +214,7 @@ def test_bump_whatif_does_not_mutate_tree(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.slow
 def test_bump_apply_does_not_crash_offline(tmp_path: Path) -> None:
     """``--apply`` runs to completion offline. The bumper may
     locally apply some rewrites that don't need network (e.g. GHA
@@ -248,6 +251,7 @@ def test_bump_apply_does_not_crash_offline(tmp_path: Path) -> None:
 # Tier 3c: --pr-comment markdown shape
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_bump_pr_comment_produces_markdown(tmp_path: Path) -> None:
     """``--pr-comment`` emits markdown suitable for piping to
     ``gh pr comment --body-file -``. Asserts:
@@ -273,6 +277,7 @@ def test_bump_pr_comment_produces_markdown(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.slow
 def test_bump_pr_comment_with_repo_label(tmp_path: Path) -> None:
     """``--repo-label MYREPO`` makes the label appear in the
     header so the PR-comment is attributable when posted across
