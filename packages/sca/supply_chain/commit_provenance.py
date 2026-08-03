@@ -59,6 +59,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
+from core.git import get_safe_git_env
+from core.git.clone import safe_git_command
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
 
@@ -373,19 +375,20 @@ def _git_log_provenance(
     # Use NUL between fields + form-feed between records so embedded
     # ``|`` in subjects doesn't break parsing.
     fmt = "%H%x00%G?%x00%an%x00%ae%x00%aI%x00%cI%x00%s%x00%x0c"
-    cmd = [
-        "git", "-C", str(target), "log",
+    cmd = safe_git_command(
+        "-C", str(target), "log",
         f"--max-count={max_commits}",
         "--no-merges",
         f"--format={fmt}",
         "--name-only",
         "--",
-    ]
+    )
     cmd.extend(paths)
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=60,
             check=False,
+            env=get_safe_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.debug(

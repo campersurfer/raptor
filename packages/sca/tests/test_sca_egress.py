@@ -180,6 +180,42 @@ class TestRunScaSubprocess:
         proxy_hosts = captured_kwargs.get("proxy_hosts", [])
         assert set(proxy_hosts) == set(SCA_ALLOWED_HOSTS)
         assert captured_kwargs.get("caller_label") == "sca-agent"
+        assert captured_kwargs.get("strict_env") is True
+
+    def test_provider_key_canary_never_reaches_sca_child(self, tmp_path):
+        """The target-facing SCA child only receives the safe environment."""
+        agent = tmp_path / "agent.py"
+        agent.write_text("# stub")
+        captured_kwargs = {}
+
+        def fake_sandbox_run(cmd, **kwargs):
+            del cmd
+            captured_kwargs.update(kwargs)
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "{}"
+            mock_result.stderr = ""
+            return mock_result
+
+        with patch("core.sandbox.run", fake_sandbox_run):
+            run_sca_subprocess(
+                agent,
+                tmp_path,
+                tmp_path / "out",
+                env={
+                    "HOME": str(tmp_path / "private-home"),
+                    "PATH": "/usr/bin:/bin",
+                    "GEMINI_API_KEY": "fixture-provider-key",
+                    "UNRELATED_DISPATCH_SECRET": "fixture-parent-secret",
+                },
+            )
+
+        child_env = captured_kwargs["env"]
+        assert child_env["HOME"] == str(tmp_path / "private-home")
+        assert child_env["PATH"] == "/usr/bin:/bin"
+        assert "GEMINI_API_KEY" not in child_env
+        assert "UNRELATED_DISPATCH_SECRET" not in child_env
+        assert captured_kwargs["strict_env"] is True
 
     def test_passes_sandbox_args(self, tmp_path):
         """Extra --sandbox / --audit flags are forwarded to the command."""

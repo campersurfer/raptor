@@ -66,6 +66,8 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from core.git import get_safe_git_env
+from core.git.clone import safe_git_command
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -224,18 +226,19 @@ def _git_log_signatures(
     """Return ``[(sha, sig_status, author_name, author_email, subject), ...]``
     for the most-recent ``_MAX_COMMITS_WALKED`` commits touching
     ``paths``. Empty list on any git failure."""
-    cmd = [
-        "git", "-C", str(target), "log",
+    cmd = safe_git_command(
+        "-C", str(target), "log",
         f"--max-count={_MAX_COMMITS_WALKED}",
         "--no-merges",
         "--format=%H|%G?|%an|%ae|%s",
         "--",
-    ]
+    )
     cmd.extend(paths)
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30,
             check=False,
+            env=get_safe_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.debug(

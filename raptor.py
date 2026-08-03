@@ -81,6 +81,21 @@ def _extract_target(args: list) -> str | None:
     return None
 
 
+def _extract_out(args: list) -> str | None:
+    """Return the final explicit ``--out`` value from argv, if present.
+
+    Argparse applies repeated options in order, so lifecycle setup must use
+    the same final value as the downstream command. Supporting both forms
+    keeps explicit output roots intact for programmatic callers.
+    """
+    explicit_out: str | None = None
+    for index, arg in enumerate(args):
+        if arg == "--out" and index + 1 < len(args):
+            explicit_out = args[index + 1]
+        elif arg.startswith("--out="):
+            explicit_out = arg.split("=", 1)[1]
+    return explicit_out
+
 def _extract_and_strip_max_cost_usd(args: list) -> tuple[float | None, list]:
     """Extract ``--max-cost-usd <USD>`` (or ``--max-cost-usd=<USD>``)
     from ``args``. Returns ``(cap_usd, args_without_flag)``.
@@ -307,7 +322,11 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
             args = args + ["--repo", target]
 
     try:
-        out_dir = get_output_dir(command, target_path=target)
+        out_dir = get_output_dir(
+            command,
+            explicit_out=_extract_out(args),
+            target_path=target,
+        )
     except TargetMismatchError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 1
@@ -456,8 +475,9 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     except Exception:
         pass
 
-    # Inject --out so the downstream script uses the lifecycle directory
-    if "--out" not in args:
+    # Inject --out only when the operator did not supply one. This keeps the
+    # lifecycle directory and downstream scanner artifacts in the same root.
+    if _extract_out(args) is None:
         args = args + ["--out", str(out_dir)]
 
     # ``flush=True``: when stdout is piped (e.g. operator's ``| tee
@@ -608,13 +628,12 @@ _active_dispatcher = None
 
 
 def _get_or_start_dispatcher():
-    """Lazy single dispatcher per ``raptor.py`` invocation.
+    """Start the in-process LLM credential dispatcher once per invocation.
 
-    Phase B credential-isolation: when this is called, the spawned
-    analysis script gets ``RAPTOR_LLM_SOCKET`` + a per-spawn token
-    via ``spawn_worker``, and ``core/llm/providers.py`` routes its
-    SDK calls through the dispatcher. API keys are still in env (for
-    fallback) until Phase C drops the passthrough.
+    The worker receives only the dispatcher socket and a one-time token.
+    Provider credentials remain in the launcher's in-memory store. Legacy
+    callers may opt into an environment-key fallback, but callers that set
+    ``RAPTOR_REQUIRE_CREDENTIAL_ISOLATION=1`` fail closed instead.
     """
     global _active_dispatcher
     if _active_dispatcher is not None:
@@ -650,33 +669,20 @@ def _get_or_start_dispatcher():
         atexit.register(_active_dispatcher.shutdown)
         return _active_dispatcher
     except Exception as exc:
-        # Failure to start the dispatcher must not break the run —
-        # fall through to the env-direct path. The credential leak
-        # channel stays open in this case but is no worse than today.
-        # Surface the failure on stderr (in addition to the logger
-        # warning) so operators see it regardless of log-level
-        # config. After Phase C activation strips API keys from
-        # ``get_llm_env``, this fallback's "no worse than today"
-        # guarantee no longer holds — the fallback path will produce
-        # workers without auth, and the symptom will be a confusing
-        # "first LLM call fails" 30 seconds later. Step 1 of the
-        # phased Phase C rollout: make this failure mode loud at the
-        # moment it happens, before activation depends on it.
+        # Callers that request credential isolation treat this as a hard
+        # failure in _run_script. Legacy callers retain their documented
+        # fallback, so keep the failure visible either way.
         import logging
         import sys as _sys
         msg = (
             f"raptor.py: credential-isolation dispatcher failed to "
-            f"start ({type(exc).__name__}: {exc}). Falling back to "
-            f"env-direct credential propagation. Once Phase C "
-            f"activation lands, this fallback will produce workers "
-            f"without LLM auth — fix the dispatcher startup failure "
-            f"or expect script-level auth errors."
+            f"start ({type(exc).__name__}: {exc})."
         )
         _sys.stderr.write(msg + "\n")
         _sys.stderr.flush()
         logging.getLogger(__name__).warning(
-            "credential-isolation dispatcher failed to start, falling back "
-            "to env-direct: %s", exc,
+            "credential-isolation dispatcher failed to start: %s",
+            exc,
         )
         return None
 
@@ -711,11 +717,6 @@ def _run_script(script_path: Path, args: list) -> int:
 
     try:
         from core.config import RaptorConfig
-        # Phase B: opt the spawn into the credential-isolation
-        # dispatcher. Worker env still has API keys (fallback path
-        # exists until Phase C); ``RAPTOR_LLM_SOCKET`` and
-        # ``RAPTOR_LLM_TOKEN_FD`` direct the worker's SDK calls
-        # through the dispatcher when present.
         dispatcher = _get_or_start_dispatcher()
         if dispatcher is not None:
             from core.llm.dispatcher.spawn import spawn_worker
@@ -723,22 +724,28 @@ def _run_script(script_path: Path, args: list) -> int:
                 dispatcher,
                 cmd=cmd,
                 label=script_path.name,
-                # F102b: preserve PYTHONUSERBASE for the child
-                # ``raptor_<mode>.py`` subprocess so its own opt-in
-                # at ``get_safe_env(include_python_user_base=True)``
-                # (e.g. ``raptor_agentic.py:757`` semgrep spawn)
-                # has the value to restore. Without this flag the
-                # parent strips PYTHONUSERBASE here, leaving the
-                # child's restoration a no-op for the canonical
-                # operator path. See W14-E3 §F102b.
-                env=RaptorConfig.get_llm_env(include_python_user_base=True),
+                # The dispatcher injects credentials per request. The worker
+                # receives the ordinary safe environment, never an API key.
+                # Credential-isolated automation also keeps PYTHONUSERBASE
+                # out of the worker because its .pth files execute at Python
+                # startup before the target-facing script can constrain them.
+                env=RaptorConfig.get_safe_env(
+                    include_python_user_base=(
+                        os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1"
+                    )
+                ),
             )
             return proc.wait()
-        # Fallback: pre-Phase-B behaviour, env-direct.
-        # F102b: same opt-in as the dispatcher path above — the
-        # canonical operator entry point must preserve
-        # PYTHONUSERBASE for the spawned ``raptor_<mode>.py``
-        # subprocess. See comment at the spawn_worker call site.
+        if os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") == "1":
+            print(
+                "✗ Credential-isolation dispatcher unavailable; refusing "
+                "environment credential fallback.",
+                file=sys.stderr,
+            )
+            return 2
+        # Legacy direct callers retain the historic fallback. The authorized
+        # intake dispatcher sets RAPTOR_REQUIRE_CREDENTIAL_ISOLATION and never
+        # takes this branch.
         result = subprocess.run(
             cmd,
             env=RaptorConfig.get_llm_env(include_python_user_base=True),

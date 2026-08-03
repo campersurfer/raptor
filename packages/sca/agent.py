@@ -144,6 +144,15 @@ def run_sca_subprocess(
     # the docstring promised a tuple. Convert to a synthetic-
     # failure tuple so callers' ``if rc != 0`` paths fire
     # predictably.
+    if env is None:
+        child_env = RaptorConfig.get_safe_env()
+    else:
+        child_env = {
+            name: value
+            for name, value in env.items()
+            if name in RaptorConfig.SAFE_ENV_ALLOWLIST
+            or name.startswith(RaptorConfig.SAFE_ENV_PREFIXES)
+        }
     try:
         result = sandbox_run(
             cmd,
@@ -152,13 +161,8 @@ def run_sca_subprocess(
             caller_label="sca-agent",
             target=str(target),
             output=str(output_dir),
-            # ``env if env is not None`` — pre-fix ``env or`` truthy-tested,
-            # so an EXPLICIT ``env={}`` (caller's "spawn with empty env"
-            # signal) got replaced with the default safe env because
-            # ``{}`` is falsy. The empty-env intent was silently
-            # overridden — sandbox children inherited the caller-default
-            # RAPTOR env when caller had specifically asked for nothing.
-            env=env if env is not None else RaptorConfig.get_safe_env(),
+            env=child_env,
+            strict_env=True,
             capture_output=True,
             text=True,
             timeout=timeout,

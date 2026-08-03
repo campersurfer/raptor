@@ -292,6 +292,11 @@ def build_llm_config_from_flags(
                 break
         mc = _model_config_from_entry(entry)
         if not mc.api_key:
+            if os.getenv("RAPTOR_LLM_SOCKET"):
+                # A dispatcher worker holds no provider key by design. The
+                # provider factory routes this keyless configuration through
+                # the worker's capability-authenticated UDS session.
+                return mc
             if not provider:
                 # Unrecognizable name and no configured entry matched it by
                 # name — fail loudly with the recognizable-id hint rather

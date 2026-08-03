@@ -226,8 +226,10 @@ class TestStagingPromote:
 
         bs = BuildSystem(type="pip", command="", working_dir=tmp_path,
                          env_vars={}, confidence=1.0, detected_files=[])
+        captured_kwargs = {}
 
         def fake_sandbox_run(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
             # Simulate codeql writing the DB to the staging path it was
             # given on the command line. cmd[3] is the staging path
             # (codeql, database, create, <staging>, ...).
@@ -253,6 +255,7 @@ class TestStagingPromote:
         assert (canonical / "db-info.json").exists(), "canonical content present"
         # No staging dirs left behind (the rename ate ours; no orphans).
         assert not list(canonical.parent.glob(".staging-*"))
+        assert captured_kwargs["strict_env"] is True
 
     def test_lost_promotion_race_uses_winner_canonical(self, db_manager, tmp_path):
         # Simulate: another writer populated canonical between our cache-miss

@@ -268,7 +268,15 @@ def run_rule(
         for k, v in defines.items():
             cmd.extend(["-D", f"{k}={v}"])
 
-    run_env = dict(env) if env is not None else RaptorConfig.get_safe_env()
+    if env is None:
+        run_env = RaptorConfig.get_safe_env()
+    else:
+        run_env = {
+            name: value
+            for name, value in env.items()
+            if name in RaptorConfig.SAFE_ENV_ALLOWLIST
+            or name.startswith(RaptorConfig.SAFE_ENV_PREFIXES)
+        }
     runner = subprocess_runner or subprocess.run
 
     start = time.monotonic()

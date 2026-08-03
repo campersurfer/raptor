@@ -1247,6 +1247,7 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
                 target=repo_path, output=repo_path,
                 cwd=self.repo_path,
                 env=env,
+                strict_env=True,
                 tool_paths=_tps or None,
                 capture_output=True, text=True, timeout=300,
             )

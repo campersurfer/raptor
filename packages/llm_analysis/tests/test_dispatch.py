@@ -1156,6 +1156,15 @@ class TestBuildLLMConfigFromFlags:
         assert result is not None
         assert result.primary_model.model_name == "gemini-2.5-pro"
 
+    @patch.dict("os.environ", {"RAPTOR_LLM_SOCKET": "/tmp/dispatcher.sock"}, clear=True)
+    def test_single_model_flag_uses_dispatcher_without_env_key(self):
+        from packages.llm_analysis.orchestrator import build_llm_config_from_flags
+        result = build_llm_config_from_flags(
+            models=["gemini-2.5-pro"], auto_detect=False,
+        )
+        assert result is not None
+        assert result.primary_model.api_key is None
+
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-key", "ANTHROPIC_API_KEY": "test-key-2"})
     def test_model_with_role_flags(self):
         from packages.llm_analysis.orchestrator import build_llm_config_from_flags

@@ -11,6 +11,7 @@ key was injected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import stat
@@ -289,15 +290,16 @@ class TestLayer5AuditLog:
         events = _read_audit(dispatcher)
         assert any(e["event"] == "server.start" for e in events)
 
-    def test_token_issue_is_logged(self, dispatcher):
-        socket_path, fd = dispatcher.allocate_worker(label="audit-test")
+    def test_token_issue_uses_an_independent_audit_identifier(self, dispatcher):
+        _socket_path, fd = dispatcher.allocate_worker(label="audit-test")
+        token = os.read(fd, 128).decode()
         os.close(fd)
         events = _read_audit(dispatcher)
-        issued = [e for e in events if e["event"] == "token.issue"]
+        issued = [event for event in events if event["event"] == "token.issue"]
         assert len(issued) >= 1
         assert issued[-1]["worker_label"] == "audit-test"
-        # Token id is the 12-char prefix, not the full secret.
         assert len(issued[-1]["token_id"]) == 12
+        assert issued[-1]["token_id"] != token[:12]
 
     def test_token_reject_is_logged(self, dispatcher):
         transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
@@ -320,6 +322,13 @@ class TestLayer5AuditLog:
             for value in e.values():
                 if isinstance(value, str):
                     assert token not in value, f"full token leaked into audit: {e}"
+
+    def test_console_audit_does_not_log_token_prefix(self, dispatcher, caplog):
+        caplog.set_level(logging.INFO, logger="core.llm.dispatcher.server")
+        _socket_path, fd = dispatcher.allocate_worker(label="console-leak-check")
+        token = os.read(fd, 128).decode()
+        os.close(fd)
+        assert token[:12] not in caplog.text
 
 
 # ---------------------------------------------------------------------------

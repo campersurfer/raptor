@@ -810,6 +810,7 @@ class DatabaseManager:
                 block_network=True,
                 cwd=working_dir,
                 env=env,
+                strict_env=True,
                 tool_paths=self._sandbox_tool_paths(),
                 # Audit JSONL home (only used when --audit is engaged).
                 # Decoupled from output= because the build subprocess

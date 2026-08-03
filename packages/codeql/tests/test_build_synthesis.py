@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -78,6 +79,22 @@ class TestValidateFlags:
 
     def test_path_with_plus(self):
         assert self._bd()._validate_flags(["-Ic++"]) == ["-Ic++"]
+
+    def test_dry_run_uses_strict_environment(self, tmp_path):
+        script = tmp_path / "build.py"
+        script.write_text("print('fixture')\n")
+        captured_kwargs = {}
+        result = MagicMock(returncode=0, stdout="", stderr="")
+
+        def fake_sandbox_run(cmd, **kwargs):
+            del cmd
+            captured_kwargs.update(kwargs)
+            return result
+
+        with patch("packages.codeql.build_detector._sandbox_run", side_effect=fake_sandbox_run):
+            assert BuildDetector(tmp_path)._dry_run(script, language="cpp") == []
+
+        assert captured_kwargs["strict_env"] is True
 
 
 class TestSynthesiseCpp:

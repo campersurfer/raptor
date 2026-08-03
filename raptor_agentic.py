@@ -759,6 +759,7 @@ def _replay_fuzz_crashes(*, binary_path: Path, crash_files: list[Path], out_dir:
                         capture_output=True,
                         timeout=15,
                         env=env,
+                        strict_env=True,
                     )
                 stdout_path.write_bytes(proc.stdout or b"")
                 stderr_path.write_bytes(proc.stderr or b"")
@@ -1587,17 +1588,20 @@ Examples:
             from core.sandbox import run as sandbox_run
             result = sandbox_run(
                 ["git"] + git_safe + ["init"], block_network=True,
-                cwd=temp_repo, capture_output=True, text=True, timeout=30, env=env
+                cwd=temp_repo, capture_output=True, text=True, timeout=30, env=env,
+                strict_env=True,
             )
             if result.returncode == 0:
                 sandbox_run(
                     ["git"] + git_safe + ["add", "."], block_network=True,
-                    cwd=temp_repo, capture_output=True, timeout=60, env=env
+                    cwd=temp_repo, capture_output=True, timeout=60, env=env,
+                    strict_env=True,
                 )
                 sandbox_run(
                     ["git"] + git_safe + ["commit", "-m", "RAPTOR scan snapshot"],
                     block_network=True,
-                    cwd=temp_repo, capture_output=True, timeout=60, env=env
+                    cwd=temp_repo, capture_output=True, timeout=60, env=env,
+                    strict_env=True,
                 )
                 repo_path = temp_repo
                 print(f"  Temporary git repo created at {temp_repo}")
@@ -1936,7 +1940,7 @@ Examples:
     if run_semgrep:
         print("\n[*] Running Semgrep analysis...")
         semgrep_cmd = [
-            "python3",
+            sys.executable,
             str(script_root / "packages/static-analysis/scanner.py"),
             "--repo", str(repo_path),
             "--policy_groups", args.policy_groups,
@@ -1948,28 +1952,28 @@ Examples:
         ]
         logger.info("Running: Scanning code with Semgrep")
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
-        # ``semgrep_cmd`` is a list of RAPTOR-constructed argv;
-        # env inherits from RAPTOR's own process (the operator's
-        # env). PYTHONUSERBASE inheritance is intentional — see
-        # F102 comment below.
+        # ``semgrep_cmd`` is a list of RAPTOR-constructed argv. Use the
+        # current interpreter so the child retains this launcher's verified
+        # virtualenv dependencies; the explicit environment remains safe.
         semgrep_proc = subprocess.Popen(
             semgrep_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             bufsize=1,  # Line-buffered, see main-Popen comment.
-            # F102: semgrep is typically installed via
-            # ``pip install --user``; without PYTHONUSERBASE flowing
-            # through, an operator with a non-default user-base sees
-            # ``ModuleNotFoundError: No module named 'semgrep'`` here.
-            # PYTHONUSERBASE remains stripped by default (it is a real
-            # RCE vector via .pth files); the opt-in restores it only
-            # for this scanner spawn.
-            env=RaptorConfig.get_safe_env(include_python_user_base=True),
+            # The isolated dispatcher profile must not re-admit
+            # PYTHONUSERBASE: its .pth files execute while Python starts the
+            # target-facing scanner. Direct operator runs retain the explicit
+            # user-base compatibility opt-in.
+            env=RaptorConfig.get_safe_env(
+                include_python_user_base=(
+                    os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1"
+                )
+            ),
             start_new_session=True,  # See main-Popen comment.
         )
 
     if run_codeql:
         print("\n[*] Running CodeQL analysis...")
         codeql_cmd = [
-            "python3",
+            sys.executable,
             str(script_root / "packages/codeql/agent.py"),
             "--repo", str(repo_path),
             "--out", str(out_dir / "codeql"),
@@ -2481,7 +2485,7 @@ Examples:
         if validated_findings_path.exists():
             logger.info("Using findings from Phase 2 for analysis")
             analysis_cmd = [
-                "python3",
+                sys.executable,
                 str(script_root / "packages/llm_analysis/agent.py"),
                 "--repo", str(repo_path),
                 "--findings", str(validated_findings_path),
@@ -2490,7 +2494,7 @@ Examples:
             ]
         else:
             analysis_cmd = [
-                "python3",
+                sys.executable,
                 str(script_root / "packages/llm_analysis/agent.py"),
                 "--repo", str(repo_path),
                 "--sarif"

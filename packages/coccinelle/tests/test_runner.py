@@ -339,6 +339,38 @@ class TestRunRule:
         assert result.rule == "test"
         assert result.match_count == 1
 
+    def test_provider_key_canary_never_reaches_spatch(self, tmp_path):
+        rule = tmp_path / "test.cocci"
+        rule.write_text("@@\n@@\n")
+        target = tmp_path / "test.c"
+        target.write_text("int main(void) { return 0; }\n")
+        captured = {}
+        mock_proc = MagicMock(returncode=0, stdout="", stderr="")
+
+        def fake_run(cmd, **kwargs):
+            del cmd
+            captured.update(kwargs)
+            return mock_proc
+
+        with patch("packages.coccinelle.runner.is_available", return_value=True), \
+             patch("subprocess.run", side_effect=fake_run):
+            run_rule(
+                target,
+                rule,
+                env={
+                    "HOME": str(tmp_path / "private-home"),
+                    "PATH": "/usr/bin:/bin",
+                    "GEMINI_API_KEY": "fixture-provider-key",
+                    "UNRELATED_DISPATCH_SECRET": "fixture-parent-secret",
+                },
+            )
+
+        child_env = captured["env"]
+        assert child_env["HOME"] == str(tmp_path / "private-home")
+        assert child_env["PATH"] == "/usr/bin:/bin"
+        assert "GEMINI_API_KEY" not in child_env
+        assert "UNRELATED_DISPATCH_SECRET" not in child_env
+
     def test_timeout(self, tmp_path):
         import subprocess as sp
 

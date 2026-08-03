@@ -136,13 +136,13 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
 @dataclass
 class _TokenRecord:
     value: str
+    audit_id: str
     worker_label: str
     issued_at: float
     expires_at: float
     request_budget: int
     requests_made: int = 0
     status: str = "pending"   # pending → active → revoked|exhausted|expired
-
 
 @dataclass(frozen=True)
 class AuditEvent:
@@ -151,7 +151,7 @@ class AuditEvent:
     event: str
     peer_pid: Optional[int]
     peer_uid: Optional[int]
-    token_id: Optional[str]   # 12-char prefix for correlation; never the full token
+    token_id: Optional[str]   # random audit identifier; never token material
     worker_label: Optional[str]
     status: str
     reason: Optional[str] = None
@@ -381,6 +381,7 @@ class LLMDispatcher:
         now = time.time()
         rec = _TokenRecord(
             value=token,
+            audit_id=secrets.token_hex(6),
             worker_label=label,
             issued_at=now,
             expires_at=now + self._token_ttl_s,
@@ -415,7 +416,7 @@ class LLMDispatcher:
         self._audit(AuditEvent(
             ts=now, event="token.issue",
             peer_pid=None, peer_uid=None,
-            token_id=_short(token), worker_label=label,
+            token_id=rec.audit_id, worker_label=label,
             status="ok",
         ))
         return str(self.socket_path), read_fd
@@ -492,10 +493,9 @@ class LLMDispatcher:
     # ---- internal ----
 
     def _audit(self, ev: AuditEvent) -> None:
-        # Defang nonprintable / ANSI escapes on operator-visible
-        # fields. ``token_id`` is already a hex prefix (12 chars)
-        # so it doesn't need scrubbing, and ``event`` / ``status``
-        # are internally produced strings.
+        # Defang nonprintable / ANSI escapes on operator-visible fields.
+        # token_id is a generated audit identifier, never a token fragment.
+        # event and status are internally produced strings.
         safe_worker = _scrub(ev.worker_label)
         safe_reason = _scrub(ev.reason)
         # Log level chosen by event type:
@@ -515,13 +515,9 @@ class LLMDispatcher:
             level = logging.DEBUG
         else:
             level = logging.INFO
-        # Always log via stdlib logger for terminal visibility.
-        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-        # ``ev.token_id`` is a 12-character correlation prefix (see
-        # ``AuditEvent.token_id`` docstring) — explicitly NOT the
-        # full token. Operator visibility for the auth flow needs
-        # SOME identifier; the prefix gives correlation without
-        # disclosure.
+        # Always log via stdlib logger for terminal visibility. token_id is a
+        # random correlation identifier, not a token prefix or credential
+        # material.
         _logger.log(
             level,
             "llm-dispatcher %s %s pid=%s uid=%s token=%s label=%s%s",
@@ -599,10 +595,6 @@ class LLMDispatcher:
         return self._rules.get(name)
 
 
-def _short(token: str) -> str:
-    """Return a short prefix of a token for audit correlation. Never
-    log the full token — it's a credential."""
-    return token[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +655,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="token.reject",
                     peer_pid=None, peer_uid=None,
-                    token_id=_short(token) if token else None,
+                    token_id=None,
                     worker_label=None, status="reject", reason=reason,
                 ))
                 self._send_simple(401, reason or "unauthorized")
@@ -681,7 +673,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="provider.reject",
                     peer_pid=None, peer_uid=None,
-                    token_id=_short(rec.value), worker_label=rec.worker_label,
+                    token_id=rec.audit_id, worker_label=rec.worker_label,
                     status="reject", reason=f"unknown path: {self.path}",
                 ))
                 self._send_simple(404, "unknown provider path")
@@ -701,7 +693,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="provider.unconfigured",
                     peer_pid=None, peer_uid=None,
-                    token_id=_short(rec.value), worker_label=rec.worker_label,
+                    token_id=rec.audit_id, worker_label=rec.worker_label,
                     status="reject", reason=provider_name,
                 ))
                 self._send_simple(503, f"provider not configured: {provider_name}")
@@ -725,7 +717,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     dispatcher._audit(AuditEvent(
                         ts=time.time(), event="provider.transform_reject",
                         peer_pid=None, peer_uid=None,
-                        token_id=_short(rec.value), worker_label=rec.worker_label,
+                        token_id=rec.audit_id, worker_label=rec.worker_label,
                         status="reject", reason=f"{provider_name}: {exc.message}",
                     ))
                     self._send_simple(exc.status, exc.message)
@@ -745,7 +737,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     dispatcher._audit(AuditEvent(
                         ts=time.time(), event="provider.transform_error",
                         peer_pid=None, peer_uid=None,
-                        token_id=_short(rec.value), worker_label=rec.worker_label,
+                        token_id=rec.audit_id, worker_label=rec.worker_label,
                         status="error", reason=f"{provider_name}: {type(exc).__name__}",
                     ))
                     self._send_simple(502, f"request signing failed: {type(exc).__name__}")
@@ -794,7 +786,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="request.dispatch",
                     peer_pid=None, peer_uid=None,
-                    token_id=_short(rec.value), worker_label=rec.worker_label,
+                    token_id=rec.audit_id, worker_label=rec.worker_label,
                     status="ok",
                     extra={"provider": provider_name, "method": method, "path": upstream_path},
                 ))
@@ -802,7 +794,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="request.error",
                     peer_pid=None, peer_uid=None,
-                    token_id=_short(rec.value), worker_label=rec.worker_label,
+                    token_id=rec.audit_id, worker_label=rec.worker_label,
                     status="error", reason=type(exc).__name__,
                 ))
                 # Best-effort failure response. If headers already sent
