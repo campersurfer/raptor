@@ -141,12 +141,10 @@ def _build_audit_config(
 
 
 def _write_audit_config(audit_config: dict) -> str:
-    """Persist the audit-config dict to /tmp; return path.
+    """Persist the audit config until the tracer signals readiness.
 
-    Tempfile lives outside any sandbox view (random suffix in /tmp;
-    targets see /tmp via the system_ro list but cannot guess the
-    suffix). The nonce inside is therefore not readable by the
-    target, defeating spoofs by record-content forgery.
+    The parent unlinks this same-UID-readable tempfile after tracer
+    readiness and before the target receives its execution signal.
     """
     fd, path = tempfile.mkstemp(
         prefix="raptor-audit-cfg-", suffix=".json",
@@ -289,7 +287,7 @@ def run_landlock_audit(
         target=target,
         restrict_reads=restrict_reads,
     )
-    config_path = _write_audit_config(audit_config)
+    config_path: Optional[str] = _write_audit_config(audit_config)
 
     # Sync pipes:
     #   p_go: parent → target ("tracer attached, proceed")
@@ -521,6 +519,20 @@ def run_landlock_audit(
                 f"(Yama scope, container cap-drop, AppArmor)"
             )
 
+        # The tracer parsed its config before it wrote ready. Remove the
+        # observe nonce before the target can execute in the shared temp view.
+        if config_path is not None:
+            try:
+                os.unlink(config_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise RuntimeError(
+                    "could not remove audit config before target exec: "
+                    f"{exc}"
+                ) from exc
+            config_path = None
+
         # Tracer attached. Tell the target it can proceed.
         try:
             os.write(p_go_w, b"G")
@@ -628,7 +640,8 @@ def run_landlock_audit(
                 _kill_and_reap(tracer_pid)
             except Exception:
                 pass
-        try:
-            os.unlink(config_path)
-        except OSError:
-            pass
+        if config_path is not None:
+            try:
+                os.unlink(config_path)
+            except OSError:
+                pass

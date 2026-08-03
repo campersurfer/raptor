@@ -246,6 +246,66 @@ class TestAuditModeBasicFlow:
             f"stderr={result.stderr[:300]!r}"
         )
 
+    def test_isolated_temp_hides_audit_config_before_target_exec(
+        self, tmp_path, monkeypatch,
+    ):
+        """The target cannot read the tracer config or its observe nonce."""
+        ok, reason = _audit_prereqs_ok()
+        if not ok:
+            pytest.skip(reason)
+        if not os.path.exists("/usr/bin/python3"):
+            pytest.skip("/usr/bin/python3 not present")
+
+        import tempfile
+
+        from core.config import RaptorConfig
+
+        private_tmp = tmp_path / "private-tmp"
+        target = tmp_path / "target"
+        output = tmp_path / "output"
+        audit_run_dir = output / "audit"
+        private_tmp.mkdir()
+        target.mkdir()
+        audit_run_dir.mkdir(parents=True)
+        os.chmod(private_tmp, 0o700)
+        isolated_env = {
+            "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+            "RAPTOR_PRIVATE_TMPDIR": str(private_tmp),
+            "TMPDIR": str(private_tmp),
+            "TMP": str(private_tmp),
+            "TEMP": str(private_tmp),
+        }
+        for name, value in isolated_env.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr(tempfile, "tempdir", None)
+        child_env = RaptorConfig.get_safe_env()
+        code = (
+            "import glob,os,sys; "
+            "leaks=glob.glob(os.path.join(os.environ['TMPDIR'],"
+            "'raptor-audit-cfg-*')); "
+            "print(leaks); sys.exit(bool(leaks))"
+        )
+
+        result = run_sandboxed(
+            ["/usr/bin/python3", "-c", code],
+            target=str(target), output=str(output),
+            block_network=False, nproc_limit=0, limits={},
+            writable_paths=[str(output), str(private_tmp)],
+            readable_paths=None, allowed_tcp_ports=None,
+            seccomp_profile="full", seccomp_block_udp=False,
+            env=child_env, cwd=None, timeout=20,
+            capture_output=True, text=True,
+            audit_mode=True, audit_run_dir=str(audit_run_dir),
+            audit_verbose=True, observe_mode=True,
+            observe_nonce="audit-config-canary-nonce",
+            strict_env=True, extra_rw_paths=[str(private_tmp)],
+        )
+
+        assert result.returncode == 0, (
+            f"target observed audit config: stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}"
+        )
+
     def test_audit_mode_records_openat_events(self, tmp_path):
         ok, reason = _audit_prereqs_ok()
         if not ok:

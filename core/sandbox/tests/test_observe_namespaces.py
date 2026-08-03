@@ -153,6 +153,65 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
                 "should land",
             )
 
+    def test_isolated_temp_hides_audit_config_before_target_exec(self):
+        """Landlock-only observe unlinks the nonce config before release."""
+        from unittest.mock import patch
+        import os
+        import tempfile
+
+        from core.config import RaptorConfig
+        from core.sandbox import run as sandbox_run
+
+        if not os.path.exists("/usr/bin/python3"):
+            self.skipTest("/usr/bin/python3 not present")
+
+        with TemporaryDirectory() as d:
+            base = Path(d)
+            private_tmp = base / "private-tmp"
+            target = base / "target"
+            output = base / "output"
+            private_tmp.mkdir()
+            target.mkdir()
+            output.mkdir()
+            os.chmod(private_tmp, 0o700)
+            isolated_env = {
+                "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+                "RAPTOR_PRIVATE_TMPDIR": str(private_tmp),
+                "TMPDIR": str(private_tmp),
+                "TMP": str(private_tmp),
+                "TEMP": str(private_tmp),
+            }
+            code = (
+                "import glob,os,sys; "
+                "leaks=glob.glob(os.path.join(os.environ['TMPDIR'],"
+                "'raptor-audit-cfg-*')); "
+                "print(leaks); sys.exit(bool(leaks))"
+            )
+
+            with patch.dict(os.environ, isolated_env), \
+                 patch.object(tempfile, "tempdir", None), \
+                 patch("core.sandbox._spawn.mount_ns_available",
+                       return_value=False), \
+                 patch("core.sandbox.context.check_mount_available",
+                       return_value=False):
+                child_env = RaptorConfig.get_safe_env()
+                result = sandbox_run(
+                    ["/usr/bin/python3", "-c", code],
+                    target=str(target), output=str(output),
+                    observe=True, capture_output=True, text=True,
+                    timeout=10, env=child_env, strict_env=True,
+                )
+
+        self.assertIsNotNone(
+            result.sandbox_info.get("observe_nonce"),
+            "Landlock-only audit failed to engage",
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"target observed audit config: stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}",
+        )
+
 
 # ---------------------------------------------------------------------------
 # block_network — connect() recorded even when net-ns blocks it

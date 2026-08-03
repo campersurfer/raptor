@@ -685,14 +685,12 @@ def run_sandboxed(
                 # needed).
                 "observe_nonce": observe_nonce,
             }
-            # mkstemp under /tmp; cleaned up after tracer exits.
-            # If the write fails (disk full, EIO mid-flight), the
-            # tracer would later read an empty/partial JSON file →
-            # decode error → exit 1 → parent times out waiting for
-            # ready → audit silently disabled. Better: catch the
-            # write failure HERE, unlink the partial file, raise so
-            # the operator sees an error AT spawn-time rather than
-            # an ambiguous "tracer attach failed" minutes later.
+            # mkstemp in tempfile.gettempdir(); unlink after the tracer reads
+            # it and before the target gets its exec signal. If the write
+            # fails (disk full, EIO mid-flight), the tracer would later read
+            # an empty/partial JSON file, exit 1, and leave the parent
+            # waiting for ready. Catch it here so the operator gets a
+            # spawn-time error instead of ambiguous disabled audit.
             import tempfile as _tf
             import json as _json
             _cfd, _audit_config_path = _tf.mkstemp(
@@ -1565,6 +1563,20 @@ def run_sandboxed(
                     f"audit-mode tracer failed to attach to sandboxed "
                     f"child{rc_hint} — {cause}"
                 )
+            # The tracer parsed its config before it wrote ready. The target
+            # can reach the dispatcher-provided temp leaf, so remove the
+            # observe nonce before releasing the target to exec.
+            if _audit_config_path is not None:
+                try:
+                    os.unlink(_audit_config_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise RuntimeError(
+                        "could not remove audit config before target exec: "
+                        f"{exc}"
+                    ) from exc
+                _audit_config_path = None
 
         # Step 8: tell child to proceed.
         try:

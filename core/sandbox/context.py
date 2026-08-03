@@ -521,15 +521,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         and audit_mode
     )
     # Per-run observe nonce — 128 bits, generated up here so we can
-    # both forward it to the spawn layer (which threads it into the
-    # audit-config tempfile the tracer reads) AND retain it locally
-    # to stamp `result.sandbox_info["observe_nonce"]` after each run
-    # so the operator can pass it to parse_observe_log() for spoof-
-    # resistant parsing. The audit-config tempfile lives in /tmp
-    # outside the sandbox view, so a target binary cannot read the
-    # nonce; the JSONL records the binary CAN read carry the nonce
-    # but the binary can't reuse it without the parser noticing
-    # (parser pins to the per-run nonce, not "any nonce on record").
+    # forward it to the spawn layer's audit-config tempfile and retain it
+    # for result.sandbox_info. The spawn parent unlinks that config after
+    # tracer readiness and before target exec, so a target with access to
+    # a dispatcher-provided temporary leaf cannot recover or forge it.
     # None when observe is off.
     if observe and audit_mode:
         import secrets as _secrets
