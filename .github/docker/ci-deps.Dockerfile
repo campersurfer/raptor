@@ -6,7 +6,7 @@
 # requirements*.txt (or this Dockerfile) change.
 #
 # Base pinned to bookworm to match the devcontainer
-# (mcr.microsoft.com/devcontainers/python:1-3.14-bookworm, glibc 2.36)
+# (mcr.microsoft.com/devcontainers/python:3-3.14-bookworm, glibc 2.36)
 # so platform-sensitive wheels resolve identically — notably z3-solver
 # 4.15.4.0's manylinux_2_34 wheel (see the cap rationale in
 # requirements-dev.txt). PYTHON_VERSION here must track tests.yml's

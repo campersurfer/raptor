@@ -4,7 +4,7 @@
 # This container provides all dependencies for the RAPTOR security research framework.
 # Based on comprehensive audit of all agents, commands, skills, and packages.
 
-FROM mcr.microsoft.com/devcontainers/python:1-3.14-bookworm
+FROM mcr.microsoft.com/devcontainers/python:3-3.14-bookworm
 
 # The base image's `node` devcontainer-feature install path added a stale
 # yarn apt source (NO_PUBKEY 62D54FD4003F6525, breaks apt-get update) AND
