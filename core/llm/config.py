@@ -454,6 +454,16 @@ def _build_bedrock_config() -> Optional['ModelConfig']:
     )
 
 
+def _build_claudecode_resumable_config() -> Optional['ModelConfig']:
+    """CC with session persistence — ``--resume`` reuses the session
+    across subprocess calls for near-zero input cost on turn 2+."""
+    base = _build_claudecode_config()
+    if base is None:
+        return None
+    from dataclasses import replace
+    return replace(base, provider="claudecode-resumable")
+
+
 _PROVIDER_BUILDERS = {
     "anthropic":  _build_anthropic_config,
     "openai":     lambda: _build_openai_compat_config("openai"),
@@ -462,6 +472,7 @@ _PROVIDER_BUILDERS = {
     "bedrock":    _build_bedrock_config,
     "ollama":     _build_ollama_config,
     "claudecode": _build_claudecode_config,
+    "claudecode-resumable": _build_claudecode_resumable_config,
 }
 
 # Default order. Anthropic first (cache-control + task-budget beta —
@@ -1222,6 +1233,11 @@ class LLMConfig:
                         f"'{mc.model_name}' from configured models"
                     )
                     return mc
+
+        if model_id in _PROVIDER_BUILDERS:
+            mc = _PROVIDER_BUILDERS[model_id]()
+            if mc is not None:
+                return mc
 
         provider = provider_of(model_id)
         if not provider:

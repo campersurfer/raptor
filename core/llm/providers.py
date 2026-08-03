@@ -3126,10 +3126,14 @@ class ClaudeCodeLLMProvider(LLMProvider):
         claude_bin: Optional[str] = None,
         budget_usd: str = "1.00",
         timeout_s: Optional[int] = None,
+        resumable: bool = False,
     ) -> None:
         super().__init__(config)
         self._claude_bin = claude_bin or "claude"
         self._budget_usd = budget_usd
+        self._resumable = resumable
+        self._session_id: Optional[str] = None
+        self._messages_seen: int = 0
         # Per-call timeout: prefer explicit kwarg, then ModelConfig.timeout,
         # then a generous default (Claude Code subprocess + tool-use can
         # take several minutes on real workloads).
@@ -3148,15 +3152,23 @@ class ClaudeCodeLLMProvider(LLMProvider):
         else:
             self._timeout_s = 600
 
+    def reset_session(self) -> None:
+        """Discard resume state so the next ``turn()`` starts fresh."""
+        self._session_id = None
+        self._messages_seen = 0
+
     def generate(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Dispatch a prompt to ``claude -p`` and parse the JSON envelope."""
+        """Dispatch a prompt to ``claude -p`` via stream-json and parse
+        the response."""
         from .cc_adapter import (
-            CCDispatchConfig, build_cc_command, parse_cc_freeform,
+            CCDispatchConfig,
+            build_cc_command,
+            run_cc_streaming,
         )
         import subprocess
         import time as _time
@@ -3164,7 +3176,6 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # Pass the user prompt as-is and route the system prompt
         # through CC's `--system-prompt` flag (see CCDispatchConfig.system_prompt
         # comment for the prompt-injection rationale).
-        full_prompt = prompt
         cc_config = CCDispatchConfig(
             claude_bin=self._claude_bin,
             # Used as a pure-LLM substrate: disable CC's internal tools
@@ -3174,8 +3185,10 @@ class ClaudeCodeLLMProvider(LLMProvider):
             tools="",
             budget_usd=self._budget_usd,
             timeout_s=self._timeout_s,
-            capture_json_envelope=True,
+            capture_json_envelope=False,
+            stream_json=True,
             system_prompt=system_prompt,
+            model=self.config.model_name,
         )
         cmd = build_cc_command(cc_config)
 
@@ -3194,59 +3207,45 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # negative durations on long CC calls.
         start = _time.monotonic()
         try:
-            proc = subprocess.run(
-                cmd,
-                input=full_prompt,
-                text=True,
-                capture_output=True,
-                timeout=self._timeout_s,
-                env=_cc_env,
+            sr = run_cc_streaming(
+                cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(
-                f"claude -p timed out after {self._timeout_s}s"
-            ) from e
+            raise RuntimeError(f"claude -p timed out after {self._timeout_s}s") from e
         duration = _time.monotonic() - start
 
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"claude -p exited with status {proc.returncode}: "
-                f"{_safe_subprocess_stderr(proc.stderr)}"
-            )
+        if sr.error:
+            raise RuntimeError(sr.error)
 
-        parsed = parse_cc_freeform(proc.stdout, proc.stderr)
-        content = parsed.get("content", "") or ""
-        cost = _safe_float(parsed.get("cost_usd"), default=0.0)
-        tokens = _safe_int(parsed.get("_tokens"), default=0)
-
-        # Best-effort token split: cc_adapter only surfaces total tokens;
-        # if the envelope had separate input/output we'd carry them, but
-        # parse_cc_freeform sums them. Attribute everything to output to
-        # avoid silently zeroing the counter.
+        total_tokens = sr.input_tokens + sr.output_tokens
         self.track_usage(
-            tokens=tokens, cost=cost,
-            input_tokens=0, output_tokens=tokens,
+            tokens=total_tokens,
+            cost=sr.cost_usd,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
             duration=duration,
         )
 
-        # The claude-code harness reports the model it used in `analysed_by`;
-        # treat that as the resolved snapshot. But cc_adapter may set it to a
-        # comma-joined list (main + tool-routing helper) — that's not a single
-        # snapshot, so leave resolved_model None rather than emit a bogus
-        # multi-value "version" into the manifest/scorecard.
-        analysed_by = parsed.get("analysed_by")
-        resolved = analysed_by if (analysed_by and "," not in analysed_by) else None
+        # The claude-code harness reports the model it used in the
+        # stream-json output; treat that as the resolved snapshot. But
+        # CC may set it to a comma-joined list (main + tool-routing
+        # helper) — that's not a single snapshot, so leave
+        # resolved_model None rather than emit a bogus multi-value
+        # "version" into the manifest/scorecard.
+        resolved = sr.model if (sr.model and "," not in sr.model) else None
 
         return LLMResponse(
-            content=content,
-            model=parsed.get("analysed_by", self.config.model_name),
+            content=sr.content,
+            model=sr.model or self.config.model_name,
             provider="claudecode",
-            tokens_used=tokens,
-            cost=cost,
+            tokens_used=total_tokens,
+            cost=sr.cost_usd,
             finish_reason="stop",
             resolved_model=resolved,
-            input_tokens=0,
-            output_tokens=tokens,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
             duration=duration,
         )
 
@@ -3257,13 +3256,16 @@ class ClaudeCodeLLMProvider(LLMProvider):
         system_prompt: Optional[str] = None,
         **kwargs,
     ) -> Tuple[Dict[str, Any], str]:
-        """Dispatch with ``--json-schema`` for structured output.
+        """Dispatch with ``--json-schema`` for structured output via
+        stream-json.
 
         Accepts and ignores ``**kwargs`` — `claude` CLI has no
         temperature flag (see ClaudeCodeProvider.generate_structured).
         """
         from .cc_adapter import (
-            CCDispatchConfig, build_cc_command, parse_cc_structured,
+            CCDispatchConfig,
+            build_cc_command,
+            run_cc_streaming,
         )
         import subprocess
         import time as _time
@@ -3289,15 +3291,16 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # the user content; system_prompt routes through
         # CCDispatchConfig.system_prompt (which build_cc_command
         # converts into a `--system-prompt` flag).
-        full_prompt = prompt
         cc_config = CCDispatchConfig(
             claude_bin=self._claude_bin,
             tools="",                                # see generate() comment
             budget_usd=self._budget_usd,
             timeout_s=self._timeout_s,
             json_schema=schema,
-            capture_json_envelope=True,
+            capture_json_envelope=False,
+            stream_json=True,
             system_prompt=system_prompt,
+            model=self.config.model_name,
         )
         cmd = build_cc_command(cc_config)
 
@@ -3312,63 +3315,39 @@ class ClaudeCodeLLMProvider(LLMProvider):
         from core.config import RaptorConfig as _RaptorConfig
         _cc_env = _RaptorConfig.get_safe_env()
 
-        # monotonic() — wall clock can jump under NTP/DST, producing
-        # negative durations on long CC calls.
         start = _time.monotonic()
         try:
-            proc = subprocess.run(
-                cmd,
-                input=full_prompt,
-                text=True,
-                capture_output=True,
-                timeout=self._timeout_s,
-                env=_cc_env,
+            sr = run_cc_streaming(
+                cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(
-                f"claude -p timed out after {self._timeout_s}s"
-            ) from e
+            raise RuntimeError(f"claude -p timed out after {self._timeout_s}s") from e
         duration = _time.monotonic() - start
 
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"claude -p exited with status {proc.returncode}: "
-                f"{_safe_subprocess_stderr(proc.stderr)}"
-            )
+        if sr.error:
+            raise RuntimeError(sr.error)
 
-        result = parse_cc_structured(proc.stdout, proc.stderr)
-        if "error" in result and result["error"]:
+        result = self._parse_stream_content(sr.content)
+        if isinstance(result, dict) and "error" in result and result["error"]:
             raise RuntimeError(f"claude -p structured parse failed: {result['error']}")
 
-        # Track usage so structured calls show up alongside generate() in
-        # provider stats. cost/_tokens are set by extract_envelope_metadata
-        # inside parse_cc_structured when the envelope carries them.
-        cost = _safe_float(result.pop("cost_usd", None), default=0.0)
-        tokens = _safe_int(result.pop("_tokens", None), default=0)
-        result.pop("duration_seconds", None)
-        result.pop("analysed_by", None)
-        # parse_cc_structured injects ``finding_id`` (default "unknown")
-        # via setdefault — a CVE-aware behaviour leaking from
-        # cc_adapter's other consumers. Strip it so the consumer's
-        # schema isn't polluted with a field they didn't ask for.
-        result.pop("finding_id", None)
+        total_tokens = sr.input_tokens + sr.output_tokens
         self.track_usage(
-            tokens=tokens, cost=cost,
-            input_tokens=0, output_tokens=tokens,
+            tokens=total_tokens,
+            cost=sr.cost_usd,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
             duration=duration,
         )
 
-        # Return ``StructuredResponse`` so callers (notably ``turn()``)
-        # can read per-call cost / tokens directly without racing on
-        # shared instance state. ``__iter__`` keeps the existing
-        # ``result, raw = client.generate_structured(...)`` tuple-
-        # unpack pattern working.
         return StructuredResponse(
             result=result,
             raw=json.dumps(result, indent=2),
-            cost=cost,
-            tokens_used=tokens,
-            model=self.config.model_name,
+            cost=sr.cost_usd,
+            tokens_used=total_tokens,
+            model=sr.model or self.config.model_name,
             provider="claudecode",
             duration=duration,
         )
@@ -3438,7 +3417,9 @@ class ClaudeCodeLLMProvider(LLMProvider):
         if not tools:
             rendered = LLMProvider._render_messages_as_prompt(messages)
             response = self.generate(
-                rendered, system_prompt=system, max_tokens=max_tokens,
+                rendered,
+                system_prompt=system,
+                max_tokens=max_tokens,
             )
             cost = getattr(response, "cost", None)
             return TurnResponse(
@@ -3449,6 +3430,19 @@ class ClaudeCodeLLMProvider(LLMProvider):
                 cost_usd=float(cost) if cost is not None else None,
             )
 
+        if self._resumable:
+            return self._turn_resumable(messages, tools, system=system)
+
+        return self._turn_stateless(messages, tools, system=system)
+
+    def _turn_stateless(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolDef],
+        *,
+        system: Optional[str] = None,
+    ) -> TurnResponse:
+        """Original per-subprocess turn with no session state."""
         schema = self._build_turn_schema(tools)
         sys_combined = self._build_turn_system_prompt(tools, extra=system)
         rendered_history = self._render_history_for_cc(messages)
@@ -3461,39 +3455,200 @@ class ClaudeCodeLLMProvider(LLMProvider):
             )
         except RuntimeError as exc:
             err_msg = f"subprocess error: {exc}"
-            logger.warning("ClaudeCodeLLMProvider.turn: %s", err_msg)
+            logger.warning(f"ClaudeCodeLLMProvider.turn: {err_msg}")
             return TurnResponse(
                 content=[],
                 stop_reason=StopReason.ERROR,
-                input_tokens=0, output_tokens=0,
+                input_tokens=0,
+                output_tokens=0,
                 error_message=err_msg,
             )
 
-        # Per-call cost / tokens come from the response directly so
-        # concurrent loops on the same provider don't race on shared
-        # ``self.total_cost`` state. ``StructuredResponse`` carries
-        # the values; the legacy ``(result, raw)`` tuple-unpack still
-        # works via ``__iter__``.
         if isinstance(response, StructuredResponse):
             result = response.result
             cost_usd = response.cost
             tokens = response.tokens_used
         else:
-            # Defensive: a future provider might still return a tuple.
             result, _ = response
             cost_usd = 0.0
             tokens = 0
 
         return self._parse_turn_structured_result(
-            result, tools,
+            result,
+            tools,
             cost_usd=cost_usd,
-            # ``tokens_used`` from cc_adapter's envelope is already the
-            # input+output sum; we don't have a clean split, so attribute
-            # everything to output (consistent with ``generate()``'s
-            # behaviour for CC — see ``ClaudeCodeLLMProvider.generate``).
             input_tokens=0,
             output_tokens=tokens,
         )
+
+    def _turn_resumable(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolDef],
+        *,
+        system: Optional[str] = None,
+        _retry: bool = False,
+    ) -> TurnResponse:
+        """Resume-based turn: CC preserves conversation state across
+        subprocess invocations via ``--resume <session_id>``.
+
+        Turn 1 sends the full system prompt, tool catalogue, and message
+        history. Subsequent turns send only the new messages (typically
+        the tool result from the previous call). Prompt caching gives
+        near-zero input cost on turn 2+.
+
+        Uses ``--output-format stream-json`` for streaming responses
+        and proper input/output token accounting.
+        """
+        from .cc_adapter import (
+            CCDispatchConfig,
+            build_cc_command,
+            run_cc_streaming,
+        )
+        import subprocess
+        import time as _time
+
+        schema = self._build_turn_schema(tools)
+        first_turn = self._session_id is None
+
+        if first_turn:
+            sys_combined = self._build_turn_system_prompt(tools, extra=system)
+            prompt = self._render_history_for_cc(messages)
+        else:
+            sys_combined = None
+            new_msgs = messages[self._messages_seen :]
+            prompt = self._render_history_for_cc(new_msgs) if new_msgs else ""
+
+        cc_config = CCDispatchConfig(
+            claude_bin=self._claude_bin,
+            tools="",
+            budget_usd=self._budget_usd,
+            timeout_s=self._timeout_s,
+            json_schema=schema,
+            capture_json_envelope=False,
+            stream_json=True,
+            system_prompt=sys_combined,
+            model=self.config.model_name,
+            session_id=self._session_id,
+            persist_session=True,
+        )
+        cmd = build_cc_command(cc_config)
+
+        from core.config import RaptorConfig as _RaptorConfig
+
+        _cc_env = _RaptorConfig.get_safe_env()
+
+        start = _time.monotonic()
+        try:
+            sr = run_cc_streaming(
+                cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            err_msg = f"claude -p timed out after {self._timeout_s}s"
+            logger.warning(f"ClaudeCodeLLMProvider._turn_resumable: {err_msg}")
+            return TurnResponse(
+                content=[],
+                stop_reason=StopReason.ERROR,
+                input_tokens=0,
+                output_tokens=0,
+                error_message=err_msg,
+            )
+        duration = _time.monotonic() - start
+
+        if sr.error:
+            err_msg = sr.error
+            logger.warning(f"ClaudeCodeLLMProvider._turn_resumable: {err_msg}")
+            if first_turn and sr.session_id:
+                self._session_id = sr.session_id
+            if (
+                not first_turn
+                and not _retry
+                and "deferred tool marker" in err_msg.lower()
+            ):
+                logger.info(
+                    "CC resume marker stale — resetting session and "
+                    "retrying as fresh turn",
+                )
+                self.reset_session()
+                return self._turn_resumable(
+                    messages, tools, system=system, _retry=True,
+                )
+            return TurnResponse(
+                content=[],
+                stop_reason=StopReason.ERROR,
+                input_tokens=0,
+                output_tokens=0,
+                error_message=err_msg,
+            )
+
+        self._messages_seen = len(messages)
+
+        if first_turn and sr.session_id:
+            self._session_id = sr.session_id
+            logger.info(
+                "CC resume session established: %s", self._session_id,
+            )
+
+        content_text = sr.content
+        if not content_text:
+            return TurnResponse(
+                content=[],
+                stop_reason=StopReason.ERROR,
+                input_tokens=sr.input_tokens,
+                output_tokens=sr.output_tokens,
+                error_message="empty response from stream-json",
+            )
+
+        self.track_usage(
+            tokens=sr.input_tokens + sr.output_tokens,
+            cost=sr.cost_usd,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
+            duration=duration,
+        )
+
+        result = self._parse_stream_content(content_text)
+        if isinstance(result, dict) and "error" in result and result["error"]:
+            return TurnResponse(
+                content=[],
+                stop_reason=StopReason.ERROR,
+                input_tokens=sr.input_tokens,
+                output_tokens=sr.output_tokens,
+                error_message=f"structured parse: {result['error']}",
+            )
+
+        return self._parse_turn_structured_result(
+            result,
+            tools,
+            cost_usd=sr.cost_usd,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+        )
+
+    @staticmethod
+    def _parse_stream_content(text: str) -> dict[str, Any]:
+        """Extract the structured JSON object from stream-json content text."""
+        from .cc_adapter import strip_json_fences
+        import json
+
+        text = strip_json_fences(text.strip())
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        try:
+            decoder = json.JSONDecoder()
+            idx = text.index("{")
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict):
+                return obj
+        except (ValueError, json.JSONDecodeError):
+            pass
+        return {"error": f"unparseable stream content: {text[:200]}"}
 
     # ------------------------------------------------------------------
     # turn() helpers
@@ -3677,6 +3832,12 @@ def create_provider(config: ModelConfig) -> LLMProvider:
         LLMProvider instance
     """
     provider = config.provider.lower()
+    if provider in (
+        "claudecode-resumable",
+        "claude_code_resumable",
+        "claude-code-resumable",
+    ):
+        return ClaudeCodeLLMProvider(config, resumable=True)
     if provider in ("claudecode", "claude_code", "claude-code"):
         return ClaudeCodeLLMProvider(config)
     if provider == "bedrock":
