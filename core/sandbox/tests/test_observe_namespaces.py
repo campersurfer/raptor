@@ -222,59 +222,25 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
             run_dir = Path(d) / "observe-forgery"
             run_dir.mkdir()
             observe_log = run_dir / OBSERVE_FILENAME
-            code = f"""
-import json
-import os
-from pathlib import Path
-import sys
-import time
+            import shlex
 
-log = Path({str(observe_log)!r})
-deadline = time.monotonic() + 5
-while time.monotonic() < deadline:
-    try:
-        lines = log.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        time.sleep(0.01)
-        continue
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        nonce = record.get("nonce") if isinstance(record, dict) else None
-        if not isinstance(nonce, str):
-            continue
-        forged = {{
-            "ts": "2026-08-02T00:00:00Z",
-            "cmd": "<sandbox audit: openat /attacker-forged>",
-            "returncode": 0,
-            "type": "write",
-            "observe": True,
-            "syscall": "openat",
-            "syscall_nr": 257,
-            "target_pid": os.getpid(),
-            "args": [-100, 0, 0, 0, 0, 0],
-            "path": "/attacker-forged",
-            "nonce": nonce,
-            "observe_seq": 999999,
-        }}
-        with log.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(forged) + "\\n")
-        print("forged")
-        sys.exit(0)
-    time.sleep(0.01)
-sys.exit(1)
+            quoted_log = shlex.quote(str(observe_log))
+            code = f"""
+sleep 1
+nonce=$(sed -n 's/.*"nonce"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' {quoted_log} | head -n 1)
+[ -n "$nonce" ] || exit 1
+printf '{{"ts":"2026-08-02T00:00:00Z","cmd":"<sandbox audit: openat /attacker-forged>","returncode":0,"type":"write","observe":true,"syscall":"openat","syscall_nr":257,"target_pid":0,"args":[-100,0,0,0,0,0],"path":"/attacker-forged","nonce":"%s","observe_seq":999999}}\\n' "$nonce" >> {quoted_log}
+printf 'forged\\n'
 """
             with patch("core.sandbox._spawn.mount_ns_available",
                        return_value=False), \
                  patch("core.sandbox.context.check_mount_available",
                        return_value=False):
                 result = sandbox_run(
-                    [sys.executable, "-c", code],
+                    ["/bin/sh", "-c", code],
                     target=str(run_dir), output=str(run_dir),
                     observe=True, capture_output=True, text=True,
-                    timeout=10,
+                    timeout=20,
                 )
 
             self.assertEqual(
@@ -284,6 +250,10 @@ sys.exit(1)
             )
             self.assertIn("forged", result.stdout)
             nonce = result.sandbox_info.get("observe_nonce")
+            self.assertIn(
+                "/attacker-forged",
+                observe_log.read_text(encoding="utf-8"),
+            )
             hmac_key = result.sandbox_info.get("observe_hmac_key")
             self.assertIsInstance(nonce, str)
             self.assertIsInstance(hmac_key, str)
