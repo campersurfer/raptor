@@ -401,20 +401,36 @@ def max_output_for(model: str) -> int:
 
 
 def resolve_model_name(model: str) -> str:
-    """Resolve ``"default"`` to the actual primary model name.
+    """Resolve ``"default"`` or a bare shorthand to the actual model name.
 
-    Other model strings pass through unchanged.  Used by callers
-    that receive the operator-level ``"default"`` sentinel and need
-    the concrete model name for RPM / context-window lookups.
+    Handles two cases:
+      * ``"default"`` → the configured primary model name.
+      * A bare tier-token like ``"haiku"`` / ``"opus"`` / ``"sonnet"`` →
+        the full ``MODEL_LIMITS`` key whose hyphen-separated tokens
+        contain the shorthand (unambiguous single-match only).
+
+    Other model strings pass through unchanged.
     """
-    if model != "default":
-        return model
-    try:
-        from core.llm.config import _get_default_primary_model
+    if model == "default":
+        try:
+            from core.llm.config import _get_default_primary_model
 
-        mc = _get_default_primary_model()
-        if mc is not None and mc.model_name:
-            return mc.model_name
+            mc = _get_default_primary_model()
+            if mc is not None and mc.model_name:
+                return mc.model_name
+        except Exception:
+            pass
+        return model
+
+    if MODEL_LIMITS.get(model) is not None:
+        return model
+
+    try:
+        from core.security.llm_family import resolve_model_shorthand
+
+        resolved = resolve_model_shorthand(model, MODEL_LIMITS.keys())
+        if resolved is not None:
+            return resolved
     except Exception:
         pass
     return model

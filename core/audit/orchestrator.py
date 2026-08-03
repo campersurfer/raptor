@@ -2386,10 +2386,6 @@ def _run_audit_body(
 
     if config.max_workers == 0:
         model = config.models[0] if config.models else "default"
-        from core.security.llm_family import resolve_model_shorthand
-        from core.llm.config import _get_configured_models
-        _cands = [e.get("model", "") for e in _get_configured_models() if e.get("model")]
-        model = resolve_model_shorthand(model, _cands) or model
         resolved_workers = derive_max_workers(model)
         logger.info(
             "auto workers: model=%s → max_workers=%d",
