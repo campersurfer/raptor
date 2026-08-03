@@ -126,17 +126,17 @@ def run_understand_prepass(
     agentic_out_dir: Path,
     block_cc_dispatch: bool = False,
     claude_bin: Optional[str] = None,
+    model: Optional[Any] = None,
 ) -> PrepassResult:
     """Run the /understand --map skill before scanning.
 
-    Creates a proper /understand run directory and enriches the agentic
-    pipeline's checklist with priority markers from the resulting context map.
-
-    Never raises — enrichment failure must not break the base agentic pipeline.
+    An explicit external ``model`` receives only the read-only repository
+    tools from ``map_dispatch``. Without one, retain the Claude Code path.
+    Neither path executes target code.
     """
     try:
         return _run_understand_prepass_unsafe(
-            target, agentic_out_dir, block_cc_dispatch, claude_bin)
+            target, agentic_out_dir, block_cc_dispatch, claude_bin, model)
     except Exception as e:
         logger.exception("understand pre-pass crashed unexpectedly")
         return PrepassResult(ran=False,
@@ -148,8 +148,11 @@ def _run_understand_prepass_unsafe(
     agentic_out_dir: Path,
     block_cc_dispatch: bool,
     claude_bin: Optional[str],
+    model: Optional[Any],
 ) -> PrepassResult:
-    if block_cc_dispatch:
+    # The external-model path exposes only path-confined read tools. A target
+    # .claude configuration cannot influence its tool permissions or execute.
+    if block_cc_dispatch and model is None:
         return PrepassResult(ran=False, skipped_reason="cc_trust blocked dispatch (untrusted target)")
 
     from core.security.rule_of_two import (
@@ -160,13 +163,13 @@ def _run_understand_prepass_unsafe(
     except NonInteractiveError as e:
         return PrepassResult(ran=False, skipped_reason=str(e))
 
-    claude_bin = claude_bin or shutil.which("claude")
-    if not claude_bin:
-        return PrepassResult(ran=False, skipped_reason="claude not on PATH")
+    if model is None:
+        claude_bin = claude_bin or shutil.which("claude")
+        if not claude_bin:
+            return PrepassResult(ran=False, skipped_reason="claude not on PATH")
 
     target = Path(target).resolve()
     agentic_out_dir = Path(agentic_out_dir).resolve()
-
     t0 = time.time()
 
     understand_dir = _start_lifecycle("understand", target)
@@ -174,83 +177,78 @@ def _run_understand_prepass_unsafe(
         return PrepassResult(ran=False, skipped_reason="lifecycle start failed",
                              duration_s=time.time() - t0)
 
-    # Track whether the run reached a definitive end-state. If we exit via
-    # KeyboardInterrupt or another BaseException (which Exception doesn't
-    # catch), the finally clause still marks the lifecycle failed so the
-    # run dir doesn't linger in "running" state forever.
     lifecycle_settled = False
     try:
-        # Reuse the agentic pipeline's checklist if it's already built. Both
-        # are produced from the same target via the same parser, so the
-        # contents are equivalent — and it skips parsing the whole repo a
-        # second time. Falls back to a fresh build if the agentic checklist
-        # isn't present (e.g. when build_inventory failed earlier).
         if not _provision_understand_checklist(target, agentic_out_dir, understand_dir):
-            # Mark settled BEFORE the call so that if _fail_lifecycle
-            # itself raises, the `finally` block's "interrupted"
-            # fallback doesn't overwrite the real failure reason.
-            # Same pattern at every other _fail_lifecycle call site
-            # in this function.
             lifecycle_settled = True
             _fail_lifecycle(understand_dir, "checklist build failed")
             return PrepassResult(ran=False, skipped_reason="checklist build failed",
                                  understand_dir=understand_dir,
                                  duration_s=time.time() - t0)
 
-        prompt = _build_understand_prompt(target, understand_dir)
-        try:
-            from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
-            prepass_config = CCDispatchConfig(
-                claude_bin=claude_bin,
-                tools=_UNDERSTAND_TOOLS,
-                add_dirs=(str(_RAPTOR_DIR), str(target), str(understand_dir)),
-                budget_usd=_PREPASS_BUDGET_USD,
-                timeout_s=_PREPASS_TIMEOUT_S,
-                capture_json_envelope=False,
-            )
-            # Sandboxed Claude Code dispatch with restrict_reads=True.
-            # See cc_dispatch.py for rationale; this site adds
-            # str(_RAPTOR_DIR) on top of the calibrated/default
-            # readable_paths so the LLM-directed Bash tool can invoke
-            # libexec/raptor-normalize-context-map (MAP-5) and
-            # libexec/raptor-coverage-summary --mark (MAP-6) — those
-            # scripts live under RAPTOR_DIR. target+understand_dir
-            # auto-allowlisted via target=/output= positional args.
-            proc = run_untrusted_networked(
-                build_cc_command(prepass_config),
-                input=prompt, text=True,
-                timeout=_PREPASS_TIMEOUT_S,
-                target=str(target), output=str(understand_dir),
-                readable_paths=(
-                    [str(_RAPTOR_DIR)] + _readable_paths_for_cc_dispatch(claude_bin)
-                ),
-                proxy_hosts=_proxy_hosts_for_cc_dispatch(claude_bin),
-                caller_label="agentic-understand",
-            )
-        except subprocess.TimeoutExpired:
-            lifecycle_settled = True
-            _fail_lifecycle(understand_dir, f"timeout after {_PREPASS_TIMEOUT_S}s")
-            logger.warning("understand pre-pass timed out after %ds", _PREPASS_TIMEOUT_S)
-            return PrepassResult(ran=False, skipped_reason=f"timeout after {_PREPASS_TIMEOUT_S}s",
-                                 understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
-        except OSError as e:
-            lifecycle_settled = True
-            _fail_lifecycle(understand_dir, f"launch failed: {e}")
-            logger.warning("understand pre-pass failed to launch: %s", e)
-            return PrepassResult(ran=False, skipped_reason=f"launch failed: {e}",
-                                 understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
-
-        if proc.returncode != 0:
-            lifecycle_settled = True
-            _fail_lifecycle(understand_dir, f"subprocess returned {proc.returncode}")
-            logger.warning("understand pre-pass returned %d", proc.returncode)
-            return PrepassResult(ran=False, skipped_reason=f"subprocess returned {proc.returncode}",
-                                 understand_dir=understand_dir,
-                                 duration_s=time.time() - t0)
-
         context_map = understand_dir / "context-map.json"
+        if model is not None:
+            model_error = _write_model_context_map(
+                model=model,
+                target=target,
+                understand_dir=understand_dir,
+            )
+            if model_error is not None:
+                lifecycle_settled = True
+                _fail_lifecycle(understand_dir, model_error)
+                logger.warning("understand model dispatch failed: %s", model_error)
+                return PrepassResult(
+                    ran=False,
+                    skipped_reason=model_error,
+                    understand_dir=understand_dir,
+                    duration_s=time.time() - t0,
+                )
+        else:
+            prompt = _build_understand_prompt(target, understand_dir)
+            try:
+                from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
+                prepass_config = CCDispatchConfig(
+                    claude_bin=claude_bin,
+                    tools=_UNDERSTAND_TOOLS,
+                    add_dirs=(str(_RAPTOR_DIR), str(target), str(understand_dir)),
+                    budget_usd=_PREPASS_BUDGET_USD,
+                    timeout_s=_PREPASS_TIMEOUT_S,
+                    capture_json_envelope=False,
+                )
+                proc = run_untrusted_networked(
+                    build_cc_command(prepass_config),
+                    input=prompt, text=True,
+                    timeout=_PREPASS_TIMEOUT_S,
+                    target=str(target), output=str(understand_dir),
+                    readable_paths=(
+                        [str(_RAPTOR_DIR)] + _readable_paths_for_cc_dispatch(claude_bin)
+                    ),
+                    proxy_hosts=_proxy_hosts_for_cc_dispatch(claude_bin),
+                    caller_label="agentic-understand",
+                )
+            except subprocess.TimeoutExpired:
+                lifecycle_settled = True
+                _fail_lifecycle(understand_dir, f"timeout after {_PREPASS_TIMEOUT_S}s")
+                logger.warning("understand pre-pass timed out after %ds", _PREPASS_TIMEOUT_S)
+                return PrepassResult(ran=False, skipped_reason=f"timeout after {_PREPASS_TIMEOUT_S}s",
+                                     understand_dir=understand_dir,
+                                     duration_s=time.time() - t0)
+            except OSError as e:
+                lifecycle_settled = True
+                _fail_lifecycle(understand_dir, f"launch failed: {e}")
+                logger.warning("understand pre-pass failed to launch: %s", e)
+                return PrepassResult(ran=False, skipped_reason=f"launch failed: {e}",
+                                     understand_dir=understand_dir,
+                                     duration_s=time.time() - t0)
+
+            if proc.returncode != 0:
+                lifecycle_settled = True
+                _fail_lifecycle(understand_dir, f"subprocess returned {proc.returncode}")
+                logger.warning("understand pre-pass returned %d", proc.returncode)
+                return PrepassResult(ran=False, skipped_reason=f"subprocess returned {proc.returncode}",
+                                     understand_dir=understand_dir,
+                                     duration_s=time.time() - t0)
+
         if not context_map.exists():
             lifecycle_settled = True
             _fail_lifecycle(understand_dir, "context-map.json missing after run")
@@ -259,12 +257,6 @@ def _run_understand_prepass_unsafe(
                                  understand_dir=understand_dir,
                                  duration_s=time.time() - t0)
 
-        # claude -p might have crashed mid-write or produced structurally
-        # invalid output. Existence isn't enough — the bridge silently returns
-        # no context for unparseable files, and crashes mid-iteration if a
-        # required-list field is the wrong type. Validate both parseability
-        # and basic shape here so a misbehaving claude run fails the
-        # lifecycle cleanly instead of being marked complete with garbage.
         parsed = load_json(context_map)
         shape_error = _validate_context_map_shape(parsed)
         if shape_error is not None:
@@ -276,23 +268,24 @@ def _run_understand_prepass_unsafe(
                                  understand_dir=understand_dir,
                                  duration_s=time.time() - t0)
 
+        path_error = _confine_context_map_paths(parsed, target)
+        if path_error is not None:
+            try:
+                context_map.unlink()
+            except OSError:
+                logger.warning("understand pre-pass could not remove rejected context-map")
+            lifecycle_settled = True
+            _fail_lifecycle(understand_dir, f"context-map.json invalid: {path_error}")
+            logger.warning("understand pre-pass: context-map.json escaped target (%s)",
+                           path_error)
+            return PrepassResult(ran=False, skipped_reason=f"context-map.json invalid: {path_error}",
+                                 understand_dir=understand_dir,
+                                 duration_s=time.time() - t0)
+        save_json(context_map, parsed, mode=0o600)
+
         _complete_lifecycle(understand_dir)
         lifecycle_settled = True
-
-        # Best-effort: enrich the agentic checklist with priority markers from
-        # the context map. The agentic analysis pipeline reads priority/
-        # priority_reason from per-function metadata and surfaces it in the
-        # analysis prompt — so --understand pays off in this run too, not just
-        # any later /validate.
         enriched = _enrich_agentic_checklist(agentic_out_dir, context_map)
-
-        # NOTE: the reachability low-priority marking previously
-        # lived here (under the --understand-only branch) but is
-        # now hoisted to ``run_reachability_prepass`` so it fires
-        # regardless of whether --understand was passed.
-        # Operators not using --understand still get the dead-
-        # code priority signal in their checklist, which
-        # benefits the agentic LLM budget allocation.
 
         return PrepassResult(
             ran=True,
@@ -303,16 +296,184 @@ def _run_understand_prepass_unsafe(
         )
 
     except Exception:
-        # Make sure the lifecycle is marked failed before propagating.
         lifecycle_settled = True
         _fail_lifecycle(understand_dir, "unexpected exception")
         raise
     finally:
-        # KeyboardInterrupt / SystemExit / any other BaseException bypasses
-        # the except-Exception clause above. Make sure the run dir is marked
-        # failed so the bridge doesn't keep finding it as "in progress".
         if not lifecycle_settled:
             _fail_lifecycle(understand_dir, "interrupted")
+
+
+def _write_model_context_map(
+    *,
+    model: Any,
+    target: Path,
+    understand_dir: Path,
+) -> Optional[str]:
+    """Validate, enrich, and atomically persist a read-only model map."""
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    checklist = load_json(understand_dir / "checklist.json")
+    context_map = default_map_dispatch(
+        model,
+        str(target),
+        checklist=checklist if isinstance(checklist, dict) else None,
+        max_cost_usd=float(_PREPASS_BUDGET_USD),
+        max_seconds=float(_PREPASS_TIMEOUT_S),
+    )
+    dispatch_error = context_map.get("error") if isinstance(context_map, dict) else None
+    if isinstance(dispatch_error, str):
+        return f"model dispatch failed: {dispatch_error}"
+
+    shape_error = _validate_model_context_map(context_map)
+    if shape_error is not None:
+        return f"model context-map invalid: {shape_error}"
+
+    path_error = _confine_context_map_paths(context_map, target)
+    if path_error is not None:
+        return f"model context-map invalid: {path_error}"
+
+    try:
+        from core.orchestration.understand_bridge import normalize_context_map
+        normalize_context_map(
+            context_map,
+            checklist if isinstance(checklist, dict) else {},
+            target_path=str(target),
+        )
+    except Exception as exc:  # noqa: BLE001 - reject malformed model output
+        return f"model context-map normalization failed: {type(exc).__name__}: {exc}"
+
+    meta = context_map.setdefault("meta", {})
+    if isinstance(meta, dict):
+        meta["mapping_mode"] = "read-only-model-tools"
+        meta["mapping_model"] = getattr(model, "model_name", "unknown")
+
+    for enricher in (
+        _enrich_model_map_callgraph,
+        _enrich_model_map_ast_view,
+        _enrich_model_map_sinks,
+    ):
+        try:
+            enricher(context_map, target, checklist)
+        except Exception as exc:  # noqa: BLE001 - enrichment is additive
+            logger.warning("understand model map enrichment skipped: %s", exc)
+
+    save_json(understand_dir / "context-map.json", context_map, mode=0o600)
+    return None
+
+
+
+def _validate_model_context_map(parsed: Any) -> Optional[str]:
+    """Validate the stricter terminal contract for the read-only model path."""
+    shape_error = _validate_context_map_shape(parsed)
+    if shape_error is not None:
+        return shape_error
+
+    required_lists = (
+        "sources",
+        "sinks",
+        "trust_boundaries",
+        "entry_points",
+        "sink_details",
+        "boundary_details",
+        "unchecked_flows",
+    )
+    for key in required_lists:
+        value = parsed.get(key)
+        if not isinstance(value, list):
+            return f"{key!r} must be a list"
+        if any(not isinstance(entry, dict) for entry in value):
+            return f"{key!r} must contain only objects"
+    if not isinstance(parsed.get("meta"), dict):
+        return "'meta' must be an object"
+    return None
+
+
+_MODEL_MAP_LOCATION_SECTIONS = (
+    "sources",
+    "sinks",
+    "trust_boundaries",
+    "entry_points",
+    "sink_details",
+    "boundary_details",
+    "unchecked_flows",
+)
+_MODEL_MAP_LOCATION_FIELDS = ("file", "file_path")
+
+
+def _confine_context_map_paths(
+    context_map: dict[str, Any],
+    target: Path,
+) -> Optional[str]:
+    """Canonicalize context-map locations and reject paths outside ``target``."""
+    try:
+        target_root = target.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"could not resolve target root: {type(exc).__name__}"
+
+    for section in _MODEL_MAP_LOCATION_SECTIONS:
+        entries = context_map.get(section) or []
+        if not isinstance(entries, list):
+            continue
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            for field in _MODEL_MAP_LOCATION_FIELDS:
+                value = entry.get(field)
+                if value is None:
+                    continue
+                if not isinstance(value, str) or not value.strip():
+                    return f"{section}[{index}].{field} must be a non-empty string"
+                raw_path = value.strip()
+                if raw_path.startswith("file://"):
+                    raw_path = raw_path[len("file://"):]
+                try:
+                    candidate = Path(raw_path)
+                    if not candidate.is_absolute():
+                        candidate = target_root / candidate
+                    relative = candidate.resolve(strict=False).relative_to(target_root)
+                except (OSError, RuntimeError, ValueError):
+                    return f"{section}[{index}].{field} escapes the target"
+                entry[field] = str(relative)
+    return None
+
+def _enrich_model_map_callgraph(
+    context_map: dict[str, Any],
+    target: Path,
+    checklist: Any,
+) -> None:
+    from core.orchestration.context_map_callgraph import enrich_with_forward_reachable
+
+    enrich_with_forward_reachable(
+        context_map,
+        target,
+        inventory=checklist if isinstance(checklist, dict) else None,
+    )
+
+
+def _enrich_model_map_ast_view(
+    context_map: dict[str, Any],
+    target: Path,
+    checklist: Any,
+) -> None:
+    from core.orchestration.context_map_ast_view import enrich_with_ast_view
+
+    enrich_with_ast_view(
+        context_map,
+        target,
+        inventory=checklist if isinstance(checklist, dict) else None,
+    )
+
+
+def _enrich_model_map_sinks(
+    context_map: dict[str, Any],
+    target: Path,
+    checklist: Any,
+) -> None:
+    del checklist
+    from core.orchestration.context_map_sinks import enrich_with_sink_discovery
+
+    enrich_with_sink_discovery(context_map, target)
 
 
 def run_validate_postpass(

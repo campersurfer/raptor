@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
+from core.llm.config import ModelConfig
 
 from core.orchestration.agentic_passes import (
     _enrich_agentic_checklist,
@@ -253,6 +254,113 @@ class UnderstandPrepassTests(unittest.TestCase):
             )
         self.assertFalse(result.ran)
         self.assertIn("claude not on PATH", result.skipped_reason)
+
+    def test_explicit_model_runs_when_claude_config_is_untrusted(self):
+        with TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            understand_dir = tmp / "understand_run"
+            dispatcher = _make_lifecycle_dispatcher(start_dir=understand_dir)
+            context_map = {
+                "sources": [],
+                "sinks": [],
+                "trust_boundaries": [],
+                "meta": {"mapping_mode": "forged", "mapping_model": "forged"},
+                "entry_points": [],
+                "sink_details": [],
+                "boundary_details": [],
+                "unchecked_flows": [],
+            }
+            with _patch_passes(dispatcher), \
+                 patch("core.orchestration.agentic_passes.shutil.which", return_value=None), \
+                 patch(
+                     "packages.code_understanding.dispatch.map_dispatch.default_map_dispatch",
+                     return_value=context_map,
+                 ) as model_dispatch:
+                result = run_understand_prepass(
+                    target=tmp,
+                    agentic_out_dir=tmp,
+                    block_cc_dispatch=True,
+                    model=ModelConfig(provider="gemini", model_name="gemini-2.5-pro"),
+                )
+                self.assertTrue(result.context_map_path.is_file())
+                persisted = json.loads(result.context_map_path.read_text())
+                self.assertEqual("read-only-model-tools", persisted["meta"]["mapping_mode"])
+                self.assertEqual("gemini-2.5-pro", persisted["meta"]["mapping_model"])
+
+        self.assertTrue(result.ran, msg=result.skipped_reason)
+        model_dispatch.assert_called_once()
+
+
+    def test_explicit_model_rejects_outside_target_locations(self):
+        sections = (
+            "sources",
+            "sinks",
+            "trust_boundaries",
+            "entry_points",
+            "sink_details",
+            "boundary_details",
+            "unchecked_flows",
+        )
+        for section in sections:
+            for field in ("file", "file_path"):
+                for location in ("/etc/passwd", "file:///etc/passwd", "../outside"):
+                    with self.subTest(section=section, field=field, location=location), TemporaryDirectory() as tmp:
+                        tmp = Path(tmp)
+                        understand_dir = tmp / "understand_run"
+                        dispatcher = _make_lifecycle_dispatcher(start_dir=understand_dir)
+                        context_map = {
+                            "sources": [],
+                            "sinks": [],
+                            "trust_boundaries": [],
+                            "meta": {},
+                            "entry_points": [],
+                            "sink_details": [],
+                            "boundary_details": [],
+                            "unchecked_flows": [],
+                        }
+                        context_map[section] = [{field: location}]
+                        with _patch_passes(dispatcher), patch(
+                            "packages.code_understanding.dispatch.map_dispatch.default_map_dispatch",
+                            return_value=context_map,
+                        ):
+                            result = run_understand_prepass(
+                                target=tmp,
+                                agentic_out_dir=tmp,
+                                block_cc_dispatch=True,
+                                model=ModelConfig(provider="gemini", model_name="gemini-2.5-pro"),
+                            )
+
+                        self.assertFalse(result.ran)
+                        self.assertIn("escapes the target", result.skipped_reason or "")
+                        self.assertFalse((understand_dir / "context-map.json").exists())
+
+    def test_claude_map_rejects_outside_target_locations(self):
+        with TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            understand_dir = tmp / "understand_run"
+            context_map = {
+                "entry_points": [],
+                "sink_details": [{"file": "file:///etc/passwd", "line": 1}],
+                "sources": [],
+                "sinks": [],
+                "trust_boundaries": [],
+                "unchecked_flows": [],
+                "boundary_details": [],
+            }
+            dispatcher = _make_lifecycle_dispatcher(
+                start_dir=understand_dir,
+                claude_writes={"context-map.json": json.dumps(context_map)},
+            )
+            with _patch_passes(dispatcher):
+                result = run_understand_prepass(
+                    target=tmp,
+                    agentic_out_dir=tmp,
+                    claude_bin="/fake/claude",
+                )
+
+            self.assertFalse(result.ran)
+            self.assertIn("escapes the target", result.skipped_reason or "")
+            self.assertFalse((understand_dir / "context-map.json").exists())
 
     def test_skips_when_lifecycle_start_fails(self):
         with TemporaryDirectory() as tmp:

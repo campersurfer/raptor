@@ -288,11 +288,18 @@ class VulnerabilityContext:
         self.analysis: Optional[Dict[str, Any]] = None
 
     def get_full_file_path(self) -> Optional[Path]:
-        """Get absolute path to vulnerable file."""
+        """Return the vulnerable source path only when it stays in the repo."""
         if not self.file_path:
             return None
         clean_path = self.file_path.replace("file://", "")
-        return self.repo_path / clean_path
+        try:
+            repo_root = self.repo_path.resolve(strict=True)
+            file_path = (repo_root / clean_path).resolve(strict=False)
+            file_path.relative_to(repo_root)
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("Blocked vulnerable file path outside repository: %r", self.file_path)
+            return None
+        return file_path
 
     def read_vulnerable_code(self) -> bool:
         """Read the actual vulnerable code from the file."""

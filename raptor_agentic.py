@@ -1769,6 +1769,21 @@ Examples:
     # ========================================================================
     prepass_result = None
     threat_model_phase = {"enabled": bool(args.threat_model), "completed": False}
+    prepass_model = None
+    if args.understand and args.model:
+        from packages.llm_analysis.orchestrator import build_llm_config_from_flags
+        prepass_llm_config = build_llm_config_from_flags(
+            models=args.model,
+            auto_detect=False,
+        )
+        if prepass_llm_config and prepass_llm_config.primary_model:
+            prepass_model = prepass_llm_config.primary_model
+        else:
+            logger.warning(
+                "understand pre-pass could not resolve explicit model %s; "
+                "falling back to Claude Code",
+                args.model[0],
+            )
     if args.understand:
         from core.orchestration import run_understand_prepass
         print("\n" + "=" * 70)
@@ -1778,6 +1793,7 @@ Examples:
             target=original_repo_path,
             agentic_out_dir=out_dir,
             block_cc_dispatch=block_cc_dispatch,
+            model=prepass_model,
         )
         if prepass_result.ran:
             logger.info(f"Pre-pass wrote {prepass_result.context_map_path} "

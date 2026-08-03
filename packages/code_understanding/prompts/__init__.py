@@ -8,9 +8,11 @@ Prompts live as Python module-level strings rather than markdown so:
 """
 
 from packages.code_understanding.prompts.hunt_system import HUNT_SYSTEM_PROMPT
+from packages.code_understanding.prompts.map_system import MAP_SYSTEM_PROMPT
 from packages.code_understanding.prompts.trace_system import TRACE_SYSTEM_PROMPT
 
 __all__ = [
     "HUNT_SYSTEM_PROMPT",
+    "MAP_SYSTEM_PROMPT",
     "TRACE_SYSTEM_PROMPT",
 ]

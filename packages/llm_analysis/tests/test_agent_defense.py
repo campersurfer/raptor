@@ -14,6 +14,7 @@ from packages.llm_analysis.prompts import (
 )
 from packages.llm_analysis.prompts.exploit import build_exploit_prompt_bundle
 from packages.llm_analysis.prompts.patch import build_patch_prompt_bundle
+from packages.llm_analysis.agent import VulnerabilityContext
 
 
 def _sys(bundle):
@@ -379,3 +380,34 @@ class TestAgentDataflowValidationBundle:
             dataflow_sink={"file": "b.py", "line": 1, "label": "y", "code": "snk"},
         )
         assert bundle.nonce not in _sys(bundle)
+
+
+
+# ============================================================
+# 6. Vulnerability source-path confinement
+# ============================================================
+
+class TestVulnerabilityPathConfinement:
+
+    def test_rejects_paths_outside_repository(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        source = repo / "main.py"
+        source.write_text("print('safe')\n")
+        external = tmp_path / "secret.txt"
+        external.write_text("not target source\n")
+
+        vulnerability = VulnerabilityContext.__new__(VulnerabilityContext)
+        vulnerability.repo_path = repo
+
+        vulnerability.file_path = "main.py"
+        assert vulnerability.get_full_file_path() == source.resolve()
+
+        for file_path in (
+            str(external),
+            f"file://{external}",
+            "../secret.txt",
+        ):
+            vulnerability.file_path = file_path
+            assert vulnerability.get_full_file_path() is None
+            assert not vulnerability.read_vulnerable_code()
