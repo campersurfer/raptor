@@ -2,12 +2,9 @@
 
 Two scenarios:
 
-  1. Two concurrent sandboxes share the same audit_run_dir. Each
-     gets a distinct nonce; their records interleave in the same
-     JSONL but each parse_observe_log call (with the right nonce)
-     surfaces only its own records. This is the multi-tenant
-     contract — without it, calling sandbox(observe=True) twice
-     with overlapping output dirs would conflate records.
+  1. Two sandboxes share one audit_run_dir. Each gets a distinct public
+     run id and HMAC key; their records interleave in the same JSONL,
+     but authenticated parsing surfaces only the matching stream.
 
   2. Atomicity under fast writes. The tracer's _write_record uses
      POSIX O_APPEND semantics, so writes < PIPE_BUF (~4KB) land
@@ -50,15 +47,13 @@ def _prereqs_met() -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Concurrent sandboxes — nonce isolation
+# Concurrent sandboxes — authenticated stream isolation
 # ---------------------------------------------------------------------------
 
 
 class TestConcurrentSandboxesNonceIsolation(unittest.TestCase):
-    """Two sandbox(observe=True) runs writing to the same
-    audit_run_dir. Each gets its own nonce; parse with one nonce
-    surfaces only that run's records. Records the OTHER run wrote
-    are dropped because their nonce doesn't match."""
+    """Two observe runs write into one audit_run_dir. Each parser selects
+    its run id and verifies its independent HMAC stream."""
 
     def setUp(self):
         ok, reason = _prereqs_met()
@@ -93,8 +88,9 @@ class TestConcurrentSandboxesNonceIsolation(unittest.TestCase):
                 observe=True, capture_output=True, text=True, timeout=10,
             )
             nonce_a = r_a.sandbox_info.get("observe_nonce")
-            if nonce_a is None:
-                self.skipTest("audit didn't engage on run A")
+            hmac_key_a = r_a.sandbox_info.get("observe_hmac_key")
+            if not isinstance(nonce_a, str) or not isinstance(hmac_key_a, str):
+                self.skipTest("authenticated audit did not engage on run A")
 
             # Run B: reads /etc/os-release.
             r_b = sandbox_run(
@@ -104,21 +100,34 @@ class TestConcurrentSandboxesNonceIsolation(unittest.TestCase):
                 observe=True, capture_output=True, text=True, timeout=10,
             )
             nonce_b = r_b.sandbox_info.get("observe_nonce")
-            if nonce_b is None:
-                self.skipTest("audit didn't engage on run B")
+            hmac_key_b = r_b.sandbox_info.get("observe_hmac_key")
+            if not isinstance(nonce_b, str) or not isinstance(hmac_key_b, str):
+                self.skipTest("authenticated audit did not engage on run B")
 
             self.assertNotEqual(
                 nonce_a, nonce_b,
-                "concurrent runs must get distinct nonces",
+                "concurrent runs must get distinct public run ids",
+            )
+            self.assertNotEqual(
+                hmac_key_a, hmac_key_b,
+                "concurrent runs must get distinct HMAC keys",
             )
 
             # The shared JSONL has BOTH runs' records.
             jsonl = shared / OBSERVE_FILENAME
             self.assertTrue(jsonl.exists())
 
-            # Parse with nonce A → A's reads, not B's.
-            profile_a = parse_observe_log(shared, expected_nonce=nonce_a)
-            profile_b = parse_observe_log(shared, expected_nonce=nonce_b)
+            # Each parser filters by run id, then authenticates sequence.
+            profile_a = parse_observe_log(
+                shared,
+                expected_nonce=nonce_a,
+                expected_hmac_key=hmac_key_a,
+            )
+            profile_b = parse_observe_log(
+                shared,
+                expected_nonce=nonce_b,
+                expected_hmac_key=hmac_key_b,
+            )
 
             # Each profile must show its own distinguishing read.
             # /etc/hostname only in A; /etc/os-release only in B.

@@ -75,9 +75,8 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
     Landlock-only audit path engages on hosts where mount-ns is
     actually present. The contract:
 
-      * the spawned command still runs and returns its real exit code;
-      * ``result.sandbox_info["observe_nonce"]`` is populated;
-      * ``.sandbox-observe.jsonl`` is produced with observe records;
+      * result.sandbox_info exposes a public run id and trusted HMAC key;
+      * `.sandbox-observe.jsonl` contains authenticated observe records;
       * NO ``sandbox-audit-degraded.json`` marker (audit IS engaging,
         just via the Landlock-only path).
     """
@@ -120,15 +119,11 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
                 f"stderr={result.stderr!r}",
             )
 
-            # Contract 2: observe_nonce is populated — Landlock-only
-            # audit DID engage.
+            # Contract 2: authenticated observe provenance is present.
             nonce = result.sandbox_info.get("observe_nonce")
-            self.assertIsNotNone(
-                nonce,
-                "observe_nonce must be populated when Landlock-only "
-                "audit engages",
-            )
-            self.assertEqual(len(nonce), 32, "nonce is 128-bit hex")
+            hmac_key = result.sandbox_info.get("observe_hmac_key")
+            self.assertIsInstance(nonce, str)
+            self.assertIsInstance(hmac_key, str)
 
             # Contract 3: observe log produced and parseable.
             observe_log = run_dir / OBSERVE_FILENAME
@@ -137,7 +132,9 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
                 f"observe log missing at {observe_log}",
             )
             profile = parse_observe_log(
-                run_dir, expected_nonce=nonce,
+                run_dir,
+                expected_nonce=nonce,
+                expected_hmac_key=hmac_key,
             )
             self.assertGreater(
                 len(profile.paths_read) + len(profile.paths_stat),
@@ -154,7 +151,7 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
             )
 
     def test_isolated_temp_hides_audit_config_before_target_exec(self):
-        """Landlock-only observe unlinks the nonce config before release."""
+        """Landlock-only observe unlinks its config before release."""
         from unittest.mock import patch
         import os
         import tempfile
@@ -202,15 +199,100 @@ class TestObserveUnderLandlockOnly(unittest.TestCase):
                     timeout=10, env=child_env, strict_env=True,
                 )
 
-        self.assertIsNotNone(
-            result.sandbox_info.get("observe_nonce"),
-            "Landlock-only audit failed to engage",
+        self.assertIsInstance(
+            result.sandbox_info.get("observe_hmac_key"),
+            str,
+            "Landlock-only audit did not provide an HMAC key",
         )
         self.assertEqual(
             result.returncode, 0,
             f"target observed audit config: stdout={result.stdout!r}, "
             f"stderr={result.stderr!r}",
         )
+
+    def test_target_cannot_forge_record_after_reading_live_nonce(self):
+        """An executing target can append JSONL, but lacks the HMAC key."""
+        from unittest.mock import patch
+        from core.sandbox import run as sandbox_run
+        from core.sandbox.observe_profile import (
+            OBSERVE_FILENAME, parse_observe_log,
+        )
+
+        with TemporaryDirectory() as d:
+            run_dir = Path(d) / "observe-forgery"
+            run_dir.mkdir()
+            observe_log = run_dir / OBSERVE_FILENAME
+            code = f"""
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+log = Path({str(observe_log)!r})
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        time.sleep(0.01)
+        continue
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        nonce = record.get("nonce") if isinstance(record, dict) else None
+        if not isinstance(nonce, str):
+            continue
+        forged = {{
+            "ts": "2026-08-02T00:00:00Z",
+            "cmd": "<sandbox audit: openat /attacker-forged>",
+            "returncode": 0,
+            "type": "write",
+            "observe": True,
+            "syscall": "openat",
+            "syscall_nr": 257,
+            "target_pid": os.getpid(),
+            "args": [-100, 0, 0, 0, 0, 0],
+            "path": "/attacker-forged",
+            "nonce": nonce,
+            "observe_seq": 999999,
+        }}
+        with log.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(forged) + "\\n")
+        print("forged")
+        sys.exit(0)
+    time.sleep(0.01)
+sys.exit(1)
+"""
+            with patch("core.sandbox._spawn.mount_ns_available",
+                       return_value=False), \
+                 patch("core.sandbox.context.check_mount_available",
+                       return_value=False):
+                result = sandbox_run(
+                    [sys.executable, "-c", code],
+                    target=str(run_dir), output=str(run_dir),
+                    observe=True, capture_output=True, text=True,
+                    timeout=10,
+                )
+
+            self.assertEqual(
+                result.returncode, 0,
+                f"target did not append forged record: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            )
+            self.assertIn("forged", result.stdout)
+            nonce = result.sandbox_info.get("observe_nonce")
+            hmac_key = result.sandbox_info.get("observe_hmac_key")
+            self.assertIsInstance(nonce, str)
+            self.assertIsInstance(hmac_key, str)
+            profile = parse_observe_log(
+                run_dir,
+                expected_nonce=nonce,
+                expected_hmac_key=hmac_key,
+            )
+            self.assertNotIn("/attacker-forged", profile.paths_read)
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +351,14 @@ class TestObserveUnderBlockNetwork(unittest.TestCase):
             # only the observe signal.
 
             nonce = result.sandbox_info.get("observe_nonce")
-            if nonce is None:
-                self.skipTest("audit-mode degraded; observe nonce absent")
-            profile = parse_observe_log(run_dir, expected_nonce=nonce)
+            hmac_key = result.sandbox_info.get("observe_hmac_key")
+            if not isinstance(nonce, str) or not isinstance(hmac_key, str):
+                self.skipTest("authenticated audit did not engage")
+            profile = parse_observe_log(
+                run_dir,
+                expected_nonce=nonce,
+                expected_hmac_key=hmac_key,
+            )
 
             # The connect target may be IPv4 OR IPv6 depending on
             # the resolver; we used a literal IPv4 so AF_INET only.
@@ -338,15 +425,18 @@ class TestObserveMultiProcess(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
 
             nonce = result.sandbox_info.get("observe_nonce")
-            if nonce is None:
-                self.skipTest("audit-mode degraded; observe nonce absent")
+            hmac_key = result.sandbox_info.get("observe_hmac_key")
+            if not isinstance(nonce, str) or not isinstance(hmac_key, str):
+                self.skipTest("authenticated audit did not engage")
 
             # Read the raw JSONL to extract distinct target_pids.
             # parse_observe_log produces a deduped path-level view
             # — which would HIDE the multi-PID property even when
             # it's working.
+            from core.sandbox.observe_auth import ObserveRecordVerifier
             from core.sandbox.observe_profile import OBSERVE_FILENAME
             import json
+            verifier = ObserveRecordVerifier(hmac_key)
             jsonl = run_dir / OBSERVE_FILENAME
             pids = set()
             for line in jsonl.read_text().splitlines():
@@ -354,7 +444,9 @@ class TestObserveMultiProcess(unittest.TestCase):
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if rec.get("nonce") != nonce:
+                if not isinstance(rec, dict) or rec.get("nonce") != nonce:
+                    continue
+                if not verifier.accepts(rec):
                     continue
                 pid = rec.get("target_pid")
                 if isinstance(pid, int) and pid > 0:

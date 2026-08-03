@@ -175,6 +175,7 @@ def run_sandboxed(cmd: List[str], *,
                   audit_verbose: bool = False,
                   observe_mode: bool = False,
                   observe_nonce: Optional[str] = None,
+                  observe_hmac_key: Optional[str] = None,
                   restrict_reads: bool = False,
                   start_new_session: bool = True,
                   use_egress_proxy: bool = False,
@@ -271,6 +272,8 @@ def run_sandboxed(cmd: List[str], *,
             ".sandbox-denials.jsonl into. Pass audit_run_dir=<dir> "
             "(typically the run's output dir)."
         )
+    if audit_mode and observe_mode and not observe_hmac_key:
+        raise ValueError("observe_mode=True requires observe_hmac_key=")
 
     # 1. Build SBPL profile from the kwargs.
     profile = seatbelt.build_profile(
@@ -403,6 +406,7 @@ def run_sandboxed(cmd: List[str], *,
                 Path(audit_run_dir),
                 observe_mode=bool(observe_mode),
                 observe_nonce=observe_nonce,
+                observe_hmac_key=observe_hmac_key,
             )
         except Exception as exc:
             logger.warning(

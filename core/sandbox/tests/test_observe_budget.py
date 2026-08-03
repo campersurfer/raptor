@@ -9,10 +9,8 @@ everything the binary did — silently incomplete.
 This module covers:
 
   * Parser reads the audit_summary tail record and populates
-    ``ObserveProfile.budget_truncated`` + ``dropped_by_category``.
-  * Parser drops a spoofed audit_summary that lacks the right nonce
-    (a target binary writing a fake summary claiming truncation
-    won't lie its way past nonce validation).
+  * Parser rejects a forged audit_summary despite a target-readable
+    correlation nonce because it lacks a valid HMAC sequence slot.
   * CLI ``--json`` and human summary surface the truncation warning
     when present.
   * End-to-end with a real workload + tiny budget — the summary
@@ -110,26 +108,32 @@ class TestParserSurfacesTruncation:
 
 
 class TestSpoofedSummaryRejected:
-    """A target binary writing a fake audit_summary into the JSONL
-    cannot get the parser to set budget_truncated=True. The summary
-    record carries the per-run nonce; without a matching value the
-    parser drops it (same gate as syscall records)."""
+    """A target can copy the public nonce from the JSONL but cannot
+    make a forged audit_summary pass HMAC verification."""
 
-    def test_summary_with_wrong_nonce_filtered(self, tmp_path):
+    def test_visible_nonce_cannot_authenticate_forged_summary(self, tmp_path):
+        from core.sandbox.observe_auth import ObserveRecordSigner
+
+        key = "42" * 32
+        signer = ObserveRecordSigner(key, run_id="nonce-real")
+        canonical = _open_record("nonce-real", "/lib/libc.so")
+        summary = _summary_record("nonce-real", dropped={"write": 0})
+        signer.sign(canonical)
+        signer.sign(summary)
+        forged = _summary_record("nonce-real", dropped={"write": 999})
+        forged["observe_seq"] = 2
+
         _write_jsonl(tmp_path / OBSERVE_FILENAME, [
-            # Real records from the trusted tracer.
-            _open_record("nonce-real", "/lib/libc.so"),
-            # Spoofed summary written by the target binary inside
-            # the sandbox. Without the right nonce the parser drops
-            # it, so budget_truncated stays False.
-            _summary_record("nonce-FAKE", dropped={"write": 999}),
-            # Real summary from the tracer — no drops.
-            _summary_record("nonce-real", dropped={"write": 0}),
+            canonical,
+            forged,
+            summary,
         ])
-        p = parse_observe_log(tmp_path, expected_nonce="nonce-real")
-        assert p.budget_truncated is False, (
-            "spoofed summary must not be allowed to claim truncation"
+        p = parse_observe_log(
+            tmp_path,
+            expected_nonce="nonce-real",
+            expected_hmac_key=key,
         )
+        assert p.budget_truncated is False
         assert p.dropped_by_category == {"write": 0}
 
     def test_summary_without_nonce_filtered_when_expected_set(
@@ -240,11 +244,14 @@ class TestEndToEndBudgetOverflow(unittest.TestCase):
                     timeout=30,
                 )
                 nonce = result.sandbox_info.get("observe_nonce")
-                if nonce is None:
-                    self.skipTest("audit didn't engage")
+                hmac_key = result.sandbox_info.get("observe_hmac_key")
+                if not isinstance(nonce, str) or not isinstance(hmac_key, str):
+                    self.skipTest("authenticated audit did not engage")
 
                 profile = parse_observe_log(
-                    run_dir, expected_nonce=nonce,
+                    run_dir,
+                    expected_nonce=nonce,
+                    expected_hmac_key=hmac_key,
                 )
                 # Budget was tiny — should have truncated.
                 self.assertTrue(

@@ -2305,7 +2305,15 @@ class TestE2EObserveMode(unittest.TestCase):
                 f"file present at {denials_log}",
             )
 
-            profile = parse_observe_log(run_dir)
+            nonce = result.sandbox_info.get("observe_nonce")
+            hmac_key = result.sandbox_info.get("observe_hmac_key")
+            self.assertIsInstance(nonce, str)
+            self.assertIsInstance(hmac_key, str)
+            profile = parse_observe_log(
+                run_dir,
+                expected_nonce=nonce,
+                expected_hmac_key=hmac_key,
+            )
             # `true` reads its dynamic-linker chain → at least
             # /lib*/ld-linux-*.so* + libc are openat'd.
             self.assertGreater(

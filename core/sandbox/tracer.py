@@ -944,7 +944,8 @@ def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
                   *,
                   filename: str = _DENIALS_FILENAME,
                   mode_field: str = "audit",
-                  nonce: Optional[str] = None) -> bool:
+                  nonce: Optional[str] = None,
+                  signer=None) -> bool:
     """Append one denial record to the run's JSONL file.
 
     Returns True on successful write, False otherwise. Open/write/close
@@ -1040,10 +1041,9 @@ def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
     }
     if path is not None:
         record["path"] = path
-    # Per-run provenance nonce — added when the parent provides one
-    # (observe mode). The parser drops records whose nonce doesn't
-    # match the per-run value passed to parse_observe_log, defeating
-    # spoofs by a target binary that wrote into the same JSONL.
+    # ``nonce`` remains a public run-correlation id for legacy callers.
+    # Provenance for target-writable observe logs comes from ``signer``:
+    # it stamps every record with a secret-key HMAC and ordered sequence.
     if nonce is not None:
         record["nonce"] = nonce
     # Visibility-gap enrichment: some syscalls signal that follow-on
@@ -1054,6 +1054,8 @@ def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
     note = _VISIBILITY_GAP_NOTES.get(syscall_name)
     if note:
         record["note"] = note
+    if signer is not None:
+        signer.sign(record)
     try:
         line = json.dumps(record, ensure_ascii=True) + "\n"
         # NOTE: deliberately a different name from the `path` parameter
@@ -1073,12 +1075,19 @@ def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
             f.write(line)
         return True
     except OSError as e:
+        if signer is not None:
+            signer.rollback(record)
         logger.debug(f"tracer: write_record failed: {e}")
         return False
+    except Exception:
+        if signer is not None:
+            signer.rollback(record)
+        raise
 
 
 def _write_record_dict(run_dir: Path, record: dict,
-                       *, filename: str = _DENIALS_FILENAME) -> bool:
+                       *, filename: str = _DENIALS_FILENAME,
+                       signer=None) -> bool:
     """Append a pre-built record dict to the run's JSONL file.
 
     Used for AuditBudget markers and the end-of-run summary —
@@ -1089,6 +1098,8 @@ def _write_record_dict(run_dir: Path, record: dict,
     `filename`: route to a different JSONL file (observe mode →
     `.sandbox-observe.jsonl`). Default preserves audit-mode behaviour.
     """
+    if signer is not None:
+        signer.sign(record)
     try:
         line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
         jsonl_path = run_dir / filename
@@ -1102,8 +1113,14 @@ def _write_record_dict(run_dir: Path, record: dict,
             f.write(line)
         return True
     except OSError as e:
+        if signer is not None:
+            signer.rollback(record)
         logger.debug(f"tracer: write_record_dict failed: {e}")
         return False
+    except Exception:
+        if signer is not None:
+            signer.rollback(record)
+        raise
 
 
 # ----- Event loop -----
@@ -1201,15 +1218,30 @@ def trace(target_pid: int, run_dir: Path,
     )
     _filename = _resolve_output_filename(_observe_mode)
     _mode_field = _resolve_record_mode_field(_observe_mode)
-    # Per-run provenance nonce — included in every record when the
-    # parent generated one (observe mode); None for audit mode (the
-    # audit JSONL is only written by us, never by tools, so spoofing
-    # isn't a concern there). Read once at startup, threaded down
-    # through _handle_waitpid_event to write_record so each record
-    # carries it.
+    # Observe-mode records are target-writable because the target needs
+    # access to its output directory. A public nonce only distinguishes
+    # runs; a per-run secret HMAC key authenticates every record.
     _observe_nonce = (
         audit_filter.get("observe_nonce") if audit_filter else None
     )
+    _observe_hmac_key = (
+        audit_filter.get("observe_hmac_key") if audit_filter else None
+    )
+    _observe_signer = None
+    if _observe_mode:
+        if not isinstance(_observe_hmac_key, str):
+            logger.error(
+                "tracer: observe mode requires an observe_hmac_key"
+            )
+            return 2
+        try:
+            from .observe_auth import ObserveRecordSigner
+            _observe_signer = ObserveRecordSigner(
+                _observe_hmac_key, run_id=_observe_nonce,
+            )
+        except ValueError as exc:
+            logger.error("tracer: invalid observe HMAC key: %s", exc)
+            return 2
     # Audit budget — shared with macOS seatbelt LogStreamer via
     # core.sandbox.audit_budget. Token-bucket + per-category +
     # per-PID sub-caps + 1-in-N post-cap sampling; markers and
@@ -1292,18 +1324,19 @@ def trace(target_pid: int, run_dir: Path,
             output_filename=_filename,
             mode_field=_mode_field,
             observe_nonce=_observe_nonce,
+            observe_signer=_observe_signer,
         )
 
     # End-of-run summary record so the sandbox-summary aggregator
     # has total/dropped counts even when the run didn't hit any cap.
-    # Stamp the nonce on the summary too so the parser can attribute
-    # it to this run (and reject one spoofed by a target binary that
-    # wrote a fake summary into the JSONL claiming budget_truncated=True).
+    # The observe signer stamps it too, making a fake budget state fail
+    # the same HMAC and sequence checks as syscall records.
     try:
         _summary = budget.summary_record()
-        if _observe_nonce is not None:
-            _summary["nonce"] = _observe_nonce
-        _write_record_dict(run_dir, _summary, filename=_filename)
+        _write_record_dict(
+            run_dir, _summary, filename=_filename,
+            signer=_observe_signer,
+        )
     except OSError:
         # Best-effort. Don't crash the tracer on a transient FS
         # error during summary append.
@@ -1322,7 +1355,7 @@ def _handle_waitpid_event(
     output_filename: str = _DENIALS_FILENAME,
     mode_field: str = "audit",
     observe_nonce: Optional[str] = None,
-    # Injection points so tests can substitute synthetic helpers
+    observe_signer=None,
     # without forking real children. Defaults are the production
     # implementations; tests pass mocks.
     ptrace_cont=None,
@@ -1516,14 +1549,22 @@ def _handle_waitpid_event(
             if should_log:
                 decision, marker = budget.evaluate(name, wpid)
                 if marker is not None:
-                    _write_record_dict(run_dir, marker,
-                                       filename=output_filename)
+                    _write_record_dict(
+                        run_dir, marker, filename=output_filename,
+                        signer=observe_signer,
+                    )
                 if decision == audit_budget.KEEP:
-                    write_record(run_dir, name, nr, args, wpid,
-                                 path=path,
-                                 filename=output_filename,
-                                 mode_field=mode_field,
-                                 nonce=observe_nonce)
+                    record_kwargs = {
+                        "path": path,
+                        "filename": output_filename,
+                        "mode_field": mode_field,
+                        "nonce": observe_nonce,
+                    }
+                    if observe_signer is not None:
+                        record_kwargs["signer"] = observe_signer
+                    write_record(
+                        run_dir, name, nr, args, wpid, **record_kwargs,
+                    )
                 # First-time global-cap exhaustion: emit a one-time
                 # stderr line. Restores the operator-visible cue
                 # the legacy tracer printed ("hit per-run record
@@ -1603,6 +1644,8 @@ def _cli_main(argv: Optional[list] = None) -> int:
         "writable_paths": [str, ...],   # write-intent allowlist
         "read_allowlist": [str, ...],   # read-intent allowlist
         "allowed_tcp_ports": [int, ...],
+        "observe_nonce": str,           # public run-correlation id
+        "observe_hmac_key": str,        # secret observe-record key
     }
 
     Exit codes:

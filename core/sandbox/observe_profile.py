@@ -53,6 +53,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
+from .observe_auth import ObserveRecordVerifier
 
 
 # Filename — must match core.sandbox.tracer._OBSERVE_FILENAME.
@@ -340,6 +341,7 @@ def _iter_records(path: Path) -> Iterable[dict]:
 def parse_observe_log(run_dir, *,
                       filename: str = OBSERVE_FILENAME,
                       expected_nonce: Optional[str] = None,
+                      expected_hmac_key: Optional[str] = None,
                       ) -> ObserveProfile:
     """Extract an ObserveProfile from a tracer JSONL log.
 
@@ -350,20 +352,21 @@ def parse_observe_log(run_dir, *,
     when reading a synthetic fixture from a path other than the
     default.
 
-    `expected_nonce`: when set, drop every record whose ``nonce``
-    field does not match. Defeats spoofs: a target binary inside
-    the sandbox has write access to the bind-mounted
-    ``audit_run_dir`` and could append fake records to the JSONL
-    (e.g. claim it never connected to evil.com, or that it read a
-    file it didn't). The tracer subprocess reads the per-run nonce
-    from its config tempfile (located in /tmp, NOT visible inside
-    the sandbox), so the target cannot guess it; records written by
-    the target lack the nonce or carry a stale one. Operators get
-    the nonce from ``result.sandbox_info["observe_nonce"]`` after a
-    sandbox(observe=True) run. ``None`` skips validation —
-    backward-compat with callers that don't have a nonce, but those
-    callers must accept that a hostile binary can spoof their
-    profile.
+    `expected_nonce`: public run-correlation id. It selects one stream
+    when a run directory contains records from multiple invocations,
+    but it does not authenticate target-writable JSONL.
+
+    `expected_hmac_key`: when set, accept only records carrying the
+    next valid HMAC sequence slot for this run. The key comes from
+    ``result.sandbox_info["observe_hmac_key"]`` after an engaged
+    ``sandbox(observe=True)`` call and must remain in trusted caller
+    memory. Authentication proves the origin and order of accepted
+    records, including budget markers and the terminal summary. It
+    cannot prove log availability: a target that can write the shared
+    directory can still delete or truncate the JSONL.
+
+    Calling without ``expected_hmac_key`` supports legacy offline
+    fixtures, but treats the parsed data as attacker-controlled.
 
     Returns an empty profile if the file does not exist or cannot
     be read — a caller with no observe records gets a defaulted
@@ -371,6 +374,10 @@ def parse_observe_log(run_dir, *,
     introspection" contract.
     """
     profile = ObserveProfile()
+    verifier = (
+        ObserveRecordVerifier(expected_hmac_key)
+        if expected_hmac_key is not None else None
+    )
     log_path = Path(run_dir) / filename
     if not log_path.exists():
         return profile
@@ -381,18 +388,16 @@ def parse_observe_log(run_dir, *,
     seen_connect: set = set()
 
     for rec in _iter_records(log_path):
-        # Provenance: when an expected nonce is set, drop records
-        # without a matching value. Records the tracer wrote carry
-        # the per-run nonce; records the target binary spoofed into
-        # the JSONL lack it (the tempfile holding the nonce is
-        # outside the sandbox view) or carry a guessed value. We
-        # use the empty-string fallback (rec.get default) instead
-        # of None so a record with `"nonce": null` doesn't equal
-        # `expected_nonce=None` by accident. Applied to ALL records
-        # including the audit_summary tail.
-        if expected_nonce is not None:
-            if rec.get("nonce", "") != expected_nonce:
-                continue
+        if not isinstance(rec, dict):
+            continue
+        # A nonce only routes a shared log; it is visible to the target
+        # after the first canonical record is written.
+        if expected_nonce is not None and rec.get("nonce", "") != expected_nonce:
+            continue
+        # HMAC authenticates the full record, while an exact monotonic
+        # sequence rejects forged appends, replay, gaps, and reordering.
+        if verifier is not None and not verifier.accepts(rec):
+            continue
 
         # Audit-summary tail record carries budget data. Surface
         # `budget_truncated` (any drops) + per-category counts so an

@@ -271,7 +271,20 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
             )
             return _SOFTWARE_EX
 
-        profile = parse_observe_log(run_dir)
+        sandbox_info = getattr(result, "sandbox_info", {}) or {}
+        nonce = sandbox_info.get("observe_nonce")
+        hmac_key = sandbox_info.get("observe_hmac_key")
+        if not isinstance(nonce, str) or not isinstance(hmac_key, str):
+            sys.stderr.write(
+                "raptor-sandbox-observe: authenticated observe "
+                "provenance unavailable\n"
+            )
+            return _SOFTWARE_EX
+        profile = parse_observe_log(
+            run_dir,
+            expected_nonce=nonce,
+            expected_hmac_key=hmac_key,
+        )
 
         if args.json_output:
             sys.stdout.write(_profile_to_json(

@@ -175,8 +175,12 @@ class TestCliDispatch:
                         observe_log_exists=True):
 
         class _Result:
-            def __init__(self, rc): self.returncode = rc
-
+            def __init__(self, rc):
+                self.returncode = rc
+                self.sandbox_info = {
+                    "observe_nonce": "cli-run",
+                    "observe_hmac_key": "01" * 32,
+                }
         def fake_run(cmd, **kwargs):
             # Materialise the observe log file so the existence
             # check downstream of run() passes (or doesn't, per
@@ -269,7 +273,12 @@ class TestCliDispatch:
 
 
         class _Result:
-            def __init__(self): self.returncode = 0
+            def __init__(self):
+                self.returncode = 0
+                self.sandbox_info = {
+                    "observe_nonce": "cli-run",
+                    "observe_hmac_key": "01" * 32,
+                }
 
         def fake_run(cmd, **kwargs):
             seen["capture_output"] = kwargs.get("capture_output")
@@ -296,7 +305,12 @@ class TestCliDispatch:
         seen = {}
 
         class _Result:
-            def __init__(self): self.returncode = 0
+            def __init__(self):
+                self.returncode = 0
+                self.sandbox_info = {
+                    "observe_nonce": "cli-run",
+                    "observe_hmac_key": "01" * 32,
+                }
 
         def fake_run(cmd, **kwargs):
             seen["capture_output"] = kwargs.get("capture_output")

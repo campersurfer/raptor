@@ -12,10 +12,8 @@ This module adds the missing piece: a focused spawn function that
 
   * does NOT touch namespaces (mount/user/pid/net) — Landlock plus
     seccomp do all of the per-call isolation;
-  * forks a ``core.sandbox.tracer`` subprocess in parallel with the
-    target child, mirroring the sync-pipe handshake from _spawn;
-  * passes the same audit-config tempfile so observe records carry
-    the per-run nonce + observe-stamp the parser validates.
+  * passes the same audit-config tempfile so observe records carry a
+    public run id plus HMAC authentication and ordered sequencing.
 
 Implementation note: uses ``os.fork()`` directly (not
 ``subprocess.Popen``) for the target child. ``Popen`` blocks until
@@ -90,6 +88,7 @@ def _build_audit_config(
     audit_verbose: bool,
     observe_mode: bool,
     observe_nonce: Optional[str],
+    observe_hmac_key: Optional[str],
     writable_paths: Iterable[str],
     readable_paths: Optional[Iterable[str]],
     allowed_tcp_ports: Optional[Iterable[int]],
@@ -137,6 +136,7 @@ def _build_audit_config(
         ),
         "observe_mode": bool(observe_mode),
         "observe_nonce": observe_nonce,
+        "observe_hmac_key": observe_hmac_key,
     }
 
 
@@ -237,6 +237,7 @@ def run_landlock_audit(
     audit_verbose: bool = False,
     observe_mode: bool = False,
     observe_nonce: Optional[str] = None,
+    observe_hmac_key: Optional[str] = None,
     writable_paths: Optional[Iterable[str]] = None,
     readable_paths: Optional[Iterable[str]] = None,
     allowed_tcp_ports: Optional[Iterable[int]] = None,
@@ -275,11 +276,14 @@ def run_landlock_audit(
             "run_landlock_audit requires audit_run_dir= so the "
             "tracer has a place to write the JSONL"
         )
+    if observe_mode and not observe_hmac_key:
+        raise ValueError("observe_mode=True requires observe_hmac_key=")
 
     audit_config = _build_audit_config(
         audit_verbose=audit_verbose,
         observe_mode=observe_mode,
         observe_nonce=observe_nonce,
+        observe_hmac_key=observe_hmac_key,
         writable_paths=writable_paths or (),
         readable_paths=readable_paths,
         allowed_tcp_ports=allowed_tcp_ports,
@@ -520,7 +524,7 @@ def run_landlock_audit(
             )
 
         # The tracer parsed its config before it wrote ready. Remove the
-        # observe nonce before the target can execute in the shared temp view.
+        # config, including the HMAC key, before target code can execute.
         if config_path is not None:
             try:
                 os.unlink(config_path)

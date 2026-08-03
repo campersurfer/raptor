@@ -543,6 +543,40 @@ class TestPublicObserveKwarg:
         assert seen_kwargs.get("observe_mode") is True, (
             "observe=True must reach _spawn.run_sandboxed as observe_mode=True"
         )
+        assert isinstance(seen_kwargs.get("observe_hmac_key"), str)
+
+    @pytest.mark.skipif(
+        __import__("sys").platform == "darwin",
+        reason="Linux mount-ns spawn path; macOS variant is signature-parity only",
+    )
+    def test_observe_credentials_are_unique_per_run(self, tmp_path):
+        from unittest.mock import patch
+        from core.sandbox import context as ctx_mod
+        import subprocess
+
+        seen = []
+
+        def fake_run_sandboxed(cmd, **kwargs):
+            seen.append(kwargs)
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=b"", stderr=b"",
+            )
+
+        with patch("core.sandbox._spawn.run_sandboxed",
+                   side_effect=fake_run_sandboxed), \
+             patch("core.sandbox._spawn.mount_ns_available",
+                   return_value=True), \
+             patch("core.sandbox.context.check_mount_available",
+                   return_value=True):
+            with ctx_mod.sandbox(target=str(tmp_path),
+                                 output=str(tmp_path),
+                                 observe=True) as run:
+                run(["true"])
+                run(["true"])
+
+        assert len(seen) == 2
+        assert seen[0]["observe_nonce"] != seen[1]["observe_nonce"]
+        assert seen[0]["observe_hmac_key"] != seen[1]["observe_hmac_key"]
 
     @pytest.mark.skipif(
         __import__("sys").platform == "darwin",

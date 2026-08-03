@@ -520,17 +520,9 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             or bool(observe))
         and audit_mode
     )
-    # Per-run observe nonce — 128 bits, generated up here so we can
-    # forward it to the spawn layer's audit-config tempfile and retain it
-    # for result.sandbox_info. The spawn parent unlinks that config after
-    # tracer readiness and before target exec, so a target with access to
-    # a dispatcher-provided temporary leaf cannot recover or forge it.
-    # None when observe is off.
-    if observe and audit_mode:
-        import secrets as _secrets
-        nonlocal_observe_nonce = _secrets.token_hex(16)
-    else:
-        nonlocal_observe_nonce = None
+    # Observe credentials are generated inside ``run()``. Each subprocess
+    # gets an independent public run id and HMAC key rather than sharing
+    # an authentication stream across calls in one sandbox() context.
 
     # NOTE on audit + output=None: validation deferred to spawn-time
     # (run_sandboxed) — sandbox() entry just stages config; tests and
@@ -1120,6 +1112,14 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                 "JSONL — audit demoted for this call only."
             )
             nonlocal_audit_mode = False
+        if observe and nonlocal_audit_mode:
+            import secrets as _secrets
+            from .observe_auth import generate_observe_hmac_key
+            nonlocal_observe_nonce = _secrets.token_hex(16)
+            nonlocal_observe_hmac_key = generate_observe_hmac_key()
+        else:
+            nonlocal_observe_nonce = None
+            nonlocal_observe_hmac_key = None
 
         # Always use safe env unless caller provided their own.
         # env=None is treated as "no env kwarg" — the subprocess
@@ -1736,6 +1736,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                     observe_nonce=(nonlocal_observe_nonce
                                    if observe and nonlocal_audit_mode
                                    else None),
+                    observe_hmac_key=(
+                        nonlocal_observe_hmac_key
+                        if observe and nonlocal_audit_mode else None
+                    ),
                     restrict_reads=restrict_reads,
                     use_egress_proxy=use_egress_proxy,
                     proxy_port=(proxy_instance.port
@@ -1836,6 +1840,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                             observe_nonce=(nonlocal_observe_nonce
                                            if observe and nonlocal_audit_mode
                                            else None),
+                            observe_hmac_key=(
+                                nonlocal_observe_hmac_key
+                                if observe and nonlocal_audit_mode else None
+                            ),
                             restrict_reads=_spawn_restrict_reads,
                             strict_env=strict_env,
                             persona=_persona,
@@ -2103,6 +2111,11 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                                         if observe and nonlocal_audit_mode
                                         else None
                                     ),
+                                    observe_hmac_key=(
+                                        nonlocal_observe_hmac_key
+                                        if observe and nonlocal_audit_mode
+                                        else None
+                                    ),
                                     writable_paths=writable_paths or [],
                                     readable_paths=effective_read_paths or [],
                                     allowed_tcp_ports=(
@@ -2195,38 +2208,25 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             use_mount and used_spawn and not _skip_mount_ns
         )
         result.sandbox_info["restrict_reads"] = bool(restrict_reads)
-        # Observe nonce — only present when sandbox(observe=True)
-        # actually engaged audit mode at spawn time; absent under
-        # plain audit and absent when observe was requested but
-        # audit-mode degraded silently (libseccomp unavailable,
-        # mount-ns blocked by host, etc.). Operator pipes this into
-        # parse_observe_log(expected_nonce=...) for spoof-resistant
-        # parsing. None when not engaged so a naive
-        # ``info.get("observe_nonce")`` reader gets a falsy value
-        # that signals "no provenance proof available".
-        #
-        # spawn_eligible is the load-bearing gate: a False value
-        # means we routed to the Landlock-only subprocess path
-        # which has no tracer-fork, so even though we generated a
-        # nonce upstream, no records carry it. Stamping the nonce
-        # would make a confused operator pass it to
-        # parse_observe_log() and get an empty profile back; better
-        # to surface None and let the operator notice their probe
-        # didn't engage. The sandbox-audit-degraded.json marker
-        # explains why.
-        # Either the spawn-path engaged the tracer (mount-ns spawn
-        # OR macOS seatbelt) OR the Landlock-only audit helper did.
-        # Stamp the nonce in either case so the operator can pass
-        # it to parse_observe_log() for spoof-resistant parsing.
+        # Observe provenance is available only for a run that reached an
+        # audit-capable backend. ``observe_nonce`` is a public run id used
+        # to select records from a shared output directory. The HMAC key
+        # remains in the trusted parent/tracer path and authenticates every
+        # accepted record plus its sequence; callers must not persist it in
+        # a target-writable artifact.
         _audit_engaged_anywhere = (
             spawn_eligible or _audit_landlock_engaged
         )
-        if (nonlocal_observe_nonce is not None
+        if (nonlocal_observe_hmac_key is not None
                 and nonlocal_audit_mode
                 and _audit_engaged_anywhere):
             result.sandbox_info["observe_nonce"] = nonlocal_observe_nonce
+            result.sandbox_info["observe_hmac_key"] = (
+                nonlocal_observe_hmac_key
+            )
         else:
             result.sandbox_info["observe_nonce"] = None
+            result.sandbox_info["observe_hmac_key"] = None
 
         # Attach proxy events (allow + deny + dns_fail + bytes) to
         # sandbox_info. Available to callers as

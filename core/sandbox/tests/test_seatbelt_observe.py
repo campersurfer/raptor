@@ -36,8 +36,7 @@ Expected:
   * `/tmp/probe/.sandbox-observe.jsonl` exists, non-empty
   * `/tmp/probe/.sandbox-denials.jsonl` does NOT exist
   * jq '.observe' /tmp/probe/.sandbox-observe.jsonl ⇒ all true
-  * jq '.nonce' /tmp/probe/.sandbox-observe.jsonl ⇒ same 32-char
-    hex on every line (the per-run nonce)
+  * every record has a unique `.observe_seq` and `.observe_hmac`
 
 If any of these fail, file the result (host macOS version, log
 stream output) on the PR before merge — observe routing on macOS
@@ -298,16 +297,14 @@ class TestSeatbeltSBPLObserveCoverage:
 
 
 # ---------------------------------------------------------------------------
-# Nonce stamping — defeats spoofing by target binary
+# Observe provenance — public nonce plus authenticated records
 # ---------------------------------------------------------------------------
 
 
 class TestNonceStamping:
-    """A target binary inside the sandbox has write access to the
-    bind-mounted audit_run_dir, so it CAN append fake records to the
-    JSONL. The nonce is a per-run secret only the parent + tracer/
-    log-streamer know; parser drops records lacking the matching
-    value. Pin the macOS streamer side."""
+    """The target can read the public nonce from its writable JSONL.
+    The HMAC signer, held only by the parent/streamer, authenticates
+    records and their sequence."""
 
     def test_parse_log_entry_with_nonce_stamps_field(self):
         rec = parse_log_entry(
@@ -326,12 +323,16 @@ class TestNonceStamping:
         assert rec is not None
         assert "nonce" not in rec
 
-    def test_log_streamer_nonce_threaded_into_records(self, tmp_path):
-        # Construct a streamer with a nonce, parse an entry through
-        # its constructor-bound state, write it. Round-trip the JSONL
-        # to confirm the nonce lands.
-        s = LogStreamer(tmp_path, observe_mode=True,
-                        observe_nonce="nonce-XYZ")
+    def test_log_streamer_signs_nonce_threaded_records(self, tmp_path):
+        from core.sandbox.observe_profile import parse_observe_log
+
+        key = "73" * 32
+        s = LogStreamer(
+            tmp_path,
+            observe_mode=True,
+            observe_nonce="nonce-XYZ",
+            observe_hmac_key=key,
+        )
         rec = parse_log_entry(
             _kext_log_entry("file-read-data"),
             observe_mode=s._observe_mode,
@@ -342,13 +343,27 @@ class TestNonceStamping:
             (tmp_path / OBSERVE_FILE).read_text().strip(),
         )
         assert loaded["nonce"] == "nonce-XYZ"
+        assert loaded["observe_seq"] == 1
+        assert isinstance(loaded["observe_hmac"], str)
+        profile = parse_observe_log(
+            tmp_path,
+            filename=OBSERVE_FILE,
+            expected_nonce="nonce-XYZ",
+            expected_hmac_key=key,
+        )
+        assert profile.paths_read == ["/etc/hostname"]
 
     def test_start_log_streamer_threads_nonce(self, tmp_path,
                                               monkeypatch):
         monkeypatch.setattr(LogStreamer, "start", lambda self: None)
-        s = start_log_streamer(tmp_path, observe_mode=True,
-                               observe_nonce="abc")
+        s = start_log_streamer(
+            tmp_path,
+            observe_mode=True,
+            observe_nonce="abc",
+            observe_hmac_key="74" * 32,
+        )
         assert s._observe_nonce == "abc"
+        assert s._observe_signer is not None
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +404,10 @@ class TestObserveModeDarwinE2E:
             observe=True, capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0
+        nonce = result.sandbox_info.get("observe_nonce")
+        hmac_key = result.sandbox_info.get("observe_hmac_key")
+        assert isinstance(nonce, str)
+        assert isinstance(hmac_key, str)
 
         observe_log = run_dir / OBSERVE_FILENAME
         denials_log = run_dir / ".sandbox-denials.jsonl"
@@ -435,7 +454,11 @@ class TestObserveModeDarwinE2E:
         # but the parsed profile is empty, the parser is missing
         # the kext action vocabulary — surface the unknown actions
         # in the assertion so the operator can report them.
-        profile = parse_observe_log(run_dir)
+        profile = parse_observe_log(
+            run_dir,
+            expected_nonce=nonce,
+            expected_hmac_key=hmac_key,
+        )
         total_classified = (
             len(profile.paths_read)
             + len(profile.paths_written)

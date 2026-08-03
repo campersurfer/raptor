@@ -942,6 +942,25 @@ class TestAuditConfigSchemaAgree:
             f"{sorted(unused)}. Either remove from _spawn or wire "
             f"the tracer dispatch to consume them."
         )
+        # Landlock-only audit writes the same tracer config through a
+        # separate builder. Keep its schema locked to the mount-ns path.
+        from core.sandbox._landlock_audit import _build_audit_config
+        landlock_keys = set(_build_audit_config(
+            audit_verbose=True,
+            observe_mode=True,
+            observe_nonce="run-id",
+            observe_hmac_key="01" * 32,
+            writable_paths=(),
+            readable_paths=None,
+            allowed_tcp_ports=None,
+            output=None,
+            target=None,
+            restrict_reads=False,
+        ))
+        assert landlock_keys == written_keys, (
+            "Landlock-only audit config diverged from _spawn config: "
+            f"{sorted(landlock_keys ^ written_keys)}"
+        )
 
 
 class TestAfInetConstantsAgree:

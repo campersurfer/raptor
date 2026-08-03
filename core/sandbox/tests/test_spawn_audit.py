@@ -249,7 +249,7 @@ class TestAuditModeBasicFlow:
     def test_isolated_temp_hides_audit_config_before_target_exec(
         self, tmp_path, monkeypatch,
     ):
-        """The target cannot read the tracer config or its observe nonce."""
+        """The target cannot read the tracer config or its HMAC key."""
         ok, reason = _audit_prereqs_ok()
         if not ok:
             pytest.skip(reason)
@@ -298,6 +298,7 @@ class TestAuditModeBasicFlow:
             audit_mode=True, audit_run_dir=str(audit_run_dir),
             audit_verbose=True, observe_mode=True,
             observe_nonce="audit-config-canary-nonce",
+            observe_hmac_key="31" * 32,
             strict_env=True, extra_rw_paths=[str(private_tmp)],
         )
 

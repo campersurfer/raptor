@@ -124,11 +124,14 @@ class TestUnderstandProbeFlowE2E(unittest.TestCase):
                 )
 
                 nonce = result.sandbox_info.get("observe_nonce")
-                if nonce is None:
-                    self.skipTest("audit didn't engage")
+                hmac_key = result.sandbox_info.get("observe_hmac_key")
+                if not isinstance(nonce, str) or not isinstance(hmac_key, str):
+                    self.skipTest("authenticated audit did not engage")
 
                 profile = parse_observe_log(
-                    run_dir, expected_nonce=nonce,
+                    run_dir,
+                    expected_nonce=nonce,
+                    expected_hmac_key=hmac_key,
                 )
 
                 # Merge — auto-pulls target_dir from meta.target.

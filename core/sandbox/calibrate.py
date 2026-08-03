@@ -274,7 +274,17 @@ def _spawn_probe(
             timeout=timeout,
         )
         nonce = result.sandbox_info.get("observe_nonce")
-        observed = parse_observe_log(scratch_path, expected_nonce=nonce)
+        hmac_key = result.sandbox_info.get("observe_hmac_key")
+        if not isinstance(nonce, str) or not isinstance(hmac_key, str):
+            raise RuntimeError(
+                "observe calibration did not produce authenticated "
+                "provenance"
+            )
+        observed = parse_observe_log(
+            scratch_path,
+            expected_nonce=nonce,
+            expected_hmac_key=hmac_key,
+        )
 
         # Hostnames from the proxy event log (which records the
         # CONNECT target by name regardless of allow/deny). De-dup
@@ -348,8 +358,8 @@ def calibrate_binary(
 
     Raises:
         FileNotFoundError if bin_path doesn't exist.
-        RuntimeError if observe-mode failed to engage (no nonce
-        produced — usually missing libseccomp / ptrace).
+        RuntimeError if observe-mode did not produce authenticated
+            provenance, usually because libseccomp or ptrace is unavailable.
     """
     bin_real = Path(bin_path).resolve()
     if not bin_real.exists():
@@ -369,9 +379,8 @@ def calibrate_binary(
     profile.binary_sha256 = bin_sha
     profile.env_signature = env_sig
 
-    # Sanity: if observe didn't engage, all the lists are empty
-    # AND there's no nonce. Surface that loudly — operators
-    # asking for calibration should know if it didn't happen.
+    # The authenticated parser raises before this point if observe did not
+    # engage. An empty profile here means the probe emitted no usable reach.
     if not (profile.paths_read or profile.paths_written
             or profile.paths_stat or profile.connect_targets
             or profile.proxy_hosts):
