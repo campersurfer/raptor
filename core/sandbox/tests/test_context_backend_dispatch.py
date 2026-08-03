@@ -25,10 +25,12 @@ def reset_caches():
     state._seatbelt_available_cache = None
     state._mount_available_cache = None
     state._mount_ns_available_cache = None
+    state._speculative_failure_cache.clear()
     yield
     state._seatbelt_available_cache = None
     state._mount_available_cache = None
     state._mount_ns_available_cache = None
+    state._speculative_failure_cache.clear()
 
 
 def test_check_seatbelt_available_returns_false_on_linux(reset_caches):
@@ -251,8 +253,8 @@ def test_strict_profile_requires_mount_namespace_for_target_output(reset_caches)
                 pass
 
 
-def test_mount_metadata_false_after_spawn_fallback(reset_caches):
-    """A failed mount setup must not be reported as active after fallback."""
+def test_full_profile_falls_back_after_spawn_mount_failure(reset_caches):
+    """The full profile may explicitly degrade after a mount failure."""
     from core.sandbox import _spawn as linux_mod
     from core.sandbox import probes
 
@@ -273,7 +275,7 @@ def test_mount_metadata_false_after_spawn_fallback(reset_caches):
          mock.patch.object(probes, "unshare_supports_kill_child",
                            return_value=False), \
          mock.patch.object(context.subprocess, "run",
-                           return_value=fallback_result):
+                           return_value=fallback_result) as fallback_run:
         with context.sandbox(
             target="/tmp/target",
             output="/tmp/output",
@@ -283,3 +285,136 @@ def test_mount_metadata_false_after_spawn_fallback(reset_caches):
 
     assert result is fallback_result
     assert result.sandbox_info["mount_ns_active"] is False
+    fallback_run.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("setup_status", "spawn_error"),
+    [
+        (("M", "test mount setup failure"), None),
+        (("X", "test mount exec failure"), None),
+        (None, OSError("test mount spawn failure")),
+    ],
+    ids=("mount-status", "exec-status", "spawn-error"),
+)
+def test_strict_profile_rejects_runtime_mount_failure(
+    reset_caches, setup_status, spawn_error,
+):
+    """Strict must reject every runtime path that full may downgrade."""
+    from core.sandbox import _spawn as linux_mod
+    from core.sandbox import probes
+    from core.sandbox.errors import SandboxSetupError
+
+    fallback_result = mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(sys, "platform", "linux"), \
+         mock.patch.object(context, "check_net_available", return_value=True), \
+         mock.patch.object(context, "check_mount_available", return_value=True), \
+         mock.patch.object(linux_mod, "mount_ns_available", return_value=True), \
+         mock.patch.object(linux_mod, "run_sandboxed") as spawn_run, \
+         mock.patch.object(probes, "check_unshare_engages",
+                           return_value=(True, "")), \
+         mock.patch.object(probes, "_resolve_sandbox_binary",
+                           return_value="/usr/bin/true"), \
+         mock.patch.object(probes, "unshare_supports_kill_child",
+                           return_value=False), \
+         mock.patch.object(context.subprocess, "run",
+                           return_value=fallback_result) as fallback_run:
+        if spawn_error is not None:
+            spawn_run.side_effect = spawn_error
+        else:
+            spawn_result = mock.MagicMock(returncode=126, stdout="", stderr="")
+            spawn_result._setup_status = setup_status
+            spawn_run.return_value = spawn_result
+
+        with pytest.raises(SandboxSetupError, match="profile='strict'"):
+            with context.sandbox(
+                profile="strict",
+                target="/tmp/target",
+                output="/tmp/output",
+                block_network=True,
+            ) as run:
+                run(["/usr/bin/true"], capture_output=True)
+
+    fallback_run.assert_not_called()
+
+
+def test_strict_profile_rejects_skip_mount_namespace(reset_caches):
+    """Strict target/output isolation cannot opt out of its mount layer."""
+    with mock.patch.object(sys, "platform", "linux"), \
+         mock.patch.object(context, "check_net_available", return_value=True), \
+         mock.patch.object(context, "check_mount_available", return_value=True):
+        with context.sandbox(
+            profile="strict",
+            target="/tmp/target",
+            output="/tmp/output",
+        ) as run:
+            with pytest.raises(RuntimeError, match="skip_mount_ns=True"):
+                run(["/usr/bin/true"], skip_mount_ns=True)
+
+
+def test_full_profile_preserves_skip_mount_namespace(reset_caches):
+    """Non-strict callers such as Frida retain the host-filesystem escape."""
+    from core.sandbox import _spawn as linux_mod
+    from core.sandbox import probes
+
+    spawn_result = mock.MagicMock(returncode=0, stdout="", stderr="")
+    spawn_result._setup_status = None
+
+    with mock.patch.object(sys, "platform", "linux"), \
+         mock.patch.object(context, "check_net_available", return_value=True), \
+         mock.patch.object(context, "check_mount_available", return_value=True), \
+         mock.patch.object(linux_mod, "mount_ns_available", return_value=True), \
+         mock.patch.object(linux_mod, "run_sandboxed",
+                           return_value=spawn_result) as spawn_run, \
+         mock.patch.object(probes, "check_unshare_engages",
+                           return_value=(True, "")), \
+         mock.patch.object(probes, "_resolve_sandbox_binary",
+                           return_value="/usr/bin/true"), \
+         mock.patch.object(probes, "unshare_supports_kill_child",
+                           return_value=False):
+        with context.sandbox(
+            profile="full",
+            target="/tmp/target",
+            output="/tmp/output",
+        ) as run:
+            result = run(
+                ["/usr/bin/true"],
+                capture_output=True,
+                skip_mount_ns=True,
+            )
+
+    assert spawn_run.call_args.kwargs["skip_mount_ns"] is True
+    assert result.sandbox_info["mount_ns_active"] is False
+
+
+def test_strict_profile_rejects_pre_dispatch_mount_fallback(reset_caches):
+    """Strict rejects a stale mount backend probe before subprocess fallback."""
+    from core.sandbox import _spawn as linux_mod
+    from core.sandbox import probes
+    from core.sandbox.errors import SandboxSetupError
+
+    fallback_result = mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(sys, "platform", "linux"), \
+         mock.patch.object(context, "check_net_available", return_value=True), \
+         mock.patch.object(context, "check_mount_available", return_value=True), \
+         mock.patch.object(linux_mod, "mount_ns_available", return_value=False), \
+         mock.patch.object(probes, "check_unshare_engages",
+                           return_value=(True, "")), \
+         mock.patch.object(probes, "_resolve_sandbox_binary",
+                           return_value="/usr/bin/true"), \
+         mock.patch.object(probes, "unshare_supports_kill_child",
+                           return_value=False), \
+         mock.patch.object(context.subprocess, "run",
+                           return_value=fallback_result) as fallback_run:
+        with pytest.raises(SandboxSetupError, match="did not engage"):
+            with context.sandbox(
+                profile="strict",
+                target="/tmp/target",
+                output="/tmp/output",
+                block_network=True,
+            ) as run:
+                run(["/usr/bin/true"], capture_output=True)
+
+    fallback_run.assert_not_called()

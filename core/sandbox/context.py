@@ -48,6 +48,13 @@ def check_seatbelt_available():
 
 logger = logging.getLogger(__name__)
 
+_STRICT_MOUNT_FAILURE_INSTRUCTIONS = (
+    "the strict profile requires Linux mount-namespace isolation for "
+    "target/output paths. Fix the reported mount or exec failure, or "
+    "explicitly choose `--sandbox full` to allow a Landlock-only fallback. "
+    "`--sandbox network-only` and `--sandbox none` are larger downgrades."
+)
+
 
 def _audit_degrade_reason(b_fallback_reason, b_fallback_instr,
                           target, output, kwargs) -> tuple:
@@ -1142,6 +1149,12 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         strict_env = kwargs.pop("strict_env", False)
         _skip_pid_ns = kwargs.pop("skip_pid_ns", False)
         _skip_mount_ns = kwargs.pop("skip_mount_ns", False)
+        if strict_required and _skip_mount_ns and (target or output):
+            raise RuntimeError(
+                "Sandbox profile 'strict' requested with target/output "
+                "isolation, but skip_mount_ns=True disables the required "
+                "mount namespace."
+            )
         _inherit_netns = kwargs.pop("inherit_netns", False)
         _start_new_session = kwargs.pop("start_new_session", True)
         if kwargs.get("env") is None:
@@ -1881,19 +1894,21 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                                 f"child: {_setup_status[1]}",
                                 _instr,
                             )
-                        # Degrade-to-Landlock-only on a mount-ns ('M') or
-                        # in-sandbox exec ('X') failure reported by the exec-
-                        # status pipe. 'X' is the common tool_paths case: the
-                        # bind set was insufficient (typical Python tool: bin
-                        # dir bound but stdlib at sys.prefix/lib was not), so
-                        # the target couldn't exec inside the mount-ns view.
-                        # Re-run via the Landlock-only subprocess path (works
-                        # without mount-ns bind-tree visibility) — worst-case
-                        # isolation matches the Landlock-only outcome. The
-                        # signal is authoritative and unspoofable (a tool can
-                        # no longer defeat OR forge this via stderr; the old
-                        # rc==126/127 + empty-stderr heuristic could be both).
+                        # A mount-ns ('M') or in-sandbox exec ('X') failure
+                        # stops strict. Non-strict profiles retry through
+                        # Landlock-only. 'X' is common when a tool's native
+                        # dependencies sit outside the bind tree. The setup
+                        # status is authoritative and unspoofable, unlike the
+                        # old rc==126/127 + empty-stderr heuristic.
                         if _setup_status is not None and _setup_status[0] in ("M", "X"):
+                            if strict_required:
+                                from .errors import SandboxSetupError
+                                raise SandboxSetupError(
+                                    "sandbox mount namespace setup failed "
+                                    "under profile='strict': "
+                                    f"{_setup_status[1]}",
+                                    _STRICT_MOUNT_FAILURE_INSTRUCTIONS,
+                                )
                             # Populate the per-cmd cache so future
                             # calls for the same binary skip mount-ns
                             # directly (saves the doubled subprocess
@@ -1986,6 +2001,14 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                             used_spawn = False
                             # Fall through to subprocess path below.
                 except (FileNotFoundError, RuntimeError, OSError) as _spawn_err:
+                    if strict_required:
+                        from .errors import SandboxSetupError
+                        raise SandboxSetupError(
+                            "sandbox mount namespace spawn failed under "
+                            f"profile='strict': {_spawn_err}",
+                            _STRICT_MOUNT_FAILURE_INSTRUCTIONS,
+                        ) from _spawn_err
+                    # Non-strict profiles retain the adaptive fallback.
                     # _spawn raised mid-setup (uidmap uninstalled,
                     # kernel quirk, libc soname absent on minimal
                     # containers, etc.). Fall back to
@@ -2006,6 +2029,13 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                         "falling back to Landlock-only subprocess path.",
                         _spawn_err,
                     )
+            if strict_required and use_mount and not used_spawn:
+                from .errors import SandboxSetupError
+                raise SandboxSetupError(
+                    "sandbox mount namespace did not engage under "
+                    "profile='strict'",
+                    _STRICT_MOUNT_FAILURE_INSTRUCTIONS,
+                )
             if not used_spawn:
                 # Audit/observe in Landlock-only mode: the bare
                 # subprocess.run path has no tracer-fork machinery,
@@ -2165,7 +2195,9 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         # if the child had mount-ns isolation or fell back to
         # Landlock-only mode. See ``core/security/THREAT_MODEL.md``
         # I2-(a) for why this matters.
-        result.sandbox_info["mount_ns_active"] = bool(use_mount and used_spawn)
+        result.sandbox_info["mount_ns_active"] = bool(
+            use_mount and used_spawn and not _skip_mount_ns
+        )
         result.sandbox_info["restrict_reads"] = bool(restrict_reads)
         # Observe nonce — only present when sandbox(observe=True)
         # actually engaged audit mode at spawn time; absent under
