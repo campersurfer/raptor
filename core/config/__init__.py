@@ -7,6 +7,7 @@ including paths, timeouts, limits, and baseline settings.
 """
 
 import os
+import stat
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -392,13 +393,10 @@ class RaptorConfig:
         "DEBIAN_FRONTEND",
         # Python runtime flag we set ourselves.
         "PYTHONUNBUFFERED",
-        # Trust markers — libexec/ scripts inspect these to verify they
-        # were invoked from a trusted parent (bin/raptor, bin/cve-diff,
-        # or Claude Code). Pure boolean flags; not shell-interpreted.
-        # Must propagate through get_safe_env() because the sandbox
-        # spawns its own libexec scripts (raptor-pid1-shim,
-        # raptor-run-sandboxed) using this env.
-        "_RAPTOR_TRUSTED", "CLAUDECODE",
+        # Trust markers and the dispatcher isolation mode are
+        # raptor-owned booleans. Isolation keeps a dispatcher-validated
+        # temporary root through every target-facing child boundary.
+        "_RAPTOR_TRUSTED", "CLAUDECODE", "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION",
         # RAPTOR runtime config that downstream subprocesses must
         # honour for the operator's intent to take effect:
         #   RAPTOR_OUT_DIR  output dir override (without this in the
@@ -427,6 +425,12 @@ class RaptorConfig:
     SAFE_ENV_PREFIXES = (
         "LC_",          # locale sub-variables (LC_CTYPE, LC_COLLATE, etc.)
     )
+    # The authorized intake dispatcher sets this to its canonical private
+    # temporary directory. It is deliberately NOT allowlisted: only the
+    # validation routine below can re-inject it into a child environment.
+    ISOLATED_TEMP_ROOT_ENV = "RAPTOR_PRIVATE_TMPDIR"
+    ISOLATED_TEMP_ENV_VARS = ("TMPDIR", "TMP", "TEMP")
+
 
     # Environment variables that can be exploited for command injection or
     # runtime code injection when consumed by tools that auto-load config /
@@ -753,6 +757,74 @@ class RaptorConfig:
         return RaptorConfig.MCP_JOB_DIR / job_id
 
     @staticmethod
+    def get_credential_isolated_temp_env() -> dict[str, str]:
+        """Return the validated dispatcher-owned temp environment.
+
+        Credential-isolated runs must never recover from a bad temporary
+        root by falling back to a shared host temp directory. The dispatcher
+        supplies one canonical, current-user-owned 0700 directory through
+        ``RAPTOR_PRIVATE_TMPDIR`` and requires every standard temp variable
+        to name that exact directory.
+        """
+        if os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1":
+            return {}
+
+        root_text = os.environ.get(RaptorConfig.ISOLATED_TEMP_ROOT_ENV)
+        if (
+            not root_text
+            or any(
+                os.environ.get(name) != root_text
+                for name in RaptorConfig.ISOLATED_TEMP_ENV_VARS
+            )
+        ):
+            raise RuntimeError(
+                "Credential isolation requires one validated private temporary directory."
+            )
+
+        root = Path(root_text)
+        try:
+            root_stat = os.lstat(root)
+            resolved_root = root.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                "Credential isolation requires one validated private temporary directory."
+            ) from exc
+
+        owner = getattr(os, "geteuid", os.getuid)()
+        if (
+            not root.is_absolute()
+            or str(resolved_root) != root_text
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_ISLNK(root_stat.st_mode)
+            or root_stat.st_uid != owner
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise RuntimeError(
+                "Credential isolation requires one validated private temporary directory."
+            )
+
+        return {
+            "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+            RaptorConfig.ISOLATED_TEMP_ROOT_ENV: root_text,
+            **{
+                name: root_text
+                for name in RaptorConfig.ISOLATED_TEMP_ENV_VARS
+            },
+        }
+
+    @staticmethod
+    def rebind_credential_isolated_temp_env(env: dict[str, str]) -> dict[str, str]:
+        """Replace caller temp routing with the validated dispatcher root."""
+        rebound = dict(env)
+        for name in (
+            RaptorConfig.ISOLATED_TEMP_ROOT_ENV,
+            *RaptorConfig.ISOLATED_TEMP_ENV_VARS,
+        ):
+            rebound.pop(name, None)
+        rebound.update(RaptorConfig.get_credential_isolated_temp_env())
+        return rebound
+
+    @staticmethod
     def get_safe_env(
         *,
         preserve_proxy: bool = False,
@@ -810,6 +882,10 @@ class RaptorConfig:
         if not preserve_proxy:
             env = strip_env_vars(env, RaptorConfig.PROXY_ENV_VARS)
         env = strip_env_vars(env, RaptorConfig.DANGEROUS_ENV_VARS)
+        # Credential-isolated children inherit only a canonical,
+        # dispatcher-validated temporary root. Invalid routing fails closed
+        # rather than letting target-facing code fall back to shared /tmp.
+        env.update(RaptorConfig.get_credential_isolated_temp_env())
         # F102: restore PYTHONUSERBASE AFTER the dangerous-var strip
         # for callers that opted in (e.g. semgrep scanner spawn).
         # Take the value verbatim from os.environ — do NOT invent
@@ -855,6 +931,23 @@ class RaptorConfig:
         "AZURE_OPENAI_ENDPOINT",
         "GOOGLE_APPLICATION_CREDENTIALS",  # GCP service account JSON path
     )
+
+    @classmethod
+    def strict_env_var_names(cls) -> frozenset[str]:
+        """Return variables a strict target-facing child must not receive."""
+        return frozenset(
+            (
+                *cls.DANGEROUS_ENV_VARS,
+                *cls.LLM_API_KEY_VARS,
+                # Dispatcher transport is a capability, not ordinary runtime
+                # configuration. Target-facing code must never inherit it.
+                "RAPTOR_LLM_SOCKET",
+                "RAPTOR_LLM_TOKEN_FD",
+                # The dispatcher provides an empty config today, but strict
+                # target children must not depend on that implementation fact.
+                "RAPTOR_CONFIG",
+            )
+        )
 
     @staticmethod
     def get_llm_env(

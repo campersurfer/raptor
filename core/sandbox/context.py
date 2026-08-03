@@ -1160,34 +1160,34 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             #
             # Gate on ``not strict_env``: ``strict_env=True`` is the
             # safe-rebound form (applied below) where the caller has
-            # explicitly asked us to strip DANGEROUS_ENV_VARS from
-            # their env. Once they've opted into that, the warning is
-            # contradictory noise — the warning literally tells them
-            # to pass ``strict_env=True`` as the fix. Operator on PR
-            # #777 surfaced this firing ~12× per scan run from the
-            # semgrep path; the path passes a ``get_safe_env()``-
-            # derived env (already DANGEROUS-stripped) plus a few
-            # explicit overrides, exactly the "I know what I'm doing"
-            # case the gate is meant to silence.
+            # explicitly asked us to strip dangerous and credential-bearing
+            # variables from its env. The warning would be contradictory
+            # after the caller selected that protection.
             if not strict_env:
                 logger.warning(
                     "Sandbox: caller supplied custom env= for "
                     "%s — get_safe_env() not applied; caller env "
                     "passed through. Pass strict_env=True to strip "
-                    "DANGEROUS_ENV_VARS from the caller env if you "
-                    "only intended to override a few keys.",
+                    "dangerous and credential-bearing variables from the "
+                    "caller env if you only intended to override a few keys.",
                     " ".join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or repr(cmd),
                 )
             if strict_env:
-                _dangerous = set(RaptorConfig.DANGEROUS_ENV_VARS)
+                _dangerous = RaptorConfig.strict_env_var_names()
                 _stripped = [k for k in kwargs["env"] if k in _dangerous]
                 if _stripped:
                     kwargs["env"] = {k: v for k, v in kwargs["env"].items()
                                      if k not in _dangerous}
                     logger.info(
-                        f"Sandbox: strict_env=True — stripped DANGEROUS_ENV_VARS "
-                        f"from caller env: {sorted(_stripped)}"
+                        f"Sandbox: strict_env=True — stripped sensitive environment "
+                        f"variables from caller env: {sorted(_stripped)}"
                     )
+                # Rebind after stripping. A caller cannot steer target-facing
+                # code to a different temp root, while the dispatcher-owned
+                # 0700 root survives strict_env's TMPDIR strip.
+                kwargs["env"] = RaptorConfig.rebind_credential_isolated_temp_env(
+                    kwargs["env"]
+                )
 
         # Egress-proxy env injection — overlays AFTER get_safe_env() so
         # the proxy vars aren't stripped by the PROXY_ENV_VARS blocklist
@@ -1221,6 +1221,19 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                 "through while still closing the rest."
             )
         kwargs["close_fds"] = True
+
+        # Credential-isolated Raptor runs carry one dispatcher-validated
+        # temporary root. Rebind every sandboxed child to it, admit it to
+        # Landlock, and wire it into Linux's pivoted root below.
+        isolated_temp_env = RaptorConfig.get_credential_isolated_temp_env()
+        isolated_temp_root: str | None = None
+        if isolated_temp_env:
+            kwargs["env"] = RaptorConfig.rebind_credential_isolated_temp_env(
+                kwargs["env"]
+            )
+            isolated_temp_root = isolated_temp_env["TMPDIR"]
+            if writable_paths is not None and isolated_temp_root not in writable_paths:
+                writable_paths.append(isolated_temp_root)
 
         # Reject shell=True. subprocess with shell=True reinterprets argv:
         # it invokes `/bin/sh -c argv[0]` with argv[1:] as $0/$1/...,
@@ -1793,6 +1806,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                             limits=effective_limits,
                             writable_paths=writable_paths or [],
                             readable_paths=_spawn_readable,
+                            extra_rw_paths=(
+                                [isolated_temp_root]
+                                if isolated_temp_root is not None else None
+                            ),
                             allowed_tcp_ports=list(allowed_tcp_ports)
                                 if allowed_tcp_ports else None,
                             seccomp_profile=seccomp_profile,

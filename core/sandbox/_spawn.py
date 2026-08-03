@@ -452,6 +452,7 @@ def run_sandboxed(
     etc_overlay: Optional[dict] = None,
     skip_pid_ns: bool = False,
     skip_mount_ns: bool = False,
+    extra_rw_paths: Optional[Iterable[str]] = None,
 ) -> subprocess.CompletedProcess:
     """Run `cmd` inside a fully-isolated sandbox.
 
@@ -1094,6 +1095,7 @@ def run_sandboxed(
                 _status_step = b"M"
                 setup_mount_ns(target, output,
                                extra_ro_paths=readable_paths,
+                               extra_rw_paths=extra_rw_paths,
                                root_path=_root_dir,
                                persona=persona,
                                etc_overlay=etc_overlay)
@@ -1208,21 +1210,27 @@ def run_sandboxed(
                 if env is not None:
                     exec_env = env
                     # Defense-in-depth: context.py:run() already strips
-                    # DANGEROUS_ENV_VARS from the caller env when
-                    # strict_env=True, so this re-strip is a no-op on
-                    # the standard call path. The kwarg lives here for
-                    # parity with _macos_spawn.run_sandboxed and to
-                    # protect direct callers of this function that
-                    # bypass the run() wrapper (tests, future helpers).
+                    # dangerous and credential-bearing variables when
+                    # strict_env=True. Direct backend callers receive the
+                    # same strip and validated dispatcher temp rebind.
                     if strict_env:
                         from core.config import RaptorConfig
-                        _dangerous = set(RaptorConfig.DANGEROUS_ENV_VARS)
+                        _dangerous = RaptorConfig.strict_env_var_names()
                         exec_env = {
                             k: v for k, v in exec_env.items()
                             if k not in _dangerous
                         }
+                        exec_env = RaptorConfig.rebind_credential_isolated_temp_env(
+                            exec_env
+                        )
                 else:
-                    exec_env = os.environ.copy()
+                    if strict_env:
+                        from core.config import RaptorConfig
+                        exec_env = RaptorConfig.rebind_credential_isolated_temp_env(
+                            RaptorConfig.get_safe_env()
+                        )
+                    else:
+                        exec_env = os.environ.copy()
                 # bounded fork count via RLIMIT_NPROC (prlimit).
                 if nproc_limit and nproc_limit > 0:
                     import resource

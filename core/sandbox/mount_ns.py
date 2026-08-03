@@ -170,6 +170,7 @@ def _shadows_per_ns(path: str) -> bool:
 
 def setup_mount_ns(target: Optional[str], output: Optional[str],
                    extra_ro_paths: Optional[Iterable[str]] = None,
+                   extra_rw_paths: Optional[Iterable[str]] = None,
                    root_path: Optional[str] = None,
                    persona: Optional["Persona"] = None,
                    etc_overlay: Optional[dict] = None) -> None:
@@ -263,6 +264,23 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
     # cross-sandbox symlink-race class.
     _mount("tmpfs", f"{root}/tmp", "tmpfs")
     _mount("tmpfs", f"{root}/run", "tmpfs")
+
+    # 7b. Bind dispatcher-validated writable leaves after the fresh /tmp
+    # tmpfs. An isolated Raptor temp root lives under the host /tmp, which
+    # the tmpfs just shadowed. Binding its exact leaf preserves the private
+    # 0700 directory without re-exposing host /tmp wholesale.
+    if extra_rw_paths:
+        for path in extra_rw_paths:
+            if not path or _shadows_per_ns(path):
+                continue
+            if not os.path.isdir(path):
+                raise RuntimeError(
+                    "mount_ns: requested writable path is not a directory"
+                )
+            inside = f"{root}{path}"
+            os.makedirs(inside, exist_ok=True)
+            _mount(path, inside, None, MS_BIND)
+
 
     # 8. Bind target and output at their ORIGINAL absolute paths.
     # After pivot_root, the child still refers to /tmp/vulns (or whatever

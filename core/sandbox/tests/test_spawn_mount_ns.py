@@ -202,6 +202,60 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
                           "/tmp canary leaked into sandboxed view — "
                           "per-sandbox tmpfs isolation broken")
 
+    def test_isolated_temp_leaf_survives_tmpfs_shadow(self):
+        """A validated host temp leaf remains the child's only temp root."""
+        from unittest.mock import patch
+
+        from core.config import RaptorConfig
+        from core.sandbox import sandbox
+
+        python = "/usr/bin/python3"
+        if not os.path.exists(python):
+            self.skipTest("/usr/bin/python3 is unavailable inside the system bind tree")
+
+        with tempfile.TemporaryDirectory(
+            dir="/tmp",
+            prefix="raptor-isolated-temp-",
+        ) as private_temp:
+            private_root = os.path.realpath(private_temp)
+            os.chmod(private_root, 0o700)
+            isolated_env = {
+                "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+                "RAPTOR_PRIVATE_TMPDIR": private_root,
+                "TMPDIR": private_root,
+                "TMP": private_root,
+                "TEMP": private_root,
+            }
+            with patch.dict(os.environ, isolated_env):
+                child_env = RaptorConfig.get_safe_env()
+                script = (
+                    "import os,tempfile; "
+                    "child=tempfile.mkdtemp(); "
+                    "print('\\x1f'.join((os.environ['TMPDIR'],"
+                    "os.environ['TMP'],os.environ['TEMP'],child))); "
+                    "os.rmdir(child)"
+                )
+                with sandbox(
+                    profile="strict",
+                    target=self.tmp.name,
+                    output=self.tmp.name,
+                    block_network=True,
+                ) as run:
+                    result = run(
+                        [python, "-c", script],
+                        env=child_env,
+                        strict_env=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+
+        self.assertEqual(result.returncode, 0, f"stderr: {result.stderr!r}")
+        tmpdir, tmp, temp, child = result.stdout.strip().split("\x1f")
+        self.assertEqual((tmpdir, tmp, temp), (private_root,) * 3)
+        self.assertEqual(os.path.dirname(child), private_root)
+        self.assertTrue(result.sandbox_info["mount_ns_active"])
+
     def test_stub_dir_cleaned_up_after_run(self):
         """The parent-created tempfile.mkdtemp stub must be removed
         after the child exits. Without cleanup, /tmp accumulates

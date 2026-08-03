@@ -117,6 +117,78 @@ class TestGetSafeEnv:
         env["RAPTOR_TEST_SENTINEL"] = "should_not_leak"
         assert "RAPTOR_TEST_SENTINEL" not in os.environ
 
+    def test_isolation_profile_preserves_validated_private_temp_root(self, tmp_path):
+        private_temp = tmp_path / "raptor-tmp"
+        private_temp.mkdir(mode=0o700)
+        private_temp.chmod(0o700)
+        root = str(private_temp.resolve())
+        injected = {
+            "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+            "RAPTOR_PRIVATE_TMPDIR": root,
+            "TMPDIR": root,
+            "TMP": root,
+            "TEMP": root,
+        }
+        with patch.dict(os.environ, injected):
+            env = RaptorConfig.get_safe_env()
+        assert env["RAPTOR_REQUIRE_CREDENTIAL_ISOLATION"] == "1"
+        assert env["RAPTOR_PRIVATE_TMPDIR"] == root
+        assert env["TMPDIR"] == root
+        assert env["TMP"] == root
+        assert env["TEMP"] == root
+
+    def test_isolation_profile_rejects_mismatched_temp_routes(self, tmp_path):
+        private_temp = tmp_path / "raptor-tmp"
+        alternate_temp = tmp_path / "alternate-tmp"
+        for path in (private_temp, alternate_temp):
+            path.mkdir(mode=0o700)
+            path.chmod(0o700)
+        root = str(private_temp.resolve())
+        injected = {
+            "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+            "RAPTOR_PRIVATE_TMPDIR": root,
+            "TMPDIR": root,
+            "TMP": root,
+            "TEMP": str(alternate_temp.resolve()),
+        }
+        with patch.dict(os.environ, injected):
+            with pytest.raises(RuntimeError, match="validated private temporary directory"):
+                RaptorConfig.get_safe_env()
+
+    def test_isolation_profile_rejects_unsafe_temp_root(self, tmp_path):
+        private_temp = tmp_path / "raptor-tmp"
+        private_temp.mkdir(mode=0o755)
+        private_temp.chmod(0o755)
+        root = str(private_temp.resolve())
+        injected = {
+            "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+            "RAPTOR_PRIVATE_TMPDIR": root,
+            "TMPDIR": root,
+            "TMP": root,
+            "TEMP": root,
+        }
+        with patch.dict(os.environ, injected):
+            with pytest.raises(RuntimeError, match="validated private temporary directory"):
+                RaptorConfig.get_safe_env()
+
+    def test_isolation_profile_rejects_symlink_temp_root(self, tmp_path):
+        private_temp = tmp_path / "raptor-tmp"
+        private_temp.mkdir(mode=0o700)
+        private_temp.chmod(0o700)
+        symlink = tmp_path / "raptor-tmp-link"
+        symlink.symlink_to(private_temp, target_is_directory=True)
+        root = str(symlink)
+        injected = {
+            "RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1",
+            "RAPTOR_PRIVATE_TMPDIR": root,
+            "TMPDIR": root,
+            "TMP": root,
+            "TEMP": root,
+        }
+        with patch.dict(os.environ, injected):
+            with pytest.raises(RuntimeError, match="validated private temporary directory"):
+                RaptorConfig.get_safe_env()
+
 
 class TestGetGitEnv:
     """Tests for RaptorConfig.get_git_env()."""

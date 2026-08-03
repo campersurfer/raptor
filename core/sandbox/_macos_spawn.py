@@ -291,14 +291,14 @@ def run_sandboxed(cmd: List[str], *,
 
     # 2. fake_home: redirect HOME + XDG_*_HOME into output/.home/
     #    so the child sees no dotfiles. Pre-populate the dir empty.
+    from core.config import RaptorConfig
     if env is not None:
         child_env = dict(env)
         if strict_env:
-            from core.config import RaptorConfig
-            _dangerous = set(RaptorConfig.DANGEROUS_ENV_VARS)
+            _dangerous = RaptorConfig.strict_env_var_names()
             child_env = {k: v for k, v in child_env.items() if k not in _dangerous}
+            child_env = RaptorConfig.rebind_credential_isolated_temp_env(child_env)
     else:
-        from core.config import RaptorConfig
         child_env = RaptorConfig.get_safe_env()
     if fake_home and output:
         # Mirror the Linux layout (context.py:fake_home_env) exactly:

@@ -451,11 +451,11 @@ behaviour change. Operators wanting a hardened posture opt in.
 
   - ``run_untrusted(strict_env=True)`` — default ON for this helper
     (the security-sensitive entry point). Strips
-    ``RaptorConfig.DANGEROUS_ENV_VARS`` (LD_PRELOAD, AWS_*, GH_TOKEN,
-    etc.) from caller-supplied ``env=`` dicts even when the caller
-    didn't go through ``get_safe_env()``. The lower-level
-    ``sandbox()`` accepts ``strict_env=`` too; default off there.
-    Both Linux (``_spawn``) and macOS (``_macos_spawn``) backends
+    ``RaptorConfig.DANGEROUS_ENV_VARS`` plus provider credentials and
+    dispatcher transport variables from caller-supplied ``env=`` dicts
+    even when the caller didn't go through ``get_safe_env()``. The
+    lower-level ``sandbox()`` accepts ``strict_env=`` too; default off
+    there. Both Linux (``_spawn``) and macOS (``_macos_spawn``) backends
     apply the strip as defense-in-depth.
 
   - ``EgressProxy(audit_enforce=True)`` / env var
