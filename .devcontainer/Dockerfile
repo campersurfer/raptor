@@ -69,7 +69,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 # SEMGREP (static-analysis, scan, raptor-scan, agentic commands)
 # ============================================================================
 
-RUN pip install --no-cache-dir semgrep==1.161.0
+RUN pip install --no-cache-dir semgrep==1.172.0
 
 # ============================================================================
 # RR DEBUGGER (rr-debugger skill, crash-analysis agents)
@@ -102,7 +102,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Downloaded from GitHub releases
 # ============================================================================
 
-ARG CODEQL_VERSION=2.15.5
+ARG CODEQL_VERSION=2.26.2
 RUN mkdir -p /opt/codeql \
     && curl -L "https://github.com/github/codeql-cli-binaries/releases/download/v${CODEQL_VERSION}/codeql-linux64.zip" -o /tmp/codeql.zip \
     && unzip /tmp/codeql.zip -d /opt \
