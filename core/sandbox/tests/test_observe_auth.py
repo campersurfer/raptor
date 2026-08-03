@@ -104,3 +104,28 @@ def test_hmac_authenticates_budget_summary_and_markers(tmp_path):
 def test_invalid_hmac_key_fails_closed(tmp_path):
     with pytest.raises(ValueError, match="HMAC key"):
         parse_observe_log(tmp_path, expected_hmac_key="not-a-key")
+
+
+def test_tracer_fails_closed_when_hmac_memory_cannot_be_protected(
+    tmp_path, monkeypatch,
+):
+    from core.sandbox import tracer
+
+    monkeypatch.setattr(tracer, "_arch_info", lambda: {})
+    monkeypatch.setattr(tracer, "_set_observe_non_dumpable", lambda: False)
+    monkeypatch.setattr(
+        tracer,
+        "_ptrace_seize",
+        lambda _pid: pytest.fail("ptrace must not start before key hardening"),
+    )
+
+    rc = tracer.trace(
+        1234,
+        tmp_path,
+        audit_filter={
+            "observe_mode": True,
+            "observe_nonce": _NONCE,
+            "observe_hmac_key": _KEY,
+        },
+    )
+    assert rc == 2

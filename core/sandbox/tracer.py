@@ -413,6 +413,26 @@ def _get_libc() -> Optional[ctypes.CDLL]:
     return _libc
 
 
+_PR_SET_DUMPABLE = 4
+
+
+def _set_observe_non_dumpable() -> bool:
+    """Prevent a same-UID target from reading tracer-held HMAC state."""
+    libc = _get_libc()
+    if libc is None or not hasattr(libc, "prctl"):
+        return False
+    libc.prctl.restype = ctypes.c_int
+    libc.prctl.argtypes = [
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    ctypes.set_errno(0)
+    return libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
+
+
 class _Iovec(ctypes.Structure):
     """`struct iovec` from <sys/uio.h>."""
     _fields_ = [
@@ -1202,25 +1222,15 @@ def trace(target_pid: int, run_dir: Path,
         )
         return 2
 
-    if not _ptrace_seize(target_pid):
-        return 3
-
-    _signal_ready(sync_fd)
-
     # Output routing: observe-mode records go to `.sandbox-observe.jsonl`
     # with a `"observe": True` stamp; audit-mode records go to
-    # `.sandbox-denials.jsonl` with `"audit": True`. Resolved once
-    # here from the audit-filter config and threaded through to
-    # per-record writes + the end-of-run summary so both land in the
-    # same file.
+    # `.sandbox-denials.jsonl` with `"audit": True`. Resolve this before
+    # readiness so a same-UID target cannot inspect the tracer's key.
     _observe_mode = bool(
         audit_filter.get("observe_mode") if audit_filter else False,
     )
     _filename = _resolve_output_filename(_observe_mode)
     _mode_field = _resolve_record_mode_field(_observe_mode)
-    # Observe-mode records are target-writable because the target needs
-    # access to its output directory. A public nonce only distinguishes
-    # runs; a per-run secret HMAC key authenticates every record.
     _observe_nonce = (
         audit_filter.get("observe_nonce") if audit_filter else None
     )
@@ -1242,6 +1252,17 @@ def trace(target_pid: int, run_dir: Path,
         except ValueError as exc:
             logger.error("tracer: invalid observe HMAC key: %s", exc)
             return 2
+        if not _set_observe_non_dumpable():
+            logger.error(
+                "tracer: could not disable process dumping for "
+                "observe HMAC protection"
+            )
+            return 2
+
+    if not _ptrace_seize(target_pid):
+        return 3
+
+    _signal_ready(sync_fd)
     # Audit budget — shared with macOS seatbelt LogStreamer via
     # core.sandbox.audit_budget. Token-bucket + per-category +
     # per-PID sub-caps + 1-in-N post-cap sampling; markers and

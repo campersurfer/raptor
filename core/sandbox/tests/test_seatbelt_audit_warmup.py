@@ -99,7 +99,10 @@ def _make_streamer(tmp_path):
     """Construct a LogStreamer wired to a tmp run_dir; tests assign
     ``_proc`` directly to bypass the real Popen('/usr/bin/log')."""
     return seatbelt_audit.LogStreamer(
-        run_dir=tmp_path, observe_mode=True, observe_nonce="warm-up-test",
+        run_dir=tmp_path,
+        observe_mode=True,
+        observe_nonce="warm-up-test",
+        observe_hmac_key="77" * 32,
     )
 
 

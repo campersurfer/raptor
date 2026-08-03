@@ -183,6 +183,11 @@ class LogStreamer:
                  observe_nonce: Optional[str] = None,
                  observe_hmac_key: Optional[str] = None):
         self._run_dir = Path(run_dir)
+        self._observe_mode = bool(observe_mode)
+        if self._observe_mode and not observe_hmac_key:
+            raise ValueError(
+                "observe_mode=True requires observe_hmac_key="
+            )
         self._proc: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
         self._stopped = threading.Event()
@@ -191,7 +196,7 @@ class LogStreamer:
         # stamps every record, marker, and summary before append.
         self._observe_nonce = observe_nonce
         self._observe_signer = None
-        if observe_hmac_key is not None:
+        if self._observe_mode:
             from .observe_auth import ObserveRecordSigner
             self._observe_signer = ObserveRecordSigner(
                 observe_hmac_key, run_id=observe_nonce,
@@ -200,7 +205,6 @@ class LogStreamer:
         # field once at construction so the per-record write path uses
         # the same destination as the parent's eventual summary append.
         # Defaults preserve audit-mode behaviour.
-        self._observe_mode = bool(observe_mode)
         self._filename = OBSERVE_FILE if self._observe_mode else DENIALS_FILE
         # Skip-budget — defaults to the CLI-aware factory so
         # --audit-budget propagates without callers wiring it

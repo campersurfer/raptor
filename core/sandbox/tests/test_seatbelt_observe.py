@@ -170,7 +170,9 @@ class TestLogStreamerFilenameRouting:
         assert not (tmp_path / OBSERVE_FILE).exists()
 
     def test_observe_mode_appends_to_observe_file(self, tmp_path):
-        s = LogStreamer(tmp_path, observe_mode=True)
+        s = LogStreamer(
+            tmp_path, observe_mode=True, observe_hmac_key="71" * 32,
+        )
         s._append_record({"hello": "world", "observe": True})
         assert (tmp_path / OBSERVE_FILE).exists()
         assert not (tmp_path / DENIALS_FILE).exists()
@@ -179,7 +181,9 @@ class TestLogStreamerFilenameRouting:
         # Internal attribute is part of the contract because both
         # _append_record_locked and the future summary writer read
         # it. Pin so a refactor that drops it surfaces here.
-        observe_streamer = LogStreamer(tmp_path, observe_mode=True)
+        observe_streamer = LogStreamer(
+            tmp_path, observe_mode=True, observe_hmac_key="72" * 32,
+        )
         audit_streamer = LogStreamer(tmp_path, observe_mode=False)
         assert observe_streamer._filename == OBSERVE_FILE
         assert audit_streamer._filename == DENIALS_FILE
@@ -187,7 +191,9 @@ class TestLogStreamerFilenameRouting:
     def test_record_content_round_trips(self, tmp_path):
         # Build a record via parse_log_entry so the full stamp + path
         # round-trip is exercised, then have LogStreamer append it.
-        s = LogStreamer(tmp_path, observe_mode=True)
+        s = LogStreamer(
+            tmp_path, observe_mode=True, observe_hmac_key="75" * 32,
+        )
         rec = parse_log_entry(
             _kext_log_entry("file-read-data", path="/etc/passwd"),
             observe_mode=True,
@@ -215,9 +221,15 @@ class TestStartLogStreamerObserveKwarg:
 
     def test_observe_mode_threads_through(self, tmp_path, monkeypatch):
         monkeypatch.setattr(LogStreamer, "start", lambda self: None)
-        s = start_log_streamer(tmp_path, observe_mode=True)
+        s = start_log_streamer(
+            tmp_path, observe_mode=True, observe_hmac_key="76" * 32,
+        )
         assert s._observe_mode is True
         assert s._filename == OBSERVE_FILE
+
+    def test_observe_mode_requires_hmac_key(self, tmp_path):
+        with pytest.raises(ValueError, match="observe_hmac_key"):
+            start_log_streamer(tmp_path, observe_mode=True)
 
     def test_default_observe_mode_off(self, tmp_path, monkeypatch):
         monkeypatch.setattr(LogStreamer, "start", lambda self: None)
