@@ -110,7 +110,7 @@ def test_dispatch_picks_linux_backend_on_linux(reset_caches):
         with sandbox(target="/tmp", output="/tmp") as run:
             try:
                 run(["/usr/bin/true"], capture_output=True)
-            except Exception:
+            except BaseException:
                 # The fake _spawn doesn't simulate the full chain
                 # perfectly; we only care about WHICH backend was
                 # invoked, not the result.
@@ -249,3 +249,37 @@ def test_strict_profile_requires_mount_namespace_for_target_output(reset_caches)
         with pytest.raises(RuntimeError, match="mount namespaces"):
             with sandbox(profile="strict", target="/tmp", output="/tmp"):
                 pass
+
+
+def test_mount_metadata_false_after_spawn_fallback(reset_caches):
+    """A failed mount setup must not be reported as active after fallback."""
+    from core.sandbox import _spawn as linux_mod
+    from core.sandbox import probes
+
+    spawn_result = mock.MagicMock(returncode=126, stdout="", stderr="")
+    spawn_result._setup_status = ("M", "test mount setup failure")
+    fallback_result = mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(sys, "platform", "linux"), \
+         mock.patch.object(context, "check_net_available", return_value=True), \
+         mock.patch.object(context, "check_mount_available", return_value=True), \
+         mock.patch.object(linux_mod, "mount_ns_available", return_value=True), \
+         mock.patch.object(linux_mod, "run_sandboxed",
+                           return_value=spawn_result), \
+         mock.patch.object(probes, "check_unshare_engages",
+                           return_value=(True, "")), \
+         mock.patch.object(probes, "_resolve_sandbox_binary",
+                           return_value="/usr/bin/true"), \
+         mock.patch.object(probes, "unshare_supports_kill_child",
+                           return_value=False), \
+         mock.patch.object(context.subprocess, "run",
+                           return_value=fallback_result):
+        with context.sandbox(
+            target="/tmp/target",
+            output="/tmp/output",
+            block_network=True,
+        ) as run:
+            result = run(["/usr/bin/true"], capture_output=True)
+
+    assert result is fallback_result
+    assert result.sandbox_info["mount_ns_active"] is False

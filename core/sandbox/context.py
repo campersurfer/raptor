@@ -2165,7 +2165,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         # if the child had mount-ns isolation or fell back to
         # Landlock-only mode. See ``core/security/THREAT_MODEL.md``
         # I2-(a) for why this matters.
-        result.sandbox_info["mount_ns_active"] = bool(use_mount)
+        result.sandbox_info["mount_ns_active"] = bool(use_mount and used_spawn)
         result.sandbox_info["restrict_reads"] = bool(restrict_reads)
         # Observe nonce — only present when sandbox(observe=True)
         # actually engaged audit mode at spawn time; absent under
