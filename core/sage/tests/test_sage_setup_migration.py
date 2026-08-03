@@ -28,7 +28,7 @@ class TestSageSetupMigration(unittest.TestCase):
             destination.chmod(0o755)
 
         (self.checkout / "core" / "sage" / "docker-compose.yml").write_text(
-            "services:\n  sage:\n    image: ghcr.io/l33tdawg/sage:11.11.6\n",
+            "services:\n  sage:\n    image: ghcr.io/l33tdawg/sage:11.16.4\n",
             encoding="utf-8",
         )
 
@@ -93,7 +93,7 @@ class TestSageSetupMigration(unittest.TestCase):
                 exit 0
             fi
             if [[ "$args" == *" config --images"* ]]; then
-                printf 'ghcr.io/l33tdawg/sage:11.11.6\n'
+                printf 'ghcr.io/l33tdawg/sage:11.16.4\n'
                 exit 0
             fi
             if [[ "$args" == *"ls -A /dest"* ]]; then
