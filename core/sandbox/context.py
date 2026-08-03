@@ -1150,10 +1150,11 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         _skip_pid_ns = kwargs.pop("skip_pid_ns", False)
         _skip_mount_ns = kwargs.pop("skip_mount_ns", False)
         if strict_required and _skip_mount_ns and (target or output):
-            raise RuntimeError(
-                "Sandbox profile 'strict' requested with target/output "
-                "isolation, but skip_mount_ns=True disables the required "
-                "mount namespace."
+            from .errors import SandboxSetupError
+            raise SandboxSetupError(
+                "sandbox mount namespace was explicitly disabled under "
+                "profile='strict'",
+                _STRICT_MOUNT_FAILURE_INSTRUCTIONS,
             )
         _inherit_netns = kwargs.pop("inherit_netns", False)
         _start_new_session = kwargs.pop("start_new_session", True)

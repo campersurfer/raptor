@@ -341,6 +341,7 @@ def test_strict_profile_rejects_runtime_mount_failure(
 
 def test_strict_profile_rejects_skip_mount_namespace(reset_caches):
     """Strict target/output isolation cannot opt out of its mount layer."""
+    from core.sandbox.errors import SandboxSetupError
     with mock.patch.object(sys, "platform", "linux"), \
          mock.patch.object(context, "check_net_available", return_value=True), \
          mock.patch.object(context, "check_mount_available", return_value=True):
@@ -349,7 +350,7 @@ def test_strict_profile_rejects_skip_mount_namespace(reset_caches):
             target="/tmp/target",
             output="/tmp/output",
         ) as run:
-            with pytest.raises(RuntimeError, match="skip_mount_ns=True"):
+            with pytest.raises(SandboxSetupError, match="explicitly disabled"):
                 run(["/usr/bin/true"], skip_mount_ns=True)
 
 
