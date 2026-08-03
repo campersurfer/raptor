@@ -62,6 +62,14 @@ def test_write_exceptions_include_private_tmp(tmp_path):
     assert '(subpath "/private/tmp")' in p
 
 
+def test_write_exceptions_include_exact_device_literals(tmp_path):
+    """macOS runtime startup can write only these non-persistent devices."""
+    p = seatbelt.build_profile(output=str(tmp_path))
+    for path in ("/dev/null", "/dev/dtracehelper"):
+        assert f'(literal "{path}")' in p
+        assert f'(subpath "{path}")' not in p
+
+
 def test_writable_paths_appended():
     """Caller-supplied writable_paths join the default exception
     list (alongside output and /private/tmp)."""
@@ -117,20 +125,23 @@ def test_multi_path_uses_require_any_for_union_semantics(tmp_path):
     os.makedirs(extra, exist_ok=True)
     p = seatbelt.build_profile(output=output, writable_paths=[extra])
     # Must use (require-not (require-any ...)) — exactly one
-    # require-any wrapping all the subpaths.
+    # require-any wrapping the subpath and exact-device exceptions.
     assert "(require-not (require-any " in p, (
         f"expected (require-not (require-any ...)) idiom; got:\n{p}"
     )
-    # Three exception paths: /private/tmp + output + extra → all
-    # three (subpath ...) must live inside ONE require-any clause.
+    # Three directory exceptions: /private/tmp + output + extra. The
+    # profile also includes exact-path grants for safe macOS devices.
     import re
     require_any_match = re.search(
-        r"\(require-any\s+((?:\(subpath [^)]+\)\s*)+)\)", p
+        r"\(require-any\s+((?:(?:\(subpath|\(literal) [^)]+\)\s*)+)\)", p
     )
-    assert require_any_match, "no (require-any (subpath ...) ...) found"
+    assert require_any_match, "no (require-any path exceptions ...) found"
     inside = require_any_match.group(1)
     assert inside.count("(subpath ") == 3, (
         f"expected 3 subpaths inside require-any, got: {inside}"
+    )
+    assert inside.count("(literal ") == 2, (
+        f"expected 2 exact device literals inside require-any, got: {inside}"
     )
     # Regression catch for form (b): we should NOT see multiple
     # (require-not ...) clauses on the same deny (each holding one

@@ -73,6 +73,12 @@ SANDBOX_KEXT_SENDER = (
     "/System/Library/Extensions/Sandbox.kext/Contents/MacOS/Sandbox"
 )
 
+# macOS runtime startup uses these character devices as non-persistent
+# endpoints. They must remain exact-path grants: allowing `/dev` would expose
+# shared-memory and unrelated device nodes to the sandboxed process.
+_WRITE_DEVICE_LITERALS = ("/dev/null", "/dev/dtracehelper")
+
+
 
 def _realpath_or_none(path: Optional[str]) -> Optional[str]:
     """Canonicalize ``path`` via os.path.realpath, or None if path is
@@ -203,6 +209,7 @@ def build_profile(*,
     # write temp files keep working — matches the Linux Landlock
     # default of /tmp in writable_paths.
     write_exceptions: list = ["/private/tmp"]
+    write_literals: list = list(_WRITE_DEVICE_LITERALS)
     out_real = _realpath_or_none(output)
     if out_real:
         write_exceptions.append(out_real)
@@ -247,12 +254,13 @@ def build_profile(*,
             # This matches Linux Landlock's writable_paths list
             # behaviour. `require-any` is a multi-arg combinator —
             # unlike `require-not` which is unary.
-            subpath_any = " ".join(
-                f"(subpath {_quote_sbpl(p)})" for p in write_exceptions
+            write_allow_clauses = " ".join(
+                [f"(subpath {_quote_sbpl(p)})" for p in write_exceptions]
+                + [f"(literal {_quote_sbpl(p)})" for p in write_literals]
             )
             parts.append(
                 f"(deny file-write* (require-not (require-any "
-                f"{subpath_any})))"
+                f"{write_allow_clauses})))"
             )
 
     # --- Filesystem read restriction (only when explicitly requested) ---
