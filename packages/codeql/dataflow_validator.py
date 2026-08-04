@@ -304,15 +304,15 @@ def _infer_bv_profile(rule_id: Optional[str], llm_hint: Dict) -> BVProfile:
 
 # Dict schema for LLM structured generation (consistent with other callers)
 DATAFLOW_VALIDATION_SCHEMA = {
-    "is_exploitable": "boolean",
-    "confidence": "float (0.0-1.0)",
-    "sanitizers_effective": "boolean",
-    "bypass_possible": "boolean",
-    "bypass_strategy": "string - strategy to bypass sanitizers, or empty if none",
-    "attack_complexity": {"type": "string", "enum": ["low", "medium", "high"]},
     "reasoning": "string",
     "barriers": "list of strings",
     "prerequisites": "list of strings",
+    "bypass_strategy": "string - strategy to bypass sanitizers, or empty if none",
+    "attack_complexity": {"type": "string", "enum": ["low", "medium", "high"]},
+    "sanitizers_effective": "boolean",
+    "bypass_possible": "boolean",
+    "confidence": "float (0.0-1.0)",
+    "is_exploitable": "boolean",
 }
 
 
@@ -320,6 +320,7 @@ DATAFLOW_VALIDATION_SCHEMA = {
 # schema in autonomous_analyzer.py — same asymmetric framing, same
 # verdict literal set, so the scorecard substrate keys uniformly.
 DATAFLOW_FP_PREFILTER_SCHEMA = {
+    "reasoning": "string — brief justification, 1-2 sentences",
     "verdict": {
         "type": "string",
         "enum": ["clear_fp", "needs_analysis"],
@@ -329,7 +330,6 @@ DATAFLOW_FP_PREFILTER_SCHEMA = {
             "needs_analysis = any uncertainty"
         ),
     },
-    "reasoning": "string — brief justification, 1-2 sentences",
 }
 
 

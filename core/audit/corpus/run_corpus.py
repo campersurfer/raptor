@@ -590,12 +590,12 @@ def _run_probe(
     probe_schema = {
         "type": "object",
         "properties": {
-            "status": REVIEW_SCHEMA["properties"]["status"],
             "hypothesis": REVIEW_SCHEMA["properties"]["hypothesis"],
             "hypotheses": REVIEW_SCHEMA["properties"]["hypotheses"],
             "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
             "cwe": REVIEW_SCHEMA["properties"].get("cwe", {"type": "string"}),
             "body": REVIEW_SCHEMA["properties"].get("body", {"type": "string"}),
+            "status": REVIEW_SCHEMA["properties"]["status"],
         },
         "required": ["status"],
     }

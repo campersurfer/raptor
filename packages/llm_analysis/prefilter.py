@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 # packages/codeql/autonomous_analyzer.py:FP_PREFILTER_SCHEMA so cells
 # in the scorecard sidecar are comparable across consumers.
 FP_PREFILTER_SCHEMA = {
+    "reasoning": "string — brief justification, 1-2 sentences",
     "verdict": {
         "type": "string",
         "enum": ["clear_fp", "needs_analysis"],
@@ -50,7 +51,6 @@ FP_PREFILTER_SCHEMA = {
             "needs_analysis = any uncertainty, or this looks like a real issue"
         ),
     },
-    "reasoning": "string — brief justification, 1-2 sentences",
 }
 
 

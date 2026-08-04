@@ -70,16 +70,16 @@ class VulnerabilityAnalysis:
 
 # Dict schema for LLM structured generation (consistent with other callers)
 VULNERABILITY_ANALYSIS_SCHEMA = {
-    "is_true_positive": "boolean",
-    "is_exploitable": "boolean",
-    "exploitability_score": "float (0.0-1.0)",
-    "severity_assessment": "string (critical/high/medium/low)",
     "reasoning": "string",
     "attack_scenario": "string",
     "prerequisites": "list of strings",
     "impact": "string",
     "cvss_estimate": "float (0.0-10.0)",
     "mitigation": "string",
+    "severity_assessment": "string (critical/high/medium/low)",
+    "exploitability_score": "float (0.0-1.0)",
+    "is_true_positive": "boolean",
+    "is_exploitable": "boolean",
 }
 
 
@@ -91,6 +91,7 @@ VULNERABILITY_ANALYSIS_SCHEMA = {
 # FPs; ambiguous and confident-TP cases both fall through. A cheap
 # model that says "needs_analysis" pays nothing in trust.
 FP_PREFILTER_SCHEMA = {
+    "reasoning": "string — brief justification, 1-2 sentences",
     "verdict": {
         "type": "string",
         "enum": ["clear_fp", "needs_analysis"],
@@ -99,7 +100,6 @@ FP_PREFILTER_SCHEMA = {
             "needs_analysis = any uncertainty, or this looks like a real issue"
         ),
     },
-    "reasoning": "string — brief justification, 1-2 sentences",
 }
 
 

@@ -54,7 +54,6 @@ _STATUS_NO_DORMANT = {
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
-        "status": _STATUS_FULL,
         "hypothesis": {
             "type": "string",
             "description": (
@@ -438,30 +437,31 @@ REVIEW_SCHEMA = {
                 "remaining concern justifies suspicious over clean."
             ),
         },
+        "status": _STATUS_FULL,
     },
     "required": [
-        "status", "verdict_rationale", "body", "hypotheses",
-        "hypothesis", "counter_hypothesis",
+        "hypothesis", "counter_hypothesis", "hypotheses",
+        "body", "verdict_rationale", "status",
     ],
 }
 
 REVIEW_SCHEMA_BLIND = {
     "type": "object",
     "properties": {
-        "status": _STATUS_NO_DORMANT,
         "hypothesis": REVIEW_SCHEMA["properties"]["hypothesis"],
         "hypotheses": REVIEW_SCHEMA["properties"]["hypotheses"],
         "body": {"type": "string"},
         "cwe": {"type": "string"},
         "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
-        "verdict_rationale": REVIEW_SCHEMA["properties"]["verdict_rationale"],
         "observations": REVIEW_SCHEMA["properties"]["observations"],
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
         "reading_list": REVIEW_SCHEMA["properties"]["reading_list"],
+        "verdict_rationale": REVIEW_SCHEMA["properties"]["verdict_rationale"],
+        "status": _STATUS_NO_DORMANT,
     },
     "required": [
-        "status", "verdict_rationale", "body", "hypotheses",
-        "hypothesis", "counter_hypothesis",
+        "hypothesis", "counter_hypothesis", "hypotheses",
+        "body", "verdict_rationale", "status",
     ],
 }
 
