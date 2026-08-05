@@ -90,7 +90,7 @@ packaging==25.0
 # https://ollama.ai
 
 # SAGE persistent memory (consensus-validated knowledge)
-# sage-agent-sdk==11.11.6
+# sage-agent-sdk==11.17.11
 # httpx==0.28.1
 
 # SCA hard deps (defusedxml, packaging, pyyaml) are pinned above. The
