@@ -152,6 +152,7 @@ def test_classify_candidate_rejects_split_debug_and_templates(
 
 
 @_needs_gcc
+@pytest.mark.slow
 def test_has_dwarf_distinguishes_stripped(tmp_path: Path) -> None:
     import subprocess as _sp
     src = tmp_path / "x.c"
@@ -165,6 +166,7 @@ def test_has_dwarf_distinguishes_stripped(tmp_path: Path) -> None:
 
 
 @_needs_gcc
+@pytest.mark.slow
 @pytest.mark.skipif(not shutil.which("make"), reason="make not available")
 def test_detect_finds_makefile_built_binary(tmp_path: Path) -> None:
     """A target with a Makefile that builds into build/ — autodetect
