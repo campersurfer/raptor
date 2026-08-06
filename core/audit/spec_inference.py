@@ -128,6 +128,7 @@ def infer_spec_mechanical(
     _infer_from_tests(spec, function_name, tests)
     _infer_from_caller_usage(spec, function_name, checklist, summaries)
     _infer_negative_specs(spec, function_name, gap)
+    _infer_from_assertions(spec, gap)
 
     return spec
 
@@ -396,6 +397,240 @@ def _infer_negative_specs(
                     confidence="high",
                     evidence=f"handles '{keyword}'",
                 ))
+
+
+_ASSERTION_PATTERNS: List[tuple] = [
+    (re.compile(r"\bBUG_ON\s*\((.+?)\)"), "invariant"),
+    (re.compile(r"\bWARN_ON\s*\((.+?)\)"), "postcondition"),
+    (re.compile(r"\bBUILD_BUG_ON\s*\((.+?)\)"), "compile_time_invariant"),
+    (re.compile(r"\blockdep_assert_held\s*\((.+?)\)"), "lock_precondition"),
+    (re.compile(r"\blockdep_assert_held_read\s*\((.+?)\)"), "lock_precondition"),
+    (re.compile(r"\bassert\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bASSERT\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bCHECK\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bDCHECK\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bg_assert\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bg_return_if_fail\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bg_return_val_if_fail\s*\((.+?)\s*,"), "precondition"),
+    (re.compile(r"\bprecondition\s*\((.+?)\)"), "precondition"),
+    (re.compile(r"\bPy_CHECK_TYPE\s*\((.+?)\)"), "type_precondition"),
+]
+
+
+def _infer_from_assertions(
+    spec: InferredSpec,
+    gap: Dict[str, Any],
+) -> None:
+    """Extract preconditions/invariants from assertion macros."""
+    source = gap.get("source", "")
+    if not source:
+        return
+
+    line_start = gap.get("line_start", 0)
+    for i, line in enumerate(source.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("/*"):
+            continue
+        for pattern, kind in _ASSERTION_PATTERNS:
+            m = pattern.search(stripped)
+            if not m:
+                continue
+            condition = m.group(1).strip()
+            if kind == "lock_precondition":
+                text = f"lock {condition} must be held on entry"
+                spec.preconditions.append(text)
+            elif kind == "compile_time_invariant":
+                spec.invariants.append(f"compile-time: {condition}")
+            elif kind in ("precondition", "type_precondition"):
+                spec.preconditions.append(condition)
+            elif kind == "invariant":
+                spec.invariants.append(condition)
+            elif kind == "postcondition":
+                spec.postconditions.append(f"warns if {condition}")
+            spec.sources.append(SpecSource(
+                signal="assertion_macro",
+                confidence="high",
+                evidence=f"line {line_start + i}: {stripped[:80]}",
+            ))
+
+
+@dataclass
+class PreconditionVerification:
+    """Result of verifying a precondition against all call sites."""
+
+    precondition: str
+    total_call_sites: int
+    verified_sites: int
+    violated_sites: int
+    unknown_sites: int
+    is_universally_satisfied: bool = False
+    evidence: List[Dict[str, str]] = field(default_factory=list)
+
+    @property
+    def verification_rate(self) -> float:
+        if self.total_call_sites == 0:
+            return 0.0
+        return self.verified_sites / self.total_call_sites
+
+
+def verify_preconditions_at_call_sites(
+    spec: InferredSpec,
+    callers: List[Dict[str, Any]],
+    checklist: Optional[Dict[str, Any]] = None,
+) -> List[PreconditionVerification]:
+    """Cross-reference preconditions against call sites.
+
+    For each precondition, checks whether all callers satisfy it.
+    Returns one PreconditionVerification per precondition.
+    """
+    if not spec.preconditions or not callers:
+        return []
+
+    results: List[PreconditionVerification] = []
+    for precond in spec.preconditions:
+        v = _verify_one_precondition(precond, callers, checklist)
+        results.append(v)
+    return results
+
+
+def _verify_one_precondition(
+    precondition: str,
+    callers: List[Dict[str, Any]],
+    checklist: Optional[Dict[str, Any]],
+) -> PreconditionVerification:
+    """Check one precondition against all known callers."""
+    verified = 0
+    violated = 0
+    unknown = 0
+    evidence: List[Dict[str, str]] = []
+
+    check_type = _classify_precondition(precondition)
+
+    for caller in callers:
+        caller_source = caller.get("source", "")
+        if not caller_source and checklist:
+            caller_source = _get_source_from_checklist(
+                caller.get("file", ""),
+                caller.get("name", caller.get("function", "")),
+                checklist,
+            )
+
+        if not caller_source:
+            unknown += 1
+            continue
+
+        satisfied = _check_precondition_in_source(
+            check_type, precondition, caller_source,
+        )
+        caller_id = f"{caller.get('file', '')}:{caller.get('name', caller.get('function', ''))}"
+
+        if satisfied is True:
+            verified += 1
+            evidence.append({"caller": caller_id, "status": "verified"})
+        elif satisfied is False:
+            violated += 1
+            evidence.append({"caller": caller_id, "status": "violated"})
+        else:
+            unknown += 1
+            evidence.append({"caller": caller_id, "status": "unknown"})
+
+    total = verified + violated + unknown
+    return PreconditionVerification(
+        precondition=precondition,
+        total_call_sites=total,
+        verified_sites=verified,
+        violated_sites=violated,
+        unknown_sites=unknown,
+        is_universally_satisfied=(total > 0 and verified == total),
+        evidence=evidence,
+    )
+
+
+def _classify_precondition(precondition: str) -> str:
+    """Classify a precondition for mechanical verification."""
+    lower = precondition.lower()
+    if "null" in lower or "!= null" in lower or "!= 0" in lower:
+        return "null_check"
+    if any(w in lower for w in ("<=", ">=", "< ", "> ", "bound", "size", "len")):
+        return "bounds_check"
+    if "lock" in lower or "held" in lower:
+        return "lock_held"
+    if "unsigned" in lower or ">= 0" in lower or "non-negative" in lower:
+        return "non_negative"
+    return "general"
+
+
+def _check_precondition_in_source(
+    check_type: str,
+    precondition: str,
+    caller_source: str,
+) -> Optional[bool]:
+    """Check if the caller source satisfies the precondition."""
+    if check_type == "null_check":
+        var_match = re.search(r"(\w+)\s*(?:!=\s*(?:NULL|0)|!= null)", precondition)
+        if var_match:
+            var = var_match.group(1)
+            if re.search(
+                rf"if\s*\(\s*!?\s*{re.escape(var)}\s*\)|"
+                rf"if\s*\(\s*{re.escape(var)}\s*==\s*NULL|"
+                rf"if\s*\(\s*{re.escape(var)}\s*!=\s*NULL",
+                caller_source,
+            ):
+                return True
+        return None
+
+    if check_type == "bounds_check":
+        return None
+
+    if check_type == "lock_held":
+        lock_match = re.search(r"lock\s+(\w+)", precondition)
+        if lock_match:
+            lock_name = lock_match.group(1)
+            if re.search(
+                rf"(?:spin_lock|mutex_lock|read_lock|write_lock)\s*\(\s*&?{re.escape(lock_name)}",
+                caller_source,
+            ):
+                return True
+        return None
+
+    return None
+
+
+def _get_source_from_checklist(
+    file_path: str,
+    function_name: str,
+    checklist: Dict[str, Any],
+) -> str:
+    """Get function source from checklist data."""
+    for f in checklist.get("files", []):
+        if f.get("path") != file_path:
+            continue
+        for gap in f.get("gaps", []):
+            if gap.get("name") == function_name:
+                return gap.get("source", "")
+    return ""
+
+
+def format_precondition_verification(
+    verifications: List[PreconditionVerification],
+) -> str:
+    """Render precondition verification as a context section for the LLM."""
+    if not verifications:
+        return ""
+    lines = ["### Precondition verification (mechanical)"]
+    for v in verifications:
+        if v.total_call_sites == 0:
+            continue
+        status = "UNIVERSALLY SATISFIED" if v.is_universally_satisfied else (
+            f"{v.verified_sites}/{v.total_call_sites} callers verified"
+        )
+        lines.append(f"- `{v.precondition}`: {status}")
+        if v.is_universally_satisfied:
+            lines.append(
+                "  A hypothesis that callers violate this precondition "
+                "is mechanically refuted."
+            )
+    return "\n".join(lines)
 
 
 def _checks_return_value(source: str, function_name: str) -> bool:

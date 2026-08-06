@@ -37,6 +37,8 @@ def hypothesis_to_semgrep_rule(hypothesis: str, file_path: str) -> Optional[str]
     rule_id = "hypothesis-check"
     for keyword, regex in _HYPOTHESIS_SEMGREP_PATTERNS.items():
         if keyword in hyp_lower:
+            if keyword == "format string" and file_path.endswith(".go"):
+                continue
             pattern = regex
             rule_id = keyword.replace(" ", "-")
             break
@@ -88,8 +90,54 @@ _SMT_HYPOTHESIS_VERBS = [
     ("buffer overflow", "check-oob"),
     ("integer underflow", "check-overflow"),
     ("integer overflow", "check-overflow"),
-    ("overflow", "check-overflow"),
-    ("underflow", "check-overflow"),
+    ("arithmetic overflow", "check-overflow"),
+    ("multiplication overflow", "check-overflow"),
+    ("addition overflow", "check-overflow"),
+    ("truncation overflow", "check-overflow"),
+    ("arithmetic underflow", "check-overflow"),
+    ("permission bypass", "check-auth-bypass"),
+    ("capability bypass", "check-auth-bypass"),
+    ("auth bypass", "check-auth-bypass"),
+    ("access control bypass", "check-auth-bypass"),
+    ("privilege escalation", "check-auth-bypass"),
+    ("early return bypass", "check-auth-bypass"),
+    ("capability check", "check-auth-bypass"),
+    ("permission check bypass", "check-auth-bypass"),
+    ("lock imbalance", "check-lock-discipline"),
+    ("missing unlock", "check-lock-discipline"),
+    ("lock not released", "check-lock-discipline"),
+    ("lock held on return", "check-lock-discipline"),
+    ("lock held on error", "check-lock-discipline"),
+    ("spinlock held", "check-lock-discipline"),
+    ("mutex held", "check-lock-discipline"),
+    ("deadlock", "check-lock-discipline"),
+    ("lock discipline", "check-lock-discipline"),
+    ("without unlocking", "check-lock-discipline"),
+    ("resource leak", "check-resource-leak"),
+    ("memory leak", "check-resource-leak"),
+    ("leak on error", "check-resource-leak"),
+    ("not freed", "check-resource-leak"),
+    ("missing free", "check-resource-leak"),
+    ("missing kfree", "check-resource-leak"),
+    ("leaked on error path", "check-resource-leak"),
+    ("allocated but not freed", "check-resource-leak"),
+    ("leak in error handling", "check-resource-leak"),
+    ("null pointer dereference", "check-null-propagation"),
+    ("null dereference", "check-null-propagation"),
+    ("null propagation", "check-null-propagation"),
+    ("unchecked null", "check-null-propagation"),
+    ("missing null check", "check-null-propagation"),
+    ("null pointer", "check-null-propagation"),
+    ("dereference without check", "check-null-propagation"),
+    ("use without null check", "check-null-propagation"),
+    ("integer narrowing", "check-integer-narrowing"),
+    ("integer widening", "check-integer-narrowing"),
+    ("truncation", "check-integer-narrowing"),
+    ("narrowing conversion", "check-integer-narrowing"),
+    ("implicit cast", "check-integer-narrowing"),
+    ("type truncation", "check-integer-narrowing"),
+    ("loss of data", "check-integer-narrowing"),
+    ("size_t to int", "check-integer-narrowing"),
 ]
 
 
@@ -131,7 +179,26 @@ def hypothesis_to_cocci_check(hypothesis: str) -> Optional[str]:
         "rcu_dereference", "rcu_read_lock", "rcu lock",
         "rcu grace period", "rcu protection",
     )):
+        rule = _COCCI_RULES_DIR / "rcu_dereference_outside_rcu.cocci"
+        if rule.exists():
+            return str(rule)
         rule = _COCCI_RULES_DIR / "rcu_no_lock.cocci"
+        if rule.exists():
+            return str(rule)
+
+    if any(kw in hyp_lower for kw in (
+        "lock scope", "lock gap", "accessed after unlock",
+        "outside lock", "unprotected access",
+    )):
+        rule = _COCCI_RULES_DIR / "lock_scope_gap.cocci"
+        if rule.exists():
+            return str(rule)
+
+    if any(kw in hyp_lower for kw in (
+        "lock ordering", "deadlock", "abba",
+        "lock order", "lock inversion",
+    )):
+        rule = _COCCI_RULES_DIR / "lock_order_violation.cocci"
         if rule.exists():
             return str(rule)
 
@@ -169,10 +236,17 @@ def hypothesis_to_cocci_check(hypothesis: str) -> Optional[str]:
             return str(rule)
 
     if any(kw in hyp_lower for kw in (
-        "toctou", "time-of-check", "double fetch",
-        "read from user", "copy_from_user",
+        "double fetch", "read from user", "copy_from_user",
     )):
         rule = _COCCI_RULES_DIR / "double_fetch.cocci"
+        if rule.exists():
+            return str(rule)
+
+    if any(kw in hyp_lower for kw in (
+        "toctou", "time-of-check", "time of check",
+        "check-then-use", "check-use",
+    )) or re.search(r"check.*then.*use", hyp_lower):
+        rule = _COCCI_RULES_DIR / "toctou_check_use.cocci"
         if rule.exists():
             return str(rule)
 
@@ -201,10 +275,24 @@ def hypothesis_to_cocci_check(hypothesis: str) -> Optional[str]:
             return str(rule)
 
     if any(kw in hyp_lower for kw in (
+        "memory barrier", "smp_wmb",
+        "smp_rmb", "smp_mb", "write ordering",
+        "missing barrier", "reorder",
+    )) or re.search(r"store.*load", hyp_lower):
+        rule = _COCCI_RULES_DIR / "missing_memory_barrier.cocci"
+        if rule.exists():
+            return str(rule)
+
+    if re.search(r"atomic.*race|check.*then.*act|atomic_read", hyp_lower):
+        rule = _COCCI_RULES_DIR / "atomic_check_then_act.cocci"
+        if rule.exists():
+            return str(rule)
+
+    if any(kw in hyp_lower for kw in (
         "race condition", "use-after-free", "use after free",
-        "after unlock", "freed while", "after.*lock.*released",
+        "after unlock", "freed while",
         "concurrent", "non-atomic",
-    )):
+    )) or re.search(r"after.*lock.*released", hyp_lower):
         rule = _COCCI_RULES_DIR / "use_after_unlock.cocci"
         if rule.exists():
             return str(rule)

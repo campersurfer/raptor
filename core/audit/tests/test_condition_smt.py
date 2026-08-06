@@ -394,22 +394,29 @@ class TestSignedMismatch:
 
 
 class TestOffByOne:
-    def test_strncpy_off_by_one(self):
+    def test_strncat_off_by_one(self):
         g = _guard("len <= BUF", resolvable=True, concrete_values={"BUF": "256"})
-        sg = _sg("strncpy", [g])
+        sg = _sg("strncat", [g])
         results = check_off_by_one(sg, buffer_size=256)
         assert len(results) == 1
         assert results[0].feasible is True
         assert "off-by-one" in results[0].reasoning
         assert results[0].witness == {"len": 256}
 
-    def test_strncpy_strict_less_off_by_one(self):
+    def test_strncat_strict_less_off_by_one(self):
         g = _guard("len < SIZE", resolvable=True, concrete_values={"SIZE": "257"})
-        sg = _sg("strncpy", [g])
+        sg = _sg("strncat", [g])
         results = check_off_by_one(sg, buffer_size=256)
         assert len(results) == 1
         assert results[0].feasible is True
         assert results[0].witness == {"len": 256}
+
+    def test_strncpy_not_off_by_one(self):
+        """strncpy writes exactly n bytes, no +1 — should not trigger."""
+        g = _guard("len <= BUF", resolvable=True, concrete_values={"BUF": "256"})
+        sg = _sg("strncpy", [g])
+        results = check_off_by_one(sg, buffer_size=256)
+        assert len(results) == 0
 
     def test_memcpy_not_null_terminated(self):
         g = _guard("len <= BUF", resolvable=True, concrete_values={"BUF": "256"})
@@ -505,7 +512,20 @@ class TestCheckRaceProtection:
         r = check_race_protection(src)
         assert r.protected is True
 
-    def test_rcu_accessor_counted(self):
+    def test_rcu_accessor_in_rcu_scope(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    rcu_read_lock();\n"
+            "    struct baz *p = rcu_dereference(b->ptr);\n"
+            "    use(p);\n"
+            "    rcu_read_unlock();\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_rcu_accessor_outside_rcu_scope(self):
         from core.audit.condition_smt import check_race_protection
         src = (
             "void foo(struct bar *b) {\n"
@@ -514,7 +534,7 @@ class TestCheckRaceProtection:
             "}\n"
         )
         r = check_race_protection(src)
-        assert r.protected is True
+        assert r.protected is False
 
     def test_atomic_accessor_counted(self):
         from core.audit.condition_smt import check_race_protection

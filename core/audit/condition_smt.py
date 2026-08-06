@@ -502,8 +502,7 @@ def check_off_by_one(
         return []
 
     null_term_sinks = frozenset({
-        "strncpy", "strncat", "strlcpy", "strlcat",
-        "snprintf", "vsnprintf",
+        "strncat",
     })
     api_base = sink_guard.sink_api.split(".")[-1] if "." in sink_guard.sink_api else sink_guard.sink_api
     if api_base not in null_term_sinks:
@@ -706,7 +705,7 @@ def _z3_dispatch(
     if api_base in memcpy_sinks and buffer_size is not None:
         return _z3_overflow_check(constraints, buffer_size)
     elif api_base in alloc_sinks:
-        return _z3_integer_overflow_check(constraints)
+        return _z3_alloc_overflow_check(constraints)
 
     return _z3_consistency_check(constraints)
 
@@ -769,7 +768,7 @@ def _z3_overflow_check(
     return (False, f"guard sufficient: all constrained vars ≤ {buffer_size}", None)
 
 
-def _z3_integer_overflow_check(
+def _z3_alloc_overflow_check(
     constraints: List[BoundsConstraint],
 ) -> Tuple[bool, str, Optional[Dict[str, int]]]:
     """Z3: Can an allocation size integer-overflow given the constraints?"""
@@ -887,7 +886,7 @@ def _z3_dispatch_v2(args: tuple):
     elif tag == "integer_narrowing":
         return _z3_integer_narrowing_check(args[1], args[2], args[3], args[4])
     elif tag == "integer_overflow":
-        return _z3_integer_overflow_check(args[1], args[2], args[3], args[4])
+        return _z3_integer_overflow_check(args[1], args[2], args[3])
     return None
 
 
@@ -1297,16 +1296,16 @@ def check_auth_bypass(source: str) -> AuthBypassResult:
         if not bypassed:
             continue
 
-        # Cascading permission function: if any bypassed auth function
-        # also appears BEFORE the early return, this function is itself
-        # a permission checker with intentional early-out paths.
-        bypassed_func_names = {
-            afunc for aline, _, afunc in auth_checks if aline > ret_line
+        # Cascading permission function: if the exact same auth call
+        # (same function AND arguments) appears both before and after
+        # the early return, this is an intentional early-out path.
+        bypassed_calls = {
+            call for aline, _, call in auth_checks if aline > ret_line
         }
-        earlier_func_names = {
-            afunc for aline, _, afunc in auth_checks if aline < ret_line
+        earlier_calls = {
+            call for aline, _, call in auth_checks if aline < ret_line
         }
-        if bypassed_func_names & earlier_func_names:
+        if bypassed_calls & earlier_calls:
             continue
 
         z3_result = _try_z3_auth_bypass(guard_text, bypassed)
@@ -1331,7 +1330,11 @@ def check_auth_bypass(source: str) -> AuthBypassResult:
 def _extract_auth_checks(
     lines: List[str],
 ) -> List[Tuple[int, str, str]]:
-    """Extract (line_idx, check_type, function_name) for auth checks."""
+    """Extract (line_idx, check_type, call_text) for auth checks.
+
+    call_text includes function name and arguments so that e.g.
+    capable(CAP_SYS_ADMIN) and capable(CAP_NET_ADMIN) are distinct.
+    """
     results: List[Tuple[int, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
@@ -1340,9 +1343,23 @@ def _extract_auth_checks(
         for pattern, check_type in _AUTH_CHECK_PATTERNS:
             m = pattern.search(line)
             if m:
-                results.append((i, check_type, m.group(1)))
+                call_text = _extract_call_text(line, m.start())
+                results.append((i, check_type, call_text))
                 break
     return results
+
+
+def _extract_call_text(line: str, start: int) -> str:
+    """Extract 'func(args)' starting at start position."""
+    depth = 0
+    for i in range(start, len(line)):
+        if line[i] == "(":
+            depth += 1
+        elif line[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return line[start:i + 1].strip()
+    return line[start:].strip()
 
 
 def _extract_success_returns(lines: List[str]) -> List[int]:
@@ -1507,7 +1524,12 @@ def check_lock_discipline(
             if ret_line <= acq_line:
                 continue
 
-            if any(ul < ret_line and ul > acq_line for ul in unlock_lines):
+            acq_indent = len(lines[acq_line]) - len(lines[acq_line].lstrip())
+            if any(
+                ul < ret_line and ul > acq_line
+                and (len(lines[ul]) - len(lines[ul].lstrip())) <= acq_indent
+                for ul in unlock_lines
+            ):
                 continue
 
             ret_text = lines[ret_line].strip()
@@ -2075,19 +2097,21 @@ def _null_guarded_return(
 
     Pattern: if (!ptr) return -ENOMEM; — this is BEFORE any use,
     so there's nothing to leak (the alloc failed).
+
+    Only returns True if ret_line is INSIDE the null-check block (within
+    3 lines of the check).  A return further away is after the alloc
+    succeeded and may leak.
     """
+    null_pats = [
+        re.compile(rf"if\s*\(\s*!{re.escape(var_name)}\s*\)"),
+        re.compile(rf"if\s*\(\s*{re.escape(var_name)}\s*==\s*NULL\s*\)"),
+        re.compile(rf"if\s*\(\s*IS_ERR\s*\(\s*{re.escape(var_name)}\s*\)\s*\)"),
+    ]
     for i in range(alloc_line + 1, min(ret_line + 1, len(lines))):
         line = lines[i]
-        if re.search(rf"if\s*\(\s*!{re.escape(var_name)}\s*\)", line):
-            return True
-        if re.search(
-            rf"if\s*\(\s*{re.escape(var_name)}\s*==\s*NULL\s*\)", line,
-        ):
-            return True
-        if re.search(
-            rf"if\s*\(\s*IS_ERR\s*\(\s*{re.escape(var_name)}\s*\)\s*\)", line,
-        ):
-            return True
+        if any(p.search(line) for p in null_pats):
+            if ret_line <= i + 3:
+                return True
     return False
 
 
@@ -2300,7 +2324,11 @@ def check_null_propagation(
         if first_deref is None:
             continue
 
-        if null_check is not None and null_check < first_deref:
+        if (
+            null_check is not None
+            and null_check < first_deref
+            and _null_check_exits(lines, null_check)
+        ):
             continue
 
         return NullPropagationResult(
@@ -2338,6 +2366,19 @@ def _build_nullable_re(extra: frozenset = frozenset()) -> re.Pattern:
     names = _NULLABLE_CALL_NAMES | extra
     alts = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
     return re.compile(rf"\b(\w+)\s*=\s*({alts})\s*\(")
+
+
+_EXIT_RE = re.compile(
+    r"\b(return\b|goto\b|break\b|abort\s*\(|BUG\s*\(|panic\s*\()",
+)
+
+
+def _null_check_exits(lines: List[str], check_line: int) -> bool:
+    """Verify the null-check block contains an exit (return/goto/break)."""
+    for i in range(check_line, min(check_line + 4, len(lines))):
+        if _EXIT_RE.search(lines[i]):
+            return True
+    return False
 
 
 def _extract_nullable_assigns(
@@ -3607,37 +3648,66 @@ def check_race_protection(
                 lock_scopes.append((acq_line, j))
                 break
 
-    # Also treat rcu_read_lock..rcu_read_unlock as a scope
+    # rcu_read_lock..rcu_read_unlock scopes
+    rcu_scopes: List[Tuple[int, int]] = []
     rcu_lock_re = re.compile(r"\brcu_read_lock\s*\(\s*\)")
     rcu_unlock_re = re.compile(r"\brcu_read_unlock\s*\(\s*\)")
     for i, line in enumerate(lines):
         if rcu_lock_re.search(line):
             for j in range(i + 1, min(len(lines), i + 200)):
                 if rcu_unlock_re.search(lines[j]):
-                    lock_scopes.append((i, j))
+                    rcu_scopes.append((i, j))
                     break
+    lock_scopes.extend(rcu_scopes)
+
+    # preempt_disable / local_irq_save scopes (needed for per-CPU safety)
+    preempt_scopes: List[Tuple[int, int]] = []
+    preempt_acq_re = re.compile(
+        r"\b(preempt_disable|local_irq_save|local_irq_disable"
+        r"|get_cpu|migrate_disable)\s*\(",
+    )
+    preempt_rel_re = re.compile(
+        r"\b(preempt_enable|local_irq_restore|local_irq_enable"
+        r"|put_cpu|migrate_enable)\s*\(",
+    )
+    for i, line in enumerate(lines):
+        if preempt_acq_re.search(line):
+            for j in range(i + 1, min(len(lines), i + 200)):
+                if preempt_rel_re.search(lines[j]):
+                    preempt_scopes.append((i, j))
+                    break
+    lock_scopes.extend(preempt_scopes)
 
     def _in_lock_scope(line_idx: int) -> bool:
         return any(start <= line_idx <= end for start, end in lock_scopes)
 
-    # Identify local-variable init dereferences: `type *var = ptr->field;`
-    # at the top of the function. These read from caller-guaranteed objects
-    # and are not racy.
-    first_lock_line = min(
-        (s for s, _ in lock_scopes), default=len(lines)
-    )
-    init_deref_re = re.compile(
-        r"^\s+(?:struct\s+\w+\s+\*|[\w]+\s+\*?)\w+\s*=\s*\w+->\w+"
-    )
+    def _in_rcu_scope(line_idx: int) -> bool:
+        return any(start <= line_idx <= end for start, end in rcu_scopes)
+
+    def _in_preempt_scope(line_idx: int) -> bool:
+        return any(start <= line_idx <= end for start, end in preempt_scopes)
+
+    # Init dereferences of function parameters before any lock.
+    # Pattern: `type *var = param->field;` where param is a function arg.
+    # Only when locks exist — without locks there is no safe pre-lock zone.
     init_lines: set[int] = set()
-    for i in range(min(first_lock_line, len(lines))):
-        stripped = lines[i].lstrip()
-        if not stripped or stripped.startswith("//") or stripped.startswith("/*"):
-            continue
-        if stripped.startswith("*") and not stripped.startswith("*/"):
-            continue
-        if init_deref_re.match(lines[i]):
-            init_lines.add(i)
+    if lock_scopes:
+        param_names: set[str] = set()
+        sig_re = re.compile(r"\b\w+\s*\*\s*(\w+)")
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if "{" in stripped:
+                for m in sig_re.finditer(line):
+                    param_names.add(m.group(1))
+                break
+        first_lock_line = min(s for s, _ in lock_scopes)
+        init_deref_re = re.compile(
+            r"^\s+(?:struct\s+\w+\s+\*|[\w]+\s+\*?)\w+\s*=\s*(\w+)->\w+"
+        )
+        for i in range(min(first_lock_line, len(lines))):
+            m = init_deref_re.match(lines[i])
+            if m and m.group(1) in param_names:
+                init_lines.add(i)
 
     total = 0
     protected = 0
@@ -3660,9 +3730,9 @@ def check_race_protection(
                 protected += 1
             elif _ATOMIC_ACCESSOR_RE.search(line):
                 protected += 1
-            elif _RCU_ACCESSOR_RE.search(line):
+            elif _RCU_ACCESSOR_RE.search(line) and _in_rcu_scope(i):
                 protected += 1
-            elif _PER_CPU_RE.search(line):
+            elif _PER_CPU_RE.search(line) and _in_preempt_scope(i):
                 protected += 1
             elif i in init_lines:
                 protected += 1

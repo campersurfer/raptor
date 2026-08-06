@@ -39,6 +39,8 @@ _CWE_TOOL_MAP: dict[str, frozenset[str]] = {
     "CWE-191": frozenset({"prefilter", "smt"}),                   # integer underflow
     "CWE-193": frozenset({"prefilter", "smt"}),                   # off-by-one
     "CWE-476": frozenset({"codeql", "coccinelle"}),               # null deref
+    "CWE-362": frozenset({"coccinelle"}),                         # race condition
+    "CWE-667": frozenset({"coccinelle"}),                         # improper locking
 
     # Injection
     "CWE-78":  frozenset({"prefilter", "semgrep", "codeql", "joern"}),  # OS command
@@ -140,7 +142,7 @@ def _extract_cwes(
     """
     cwes: list[str] = []
 
-    for m in _CWE_PATTERN.finditer(cwe_field):
+    for m in _CWE_PATTERN.finditer(cwe_field or ""):
         cwes.append(f"CWE-{m.group(1)}")
 
     combined = f"{mechanism} {hypothesis}".lower()

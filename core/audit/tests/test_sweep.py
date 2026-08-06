@@ -690,6 +690,10 @@ class TestPromoteCleanRefuted:
         result = self._result([outcome])
 
         monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_smt_verb",
+            lambda h: "check-lock-discipline",
+        )
+        monkeypatch.setattr(
             "core.audit.orchestrator._run_tool_chain",
             lambda *a, **kw: ["smt:check-lock-discipline"],
         )
@@ -731,6 +735,10 @@ class TestPromoteCleanRefuted:
         result = self._result([outcome])
 
         monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_smt_verb",
+            lambda h: "check-resource-leak",
+        )
+        monkeypatch.setattr(
             "core.audit.orchestrator._run_tool_chain",
             lambda *a, **kw: ["smt:check-resource-leak"],
         )
@@ -754,6 +762,11 @@ class TestPromoteCleanRefuted:
             {"mechanism": "missing unlock on error", "confidence": "refuted"},
         ])
         result = self._result([outcome])
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_smt_verb",
+            lambda h: "check-lock-discipline",
+        )
 
         def mock_chain(*a, **kw):
             calls.append(kw.get("hypothesis", ""))

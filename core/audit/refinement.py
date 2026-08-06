@@ -262,3 +262,175 @@ def _describe_tool_result(
         return "no taint flows found"
 
     return "dispatched, result not captured"
+
+
+def dispatch_suggestion(
+    suggestion: str,
+    outcome: Any,
+    ctx: Dict[str, Any],
+    config: Any,
+) -> List[Dict[str, str]]:
+    """Dispatch a tool_query_suggestion as a real tool call.
+
+    Parses the free-text suggestion and routes to the appropriate
+    mechanical tool. Returns a list of tool results (same format as
+    collect_tool_results).
+    """
+    if not suggestion:
+        return []
+
+    results: List[Dict[str, str]] = []
+    suggestion_lower = suggestion.lower()
+
+    try:
+        from .hypothesis_mapping import (
+            hypothesis_to_smt_verb,
+            hypothesis_to_cocci_check,
+            hypothesis_to_semgrep_rule,
+        )
+
+        smt_verb = hypothesis_to_smt_verb(suggestion)
+        if smt_verb:
+            result = _dispatch_smt(
+                smt_verb, suggestion, outcome, ctx, config,
+            )
+            if result:
+                results.append(result)
+                return results
+
+        cocci_rule = hypothesis_to_cocci_check(suggestion)
+        if cocci_rule:
+            result = _dispatch_coccinelle(
+                cocci_rule, outcome, ctx, config,
+            )
+            if result:
+                results.append(result)
+                return results
+
+        if any(kw in suggestion_lower for kw in (
+            "semgrep", "pattern", "rule", "regex",
+        )):
+            rule_path = hypothesis_to_semgrep_rule(
+                suggestion, ctx.get("file", ""),
+            )
+            if rule_path:
+                result = _dispatch_semgrep(
+                    rule_path, outcome, ctx, config,
+                )
+                if result:
+                    results.append(result)
+                    return results
+
+    except ImportError:
+        logger.debug("hypothesis_mapping import failed", exc_info=True)
+
+    return results
+
+
+def _dispatch_smt(
+    smt_verb: str,
+    suggestion: str,
+    outcome: Any,
+    ctx: Dict[str, Any],
+    config: Any,
+) -> Dict[str, str] | None:
+    """Run an SMT check based on the suggestion."""
+    try:
+        from .sweep import run_smt_verb_direct
+
+        source = ctx.get("source", "")
+        hypothesis = getattr(outcome, "hypothesis", "") or suggestion
+        file_path = ctx.get("file", "")
+
+        result = run_smt_verb_direct(
+            verb=smt_verb,
+            source=source,
+            hypothesis=hypothesis,
+            file_path=file_path,
+            function_name=ctx.get("function", ""),
+        )
+        if result:
+            status = "confirmed" if result.outcome == "confirmed" else result.outcome
+            return {
+                "tool": f"smt:{smt_verb}",
+                "result": f"{status}: {result.raw_output[:200] if result.raw_output else 'no detail'}",
+            }
+    except Exception:
+        logger.debug("SMT dispatch failed", exc_info=True)
+    return None
+
+
+def _dispatch_coccinelle(
+    rule_path: str,
+    outcome: Any,
+    ctx: Dict[str, Any],
+    config: Any,
+) -> Dict[str, str] | None:
+    """Run a Coccinelle rule based on the suggestion."""
+    try:
+        from .sweep import run_coccinelle_sweep
+        from pathlib import Path
+
+        target = getattr(config, "target_path", None)
+        if not target:
+            return None
+
+        file_path = ctx.get("file", "")
+        func_name = ctx.get("function", "")
+        line_start = ctx.get("line_start", 0)
+        line_end = ctx.get("line_end", 0)
+
+        result = run_coccinelle_sweep(
+            cocci_rule=rule_path,
+            target_path=target,
+            file_path=file_path,
+            function_name=func_name,
+            line_start=line_start,
+            line_end=line_end,
+        )
+        if result:
+            return {
+                "tool": f"coccinelle:{Path(rule_path).stem}",
+                "result": f"{result.outcome}: {len(result.matches)} match(es)",
+            }
+    except Exception:
+        logger.debug("Coccinelle dispatch failed", exc_info=True)
+    return None
+
+
+def _dispatch_semgrep(
+    rule_path: str,
+    outcome: Any,
+    ctx: Dict[str, Any],
+    config: Any,
+) -> Dict[str, str] | None:
+    """Run a Semgrep rule based on the suggestion."""
+    try:
+        from .sweep import run_semgrep_sweep
+        from pathlib import Path
+
+        target = getattr(config, "target_path", None)
+        if not target:
+            return None
+
+        file_path = ctx.get("file", "")
+        func_name = ctx.get("function", "")
+        line_start = ctx.get("line_start", 0)
+        line_end = ctx.get("line_end", 0)
+
+        result = run_semgrep_sweep(
+            rule_config=rule_path,
+            target_path=target,
+            file_path=file_path,
+            function_name=func_name,
+            line_start=line_start,
+            line_end=line_end,
+        )
+        if result:
+            return {
+                "tool": f"semgrep:{Path(rule_path).stem}",
+                "result": f"{result.outcome}: {len(result.matches)} match(es)",
+            }
+    except Exception:
+        logger.debug("Semgrep dispatch failed", exc_info=True)
+    return None

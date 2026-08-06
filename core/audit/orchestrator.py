@@ -8666,11 +8666,27 @@ def _promote_clean_refuted(
             line_end,
         )
 
+        cwe = ""
+        if outcome.review_result:
+            cwe = (
+                outcome.review_result.get("cwe_class")
+                or outcome.review_result.get("cwe")
+                or ""
+            )
+
         for h in refuted:
             mechanism = h.get("mechanism", "")
             if not mechanism:
                 continue
-            smt_verb = _hypothesis_to_smt_verb(mechanism)
+            smt_verb = None
+            if cwe:
+                try:
+                    from .cwe_dispatch import smt_verb_for_cwe
+                    smt_verb = smt_verb_for_cwe(cwe)
+                except ImportError:
+                    pass
+            if not smt_verb:
+                smt_verb = _hypothesis_to_smt_verb(mechanism)
             if not smt_verb:
                 continue
 

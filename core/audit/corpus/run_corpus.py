@@ -272,9 +272,12 @@ def _run_audit(
     When *joern_server* is provided the caller owns its lifecycle;
     otherwise a server is started and stopped internally.
     """
-    from .label import FunctionLabel
+    try:
+        from .label import FunctionLabel  # noqa: F401
+    except ImportError:
+        pass
 
-    by_repo: Dict[str, List[FunctionLabel]] = {}
+    by_repo: Dict[str, list] = {}
     for label in labels:
         by_repo.setdefault(label.source.repo, []).append(label)
 
