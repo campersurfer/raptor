@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from core.audit.sweep import (
     SarifCache,
     SweepResult,
@@ -616,3 +618,254 @@ class TestMechanicalCheckToSemgrep:
     def test_empty_string_returns_none(self):
         result = mechanical_check_to_semgrep("")
         assert result is None
+
+
+# ── _promote_clean_refuted ──────────────────────────────────────────────
+
+
+class TestPromoteCleanRefuted:
+    """Tests for _promote_clean_refuted — SMT-only promotion of clean
+    outcomes where the LLM generated then refuted an arithmetic hypothesis."""
+
+    def _outcome(self, file, function, status="clean", hypotheses=None, line=0):
+        from core.audit.orchestrator import ReviewOutcome
+        o = ReviewOutcome(
+            file=file, function=function, status=status,
+            body="", hypothesis="", line=line,
+        )
+        o.hypotheses = hypotheses or []
+        o.review_result = {"hypotheses": hypotheses or []}
+        return o
+
+    def _result(self, outcomes):
+        from core.audit.orchestrator import OrchestratorResult
+        r = OrchestratorResult()
+        r.outcomes = list(outcomes)
+        r.clean = sum(1 for o in outcomes if o.status == "clean")
+        r.findings = sum(1 for o in outcomes if o.status == "finding")
+        r.suspicious = sum(1 for o in outcomes if o.status == "suspicious")
+        r.sweep_promoted = 0
+        return r
+
+    def _config(self, tmp_path):
+        from core.audit.orchestrator import OrchestratorConfig
+        src = tmp_path / "src.c"
+        src.write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        return OrchestratorConfig(target_path=tmp_path, out_dir=out)
+
+    def test_skips_non_clean(self, tmp_path):
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", status="suspicious", hypotheses=[
+            {"mechanism": "integer overflow", "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "suspicious"
+
+    def test_skips_no_refuted_hypotheses(self, tmp_path):
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": "null deref", "confidence": "confirmed"},
+        ])
+        result = self._result([outcome])
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "clean"
+
+    def test_skips_non_smt_hypotheses(self, tmp_path):
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": "TOCTOU race condition", "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "clean"
+
+    def test_promotes_when_smt_confirms(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": "lock not released on error", "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: ["smt:check-lock-discipline"],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "void f() { mutex_lock(&m); return; }",
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "finding"
+        assert "clean-refuted:smt:check-lock-discipline" in result.outcomes[0].evidence_tool
+        assert result.sweep_promoted == 1
+        assert result.clean == 0
+        assert result.findings == 1
+
+    def test_no_promote_when_smt_refutes(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": "integer overflow in size calc", "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: [],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "int f(int x) { return x + 1; }",
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "clean"
+        assert result.sweep_promoted == 0
+
+    def test_blocked_by_guarded_sink(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": "resource leak on error", "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: ["smt:check-resource-leak"],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "void f() { p = kmalloc(16); }",
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._check_sink_guarded_cached",
+            lambda fn, js: "guarded",
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "clean"
+
+    def test_only_first_matching_hypothesis_checked(self, tmp_path, monkeypatch):
+        """If the first SMT-eligible refuted hypothesis confirms, stop."""
+        from core.audit.orchestrator import _promote_clean_refuted
+        calls = []
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": "lock not released", "confidence": "refuted"},
+            {"mechanism": "missing unlock on error", "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+
+        def mock_chain(*a, **kw):
+            calls.append(kw.get("hypothesis", ""))
+            return ["smt:check-lock-discipline"]
+
+        monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", mock_chain)
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "void f() { mutex_lock(&m); return; }",
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "finding"
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("mechanism,verb", [
+        ("integer overflow in size calc", "check-overflow"),
+        ("buffer overflow in memcpy", "check-oob"),
+        ("integer overflow leading to heap", "check-overflow-to-oob"),
+    ])
+    def test_vacuous_verbs_skipped(self, tmp_path, monkeypatch, mechanism, verb):
+        """Overflow/OOB verbs are vacuous without guards — must not override LLM clean."""
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome("a.c", "f", hypotheses=[
+            {"mechanism": mechanism, "confidence": "refuted"},
+        ])
+        result = self._result([outcome])
+        calls = []
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: (calls.append(1), [f"smt:{verb}"])[1],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "int f(int x) { return x + 1; }",
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "clean"
+        assert result.sweep_promoted == 0
+        assert len(calls) == 0
+
+
+class TestSweepValidateDetectionFilter:
+    """Detection-role tools must not stamp evidence in _sweep_validate."""
+
+    def test_detection_only_tools_not_stamped(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            ReviewOutcome,
+            _sweep_validate,
+        )
+        outcome = ReviewOutcome(
+            file="net/ipv4/esp4.c",
+            function="esp_output_head",
+            status="finding",
+            body="overflow in nfrags",
+            hypothesis="missing bounds check on nfrags counter",
+            line=450,
+        )
+        outcome.review_result = {"hypothesis": outcome.hypothesis}
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path / "out",
+        )
+        (tmp_path / "out").mkdir(exist_ok=True)
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: ["coccinelle:missing_bounds_check"],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "void f() { buf[n]; }",
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator.run_prefilter",
+            lambda **kw: type("R", (), {"hits": []})(),
+        )
+
+        result = _sweep_validate(outcome, config)
+        assert "coccinelle:missing_bounds_check" not in (result.evidence_tool or "")
+
+    def test_verification_tools_still_stamped(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            ReviewOutcome,
+            _sweep_validate,
+        )
+        outcome = ReviewOutcome(
+            file="net/ipv4/esp4.c",
+            function="esp_alloc_tmp",
+            status="finding",
+            body="overflow",
+            hypothesis="integer overflow in len calculation",
+            line=47,
+        )
+        outcome.review_result = {"hypothesis": outcome.hypothesis}
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path / "out",
+        )
+        (tmp_path / "out").mkdir(exist_ok=True)
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: ["smt:check-overflow"],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "int f(int x) { return x + y; }",
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator.run_prefilter",
+            lambda **kw: type("R", (), {"hits": []})(),
+        )
+
+        result = _sweep_validate(outcome, config)
+        assert "smt:check-overflow" in (result.evidence_tool or "")

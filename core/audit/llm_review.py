@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .context import format_context_for_prompt
 from .orchestrator import OrchestratorConfig, ReviewOutcome, _ContentFilterError
+from .pipeline import ReviewMode
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,33 @@ _STATUS_NO_DORMANT = {
         "the bug — if you cannot, use clean. "
         "finding = real vulnerability worth investigating."
     ),
+}
+
+_STATUS_QUALITY = {
+    "type": "string",
+    "enum": ["clean", "suspicious", "finding", "dormant"],
+    "description": (
+        "clean = reviewed, no defect found. Use clean when your "
+        "analysis concludes the function is correct, even if it "
+        "handles complex data or calls tricky APIs with correct "
+        "guards. "
+        "suspicious = possible defect, unconfirmed. You must name "
+        "the specific concern — if you cannot, use clean. "
+        "finding = confirmed defect worth investigating. "
+        "dormant = latent issue that needs specific conditions to trigger."
+    ),
+}
+
+_BUG_CLASS_FIELD = {
+    "type": "string",
+    "enum": [
+        "logic_error", "resource_leak", "error_handling",
+        "data_corruption", "concurrency", "api_misuse",
+        "arithmetic", "bounds", "null_deref", "type_confusion",
+        "memory_safety", "injection", "auth", "crypto",
+        "information_disclosure", "other",
+    ],
+    "description": "Category of the defect found.",
 }
 
 REVIEW_SCHEMA = {
@@ -424,6 +453,85 @@ REVIEW_SCHEMA = {
                 "required": ["question"],
             },
         },
+        "intent_trace": {
+            "type": "array",
+            "description": (
+                "Line-by-line walkthrough of the function comparing "
+                "programmer INTENT to actual CODE BEHAVIOUR. Cover "
+                "every logically distinct block (guard, loop, call, "
+                "return). For each block, state what the programmer "
+                "intended AND what the code actually does. When they "
+                "diverge, explain the gap — that gap IS the bug. "
+                "Omit only for trivial functions (accessors, stubs). "
+                "This trace is the auditable artefact: a future "
+                "reviewer reads it to understand what was checked."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "lines": {
+                        "type": "string",
+                        "description": (
+                            "Line range, e.g. '42-45' or '42'."
+                        ),
+                    },
+                    "intent": {
+                        "type": "string",
+                        "description": (
+                            "What the programmer intended this block to do. "
+                            "Infer from names, comments, control flow, and "
+                            "calling convention."
+                        ),
+                    },
+                    "actual": {
+                        "type": "string",
+                        "description": (
+                            "What the code actually does. Be precise about "
+                            "edge cases, overflow, signedness, aliasing."
+                        ),
+                    },
+                    "diverges": {
+                        "type": "boolean",
+                        "description": (
+                            "true when intent and actual differ — the gap "
+                            "may be a bug."
+                        ),
+                    },
+                },
+                "required": ["lines", "intent", "actual"],
+            },
+        },
+        "relies_on": {
+            "type": "array",
+            "description": (
+                "Callees whose behaviour your verdict depends on. "
+                "Only list a callee when a different callee behaviour "
+                "would FLIP your verdict (e.g., you marked this clean "
+                "because validate_input() checks bounds — if it "
+                "doesn't, this function is vulnerable). Omit when "
+                "your verdict is self-contained."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "callee": {
+                        "type": "string",
+                        "description": (
+                            "Callee name (function name, or file:function "
+                            "if known)."
+                        ),
+                    },
+                    "assumption": {
+                        "type": "string",
+                        "description": (
+                            "What you assume this callee does, e.g. "
+                            "'validates input length before use'."
+                        ),
+                    },
+                },
+                "required": ["callee", "assumption"],
+            },
+        },
         "verdict_rationale": {
             "type": "string",
             "description": (
@@ -456,6 +564,7 @@ REVIEW_SCHEMA_BLIND = {
         "observations": REVIEW_SCHEMA["properties"]["observations"],
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
         "reading_list": REVIEW_SCHEMA["properties"]["reading_list"],
+        "intent_trace": REVIEW_SCHEMA["properties"]["intent_trace"],
         "verdict_rationale": REVIEW_SCHEMA["properties"]["verdict_rationale"],
         "status": _STATUS_NO_DORMANT,
     },
@@ -465,9 +574,9 @@ REVIEW_SCHEMA_BLIND = {
     ],
 }
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "You are a security auditor reviewing code. "
-    "Do NOT ask 'is there a vulnerability here?' — that invites "
+_SYSTEM_PROMPT_TEMPLATE = (
+    "You are {role}. "
+    "Do NOT ask '{bad_question}' — that invites "
     "pattern matching. Reason from first principles about assumptions.\n\n"
     "For each function, work through these steps:\n\n"
     "STEP 1 — UNDERSTAND: Answer four questions.\n"
@@ -477,13 +586,20 @@ _DEFAULT_SYSTEM_PROMPT = (
     "global state, caller guarantees)\n"
     "- What's surprising? (asymmetric error handling, implicit "
     "conversions, dead code, inconsistencies)\n\n"
+    "STEP 1b — INTENT TRACE: Walk through each logically distinct "
+    "block of the function and record what the programmer intended "
+    "(from names, comments, control flow, calling conventions) vs "
+    "what the code actually does. Note every divergence — these "
+    "are your hypothesis seeds. Cover guards, loops, calls, and "
+    "returns. Skip only for trivial accessors/stubs. Output this "
+    "in the intent_trace field.\n\n"
     "STEP 2 — HYPOTHESIZE: For each trust relationship, ask: under "
     "what conditions could this assumption be violated? Frame as a "
     "testable hypothesis with a specific mechanism, not 'this could "
     "be dangerous.' Check the CALLERS and UPSTREAM code in the context "
     "to see whether the precondition can actually occur.\n\n"
     "STEP 3 — EVALUATE: A hypothesis is a finding ONLY if the "
-    "precondition is reachable — an attacker can actually trigger it "
+    "precondition is reachable — {reachability_actor} can actually trigger it "
     "through the callers shown in context. Discard hypotheses where:\n"
     "- The caller already validates the input before passing it here\n"
     "- The precondition requires the caller to be buggy (that's a "
@@ -500,6 +616,32 @@ _DEFAULT_SYSTEM_PROMPT = (
     "type's API says 'not safe for concurrent use by callers' — "
     "the contract refers to external callers, not internal "
     "synchronisation the type itself is responsible for\n"
+    "CONCURRENCY DEEP CHECK: If the function touches ANY shared "
+    "state (struct fields, globals, refcounts, credentials), verify "
+    "these concurrency patterns:\n"
+    "  (a) Lock-domain mismatch: the function reads credential or "
+    "ownership state under one lock (or RCU) but checks a related "
+    "property under a different lock — another thread can change "
+    "state between the two reads. Two reads that MUST be atomic "
+    "but are protected by different mechanisms are a TOCTOU.\n"
+    "  (b) Early lock release: the function acquires a lock, reads "
+    "state, releases the lock, then uses the state — a concurrent "
+    "free/modification between release and use is a race. Watch "
+    "for RLock/RUnlock releasing before the read values are "
+    "consumed, and for context cancellation closing shared "
+    "resources between check and use.\n"
+    "  (c) Callback/wakeup races: if a callback, wakeup handler, "
+    "or softirq can fire concurrently with this function and both "
+    "touch the same list, queue, or refcount, check whether the "
+    "synchronisation covers both the add AND remove paths — a "
+    "missing lock on one side creates a use-after-free window.\n"
+    "Do NOT assume locking is 'sufficient' just because locks are "
+    "present — verify that the SAME lock covers ALL related "
+    "accesses that must be atomic together. Conversely, do NOT "
+    "claim a race without naming: (1) the specific field or "
+    "variable that is unprotected, (2) the specific line where it "
+    "is accessed without the lock, and (3) the concurrent code "
+    "path that modifies it. 'A race could exist' is not a finding.\n"
     "- The precondition is extreme (UINT_MAX-length strings, exact "
     "byte-aligned truncation)\n"
     "- Your hypothesis depends on an UNVERIFIED assumption about types, "
@@ -527,8 +669,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "STEP 4 — VERIFY YOUR WORK: Before emitting a finding, check:\n"
     "- Did you verify every type and size assumption against actual "
     "declarations, or did you assume 'if it were signed'?\n"
-    "- Can you name the specific line where the vulnerability occurs "
-    "and the exact attacker-controlled value that reaches it?\n"
+    "- Can you name the specific line where {defect_noun} occurs "
+    "and the exact {input_noun} that reaches it?\n"
     "- Is the bug in THIS function's logic, or are you flagging a "
     "callee's bug? (Flag the callee instead.)\n"
     "- Did you check for bounds checks ABOVE each dangerous call? "
@@ -541,7 +683,10 @@ _DEFAULT_SYSTEM_PROMPT = (
     "function's logic, not a hypothetical caller misuse. A hypothesis "
     "you already refuted is not a bug. If every hypothesis was refuted "
     "or depends on the caller violating the function's contract, the "
-    "verdict is clean.\n\n"
+    "verdict is clean. Suspicious means you found a REAL defect but "
+    "cannot prove it is exploitable. 'The code looks complex' or "
+    "'the locking seems tricky but I cannot identify a specific race' "
+    "is NOT a defect — it is clean.\n\n"
     "TOOL EVIDENCE AND CALLER CONTEXT: Mechanical tools (Semgrep, "
     "Coccinelle, CodeQL) match patterns within a single function. "
     "They cannot see caller context. A tool reporting 'missing bounds "
@@ -581,6 +726,66 @@ _DEFAULT_SYSTEM_PROMPT = (
     "in your reasoning."
 )
 
+_SECURITY_SLOTS = {
+    "role": "a security auditor reviewing code",
+    "bad_question": "is there a vulnerability here?",
+    "reachability_actor": "an attacker",
+    "defect_noun": "the vulnerability",
+    "input_noun": "attacker-controlled value",
+}
+
+_QUALITY_SLOTS = {
+    "role": "a code reviewer looking for defects",
+    "bad_question": "is there a bug here?",
+    "reachability_actor": "a caller",
+    "defect_noun": "the defect",
+    "input_noun": "input",
+}
+
+_DEFAULT_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(**_SECURITY_SLOTS)
+_QUALITY_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(**_QUALITY_SLOTS)
+
+
+def _system_prompt_for_mode(
+    mode: ReviewMode,
+    out_dir: Optional[Path] = None,
+) -> str:
+    base = _QUALITY_SYSTEM_PROMPT if mode.is_defect_oriented else _DEFAULT_SYSTEM_PROMPT
+    try:
+        from .learning import load_corrections, format_corrections_for_prompt
+        corrections = load_corrections(out_dir)
+        if corrections:
+            return base + format_corrections_for_prompt(corrections)
+    except Exception:
+        pass
+    return base
+
+
+def _status_for_mode(mode: ReviewMode) -> dict:
+    if mode.is_defect_oriented:
+        return _STATUS_QUALITY
+    return _STATUS_FULL
+
+
+def _schema_for_mode(mode: ReviewMode) -> dict:
+    import copy
+    base = copy.deepcopy(REVIEW_SCHEMA)
+    if mode.is_defect_oriented:
+        base["properties"]["status"] = copy.deepcopy(_status_for_mode(mode))
+        base["properties"]["hypothesis"]["description"] = (
+            "Your single strongest hypothesis for HOW this function "
+            "is defective. Name the specific mechanism: off-by-one, "
+            "resource leak, missing error check, use-after-free, "
+            "integer overflow, TOCTOU race, etc. One sentence, "
+            "mechanism first."
+        )
+        base["properties"]["bug_class"] = copy.deepcopy(_BUG_CLASS_FIELD)
+        if mode == ReviewMode.QUALITY:
+            base["properties"].pop("impact", None)
+            base["properties"].pop("preconditions", None)
+    return base
+
+
 _CONTENT_FILTER_MARKERS = (
     "content filter",
     "content_filter",
@@ -612,25 +817,53 @@ _DISMISSIVE_COUNTER = frozenset({
     "none", "n/a", "not applicable",
 })
 
-_CONTRACT_DELEGATION = frozenset({
+_CONTRACT_DELEGATION_CALLER = frozenset({
     "caller's responsibility", "caller must", "caller is responsible",
-    "violates the contract", "violation of the contract",
+    "caller responsibility", "caller contract",
     "violates the function's contract", "violates its contract",
     "bug in the caller", "buggy caller", "caller provides",
     "caller correctness", "relies on caller", "caller-side",
-    "relying on this contract", "relying on the contract",
-    "relying on a contract", "relying on its contract",
     "compile-time assertion", "compile-time guarantee",
     "_static_assert", "static_assert",
     "explicit contract", "function's contract",
     "handled upstream", "validated upstream",
     "checked by the caller", "validated by the caller",
     "bounded by the caller", "ensured by the caller",
+    "trusts its caller", "if the caller fails",
+    "precondition violation", "precondition requires",
+    "relying on this contract", "relying on the contract",
+    "relying on a contract", "relying on its contract",
+})
+
+_CONTRACT_DELEGATION_SUBJECT_AGNOSTIC = frozenset({
+    "violates the contract", "violation of the contract",
     "has a logic error", "has a bug",
     "does not perform", "does not behave",
     "is implemented incorrectly", "is broken",
     "fails to validate", "fails to check",
 })
+
+_CALLER_REFERENCE_WORDS = frozenset({
+    "caller", "upstream", "invoker", "calling function",
+    "parent function", "call site", "callsite",
+})
+
+
+def _is_contract_delegation(lower: str) -> bool:
+    """Return True if the text delegates blame to a caller/contract.
+
+    Caller-specific phrases (containing "caller", "upstream", etc.)
+    always match.  Subject-agnostic phrases ("has a bug", "fails to
+    validate") only match when a caller-referencing word co-occurs,
+    preventing false suppression when the counter describes the
+    reviewed function itself.
+    """
+    if any(d in lower for d in _CONTRACT_DELEGATION_CALLER):
+        return True
+    if any(d in lower for d in _CONTRACT_DELEGATION_SUBJECT_AGNOSTIC):
+        if any(w in lower for w in _CALLER_REFERENCE_WORDS):
+            return True
+    return False
 
 
 def _counter_hypothesis_is_compelling(counter: str) -> bool:
@@ -649,7 +882,7 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
     lower = counter.lower().strip()
     if any(d in lower for d in _DISMISSIVE_COUNTER):
         return False
-    if any(d in lower for d in _CONTRACT_DELEGATION):
+    if _is_contract_delegation(lower):
         return False
     specificity_markers = (
         "overflow", "underflow", "null", "free", "race", "inject",
@@ -658,7 +891,11 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
         "buffer", "stack", "heap", "oob", "out-of-bound",
         "attacker", "controlled", "tainted",
     )
-    return any(m in lower for m in specificity_markers)
+    if not any(m in lower for m in specificity_markers):
+        return False
+    if _is_contract_delegation(lower):
+        return False
+    return True
 
 
 def _lang_correction(filename: str) -> float:
@@ -713,6 +950,8 @@ def make_review_fn(
     blind_schema: Optional[Dict[str, Any]] = None,
     model_name: Optional[str] = None,
     escalate_clean: bool = True,
+    mode: ReviewMode = ReviewMode.SECURITY,
+    out_dir: Optional[Path] = None,
 ) -> Callable[[Dict[str, Any], OrchestratorConfig], ReviewOutcome]:
     """Build a review_fn for run_orchestrator.
 
@@ -727,15 +966,17 @@ def make_review_fn(
             overrides task_type-based selection.
         escalate_clean: When True (default), a clean verdict with a
             compelling counter-hypothesis is bumped to suspicious.
+        mode: Review mode — controls system prompt and schema when no
+            explicit overrides are given.
 
     Returns:
         A callable (context_dict, config) -> ReviewOutcome.
     """
     effective_system_prompt = (
         system_prompt if system_prompt is not None
-        else _DEFAULT_SYSTEM_PROMPT
+        else _system_prompt_for_mode(mode, out_dir=out_dir)
     )
-    deepen_schema = schema or REVIEW_SCHEMA
+    deepen_schema = schema or _schema_for_mode(mode)
     first_pass_schema = blind_schema or deepen_schema
 
     model_config_override = None
@@ -824,7 +1065,7 @@ def make_review_fn(
             if isinstance(h, dict) and h.get("mechanism")
         ]
 
-        if status == "suspicious" and hypotheses and not counter_escalated:
+        if status == "suspicious" and hypotheses:
             all_refuted = all(
                 (h.get("confidence") or "").lower() == "refuted"
                 for h in hypotheses
@@ -833,9 +1074,33 @@ def make_review_fn(
                 status = "clean"
                 result["status"] = status
                 logger.info(
-                    "all-refuted demotion %s:%s: %d hypotheses refuted",
+                    "all-refuted demotion %s:%s: %d hypotheses refuted%s",
                     ctx["file"], ctx["function"], len(hypotheses),
+                    " (overrode counter-escalation)" if counter_escalated else "",
                 )
+
+        if status in ("suspicious", "finding"):
+            rationale = (result.get("body") or "").lower()
+            _clean_phrases = (
+                "no vulnerability", "no security issue", "correctly bounded",
+                "properly validated", "safely handled", "no exploitable",
+                "function is safe", "function is clean", "no bug",
+                "all checks are present", "all paths are guarded",
+            )
+            if any(p in rationale for p in _clean_phrases):
+                hyp_text = (result.get("hypothesis") or "").lower()
+                if not any(
+                    w in hyp_text
+                    for w in ("however", "but", "despite", "although", "yet")
+                ):
+                    prior = status
+                    status = "clean"
+                    result["status"] = status
+                    logger.info(
+                        "rationale-consistency demotion %s:%s: "
+                        "rationale says clean but status was %s",
+                        ctx["file"], ctx["function"], prior,
+                    )
 
         raw_ev = result.get("evidence_tool") or ""
         evidence_tool = _normalize_evidence_tool(raw_ev)

@@ -384,17 +384,94 @@ def _find_deviations(
 # Public API
 # ---------------------------------------------------------------------------
 
+_CPG_CALLEE_CAP = 100
+_CPG_BATCH_SIZE = 25
+
+
+def _extract_callsites_cpg(
+    joern_server,
+    callee_names: frozenset[str],
+) -> List[CallSite]:
+    """Query Joern CPG for cross-file callsite data.
+
+    Batches callees into groups to avoid per-callee query overhead that
+    can deadlock the JVM under sustained load.  Caps at _CPG_CALLEE_CAP
+    callees (prioritised by name length as a proxy for specificity).
+    """
+    from .cross_function_verify import _safe_name, _run_query
+
+    safe_callees = []
+    for callee in callee_names:
+        safe = _safe_name(callee)
+        if safe is not None:
+            safe_callees.append((callee, safe))
+
+    if not safe_callees:
+        return []
+
+    safe_callees.sort(key=lambda t: -len(t[0]))
+    if len(safe_callees) > _CPG_CALLEE_CAP:
+        logger.debug(
+            "callsite_consistency: capping CPG callees %d → %d",
+            len(safe_callees), _CPG_CALLEE_CAP,
+        )
+        safe_callees = safe_callees[:_CPG_CALLEE_CAP]
+
+    sites: List[CallSite] = []
+    for batch_start in range(0, len(safe_callees), _CPG_BATCH_SIZE):
+        batch = safe_callees[batch_start:batch_start + _CPG_BATCH_SIZE]
+        names_scala = ", ".join(f'"{s}"' for _, s in batch)
+        name_to_orig = {s: orig for orig, s in batch}
+
+        query = (
+            f"val targets = List({names_scala})\n"
+            f"cpg.call.filter(c => targets.contains(c.name)).map {{ call =>\n"
+            f"  val enc = call.method.name\n"
+            f"  val fname = call.file.name.headOption.getOrElse(\"\")\n"
+            f"  val ln = call.lineNumber.getOrElse(0)\n"
+            f"  val disc = !call.inAst.isControlStructure.nonEmpty "
+            f"&& !call.inAst.isReturn.nonEmpty\n"
+            f"  val callee = call.name\n"
+            f"  (callee, enc, fname, ln, disc)\n"
+            f"}}.l"
+        )
+
+        raw = _run_query(joern_server, query)
+        if not raw:
+            continue
+
+        for item in raw:
+            if not isinstance(item, (list, tuple)) or len(item) < 5:
+                continue
+            callee_name = str(item[0])
+            orig = name_to_orig.get(callee_name, callee_name)
+            sites.append(CallSite(
+                file=str(item[2]),
+                line=int(item[3]),
+                callee=orig,
+                enclosing_function=str(item[1]),
+                discarded=str(item[4]).lower() == "true",
+            ))
+
+    return sites
+
+
 def detect_callsite_deviations(
     source_texts: Dict[str, str],
     *,
     min_sites: int = MIN_CALL_SITES,
     threshold: float = MAJORITY_THRESHOLD,
     extra_security_names: Optional[frozenset] = None,
+    joern_server=None,
 ) -> List[CallSiteDeviation]:
     """Detect call sites that deviate from the majority return-value handling.
 
     *extra_security_names*: additional callee names considered
     security-relevant (e.g. from IRIS spec store).
+
+    When *joern_server* is provided, CPG queries supplement the
+    source_texts-based extraction with cross-file callsites from the
+    entire indexed codebase.
 
     Returns deviations sorted by (security_relevant desc, confidence desc).
     """
@@ -407,6 +484,27 @@ def detect_callsite_deviations(
         else:
             cleaned = _strip_block_comments(source) if "/*" in source else source
             all_sites.extend(_extract_callsites_regex(file_path, cleaned))
+
+    if joern_server is not None and all_sites:
+        seen_callees = frozenset({s.callee for s in all_sites})
+        seen_keys = {(s.file, s.line, s.callee) for s in all_sites}
+        try:
+            cpg_sites = _extract_callsites_cpg(joern_server, seen_callees)
+            for cs in cpg_sites:
+                key = (cs.file, cs.line, cs.callee)
+                if key not in seen_keys:
+                    all_sites.append(cs)
+                    seen_keys.add(key)
+            if cpg_sites:
+                logger.debug(
+                    "callsite_consistency: CPG added %d cross-file sites",
+                    len(cpg_sites),
+                )
+        except Exception:
+            logger.debug(
+                "callsite_consistency: CPG enhancement failed",
+                exc_info=True,
+            )
 
     deviations = _find_deviations(all_sites, min_sites, threshold)
     extra = extra_security_names or frozenset()

@@ -404,6 +404,9 @@ _COCCI_DEFAULT_RULES: Dict[str, List[str]] = {
 _COCCI_SUPPORTED_KINDS = frozenset(_COCCI_DEFAULT_RULES)
 
 
+_COCCI_RULES_DIR = Path(__file__).resolve().parents[2] / "engine" / "coccinelle" / "rules"
+
+
 def try_coccinelle_resolve(
     constraint: Constraint,
     config: PropagationConfig,
@@ -411,9 +414,12 @@ def try_coccinelle_resolve(
     """Attempt to resolve a constraint via Coccinelle consistency checks.
 
     Handles postcondition, precondition, and state constraints using
-    parametric rules from engine/coccinelle/rules/.  Each constraint
-    kind maps to a set of default rules; the constraint's
-    mechanical_check field overrides the default when set.
+    rules from engine/coccinelle/rules/.  Each constraint kind maps to
+    a set of default rules; the constraint's mechanical_check field
+    overrides the default when set.
+
+    When multiple rules apply, they are batched into a single spatch
+    invocation so the target AST is parsed once.
     """
     if constraint.kind not in _COCCI_SUPPORTED_KINDS:
         return None
@@ -423,43 +429,83 @@ def try_coccinelle_resolve(
         return None
 
     try:
-        from .sweep import run_consistency_check
+        from packages.coccinelle.runner import (
+            run_rule,
+            run_rules_batched,
+            is_available,
+        )
     except ImportError:
         return None
 
+    if not is_available():
+        return None
+
     if constraint.mechanical_check:
-        rules = [constraint.mechanical_check]
+        raw_rules = [constraint.mechanical_check]
     else:
-        rules = _COCCI_DEFAULT_RULES.get(constraint.kind, [])
+        raw_rules = _COCCI_DEFAULT_RULES.get(constraint.kind, [])
 
-    all_callers: List[CallerCandidate] = []
-
-    for rule_name in rules:
+    rule_paths: List[Path] = []
+    for rule_name in raw_rules:
         if not SAFE_COCCI_RULE_RE.match(rule_name):
             logger.warning(
                 "rejected unsafe cocci rule name: %r", rule_name,
             )
             continue
+        p = Path(rule_name)
+        if not p.is_absolute():
+            p = _COCCI_RULES_DIR / rule_name
+        if p.exists():
+            rule_paths.append(p)
 
-        result = run_consistency_check(
-            target_path=config.target_path,
-            function_name=constraint.function,
-            cocci_rule=rule_name,
-        )
+    if not rule_paths:
+        return None
 
-        if result.outcome == "error":
+    _PARAMETRIC_RE = re.compile(r"identifier\s+virtual\.", re.MULTILINE)
+
+    parametric: List[Path] = []
+    batchable: List[Path] = []
+    for rp in rule_paths:
+        try:
+            head = rp.read_text()[:4096]
+        except OSError:
             continue
+        if _PARAMETRIC_RE.search(head):
+            parametric.append(rp)
+        else:
+            batchable.append(rp)
 
-        if result.outcome == "confirmed" and result.matches:
-            for m in result.matches:
-                if isinstance(m, dict) and m.get("file"):
-                    all_callers.append(CallerCandidate(
-                        file=m["file"],
-                        function=m.get("function", ""),
-                        line=m.get("line", 0),
-                        score=8,
-                        reasons=[f"coccinelle:{rule_name}"],
-                    ))
+    all_results: Dict[str, Any] = {}
+    if batchable:
+        all_results.update(run_rules_batched(
+            config.target_path,
+            batchable,
+            timeout=300,
+        ))
+
+    for rp in parametric:
+        defines = {"func": constraint.function} if constraint.function else {}
+        sr = run_rule(
+            config.target_path,
+            str(rp),
+            defines=defines,
+            timeout=300,
+        )
+        all_results[rp.stem] = sr
+
+    all_callers: List[CallerCandidate] = []
+    for rule_stem, result in all_results.items():
+        if not result.ok and not result.matches:
+            continue
+        for m in result.matches:
+            if m.file:
+                all_callers.append(CallerCandidate(
+                    file=m.file,
+                    function="",
+                    line=m.line,
+                    score=8,
+                    reasons=[f"coccinelle:{rule_stem}"],
+                ))
 
     if all_callers:
         return PropagationResult(
@@ -876,3 +922,247 @@ def _entry_reachability_verdict(
         return entry_reachability(inventory, target)
     except Exception:
         return "uncertain"
+
+
+# ── Confidence propagation ─────────────────────────────────────────
+
+_CALLER_VIOLATION_RE = re.compile(
+    r"(?:if\s+)?(?:the\s+|a\s+)?caller\s+(?:passes|provides|supplies|sends|could\s+"
+    r"(?:provide|pass|send|supply))|"
+    r"(?:caller|upstream)\s+(?:fails\s+to|does\s+not|doesn't)\s+"
+    r"(?:validate|check|bound|sanitise|sanitize)|"
+    r"trusts\s+(?:the\s+|its\s+)?caller|"
+    r"no\s+(?:validation|bounds\s+check|sanitisation|sanitization)\s+"
+    r"(?:on|of|for)\s+(?:the\s+)?(?:input|parameter|argument)",
+    re.IGNORECASE,
+)
+
+_CALLEE_VIOLATION_RE = re.compile(
+    r"(\w+)\(\)\s+(?:returns|produces|yields|could\s+(?:return|produce|fail))|"
+    r"assumes\s+(\w+)\(\)\s+(?:will|always)|"
+    r"(?:if|when)\s+(\w+)\(\)\s+(?:fails|errors|returns\s+(?:null|NULL|-1|error))",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class ConfidenceDemotion:
+    """A function whose verdict should be demoted based on propagated confidence."""
+
+    file: str
+    function: str
+    reason: str
+    source_functions: List[str]
+
+
+def propagate_confidence(
+    outcomes: List[Any],
+    call_edge_index: Dict[str, Any],
+    checklist_index: Optional[Dict[Tuple[str, str], Any]] = None,
+    *,
+    max_iterations: int = 5,
+    min_callers: int = 2,
+) -> List[ConfidenceDemotion]:
+    """Propagate clean verdicts through the call graph to refute contract-violation hypotheses.
+
+    Only propagates from outcomes with tool-backed or confirmed
+    verification tiers to avoid LLM-trusts-LLM circular reasoning.
+
+    ``min_callers`` requires at least N known callers before propagating
+    caller-direction demotions.  The call-edge index may be incomplete
+    (function pointers, virtual dispatch, callbacks are invisible), so
+    a single known-clean caller is insufficient evidence.
+
+    Returns a list of demotions to apply. Runs to fixpoint or
+    max_iterations, whichever comes first.
+    """
+    trusted_clean: Set[Tuple[str, str]] = set()
+    for o in outcomes:
+        if o.status == "clean" and getattr(o, "verification_tier", "") in (
+            "confirmed", "tool_backed",
+        ):
+            trusted_clean.add((o.file, o.function))
+
+    all_demotions: List[ConfidenceDemotion] = []
+
+    for iteration in range(max_iterations):
+        round_demotions: List[ConfidenceDemotion] = []
+
+        suspicious = [
+            o for o in outcomes
+            if o.status == "suspicious"
+            and (o.file, o.function) not in trusted_clean
+        ]
+
+        for outcome in suspicious:
+            hypotheses = getattr(outcome, "hypotheses", None) or []
+            if not hypotheses:
+                continue
+
+            has_caller_violation = any(
+                _CALLER_VIOLATION_RE.search(
+                    h.get("mechanism", "") + " " + h.get("counter", "")
+                )
+                for h in hypotheses
+                if isinstance(h, dict)
+            )
+
+            has_callee_violation = any(
+                _CALLEE_VIOLATION_RE.search(
+                    h.get("mechanism", "") + " " + h.get("counter", "")
+                )
+                for h in hypotheses
+                if isinstance(h, dict)
+            )
+
+            if not has_caller_violation and not has_callee_violation:
+                continue
+
+            key = f"{outcome.file}:{outcome.function}"
+
+            if has_caller_violation:
+                callers = _get_callers_from_index(
+                    key, call_edge_index,
+                )
+                if len(callers) >= min_callers and all(
+                    (cf, cn) in trusted_clean for cf, cn in callers
+                ):
+                    caller_names = [f"{cf}:{cn}" for cf, cn in callers]
+                    round_demotions.append(ConfidenceDemotion(
+                        file=outcome.file,
+                        function=outcome.function,
+                        reason=f"all {len(callers)} callers confirmed clean: "
+                               f"{', '.join(caller_names[:5])}",
+                        source_functions=caller_names,
+                    ))
+                    continue
+
+            if has_callee_violation:
+                callees = _get_callees_from_index(
+                    key, call_edge_index,
+                )
+                flagged_callees = _extract_callee_names(hypotheses)
+                if flagged_callees and callees:
+                    matched = [
+                        cn for cn in flagged_callees
+                        if any(cn == callee_name for _, callee_name in callees)
+                    ]
+                    if matched:
+                        all_clean = all(
+                            any(
+                                (cf, cn) in trusted_clean
+                                for cf, cn in callees
+                                if cn == callee_name
+                            )
+                            for callee_name in matched
+                        )
+                        if all_clean:
+                            round_demotions.append(ConfidenceDemotion(
+                                file=outcome.file,
+                                function=outcome.function,
+                                reason=f"hypothesised callee(s) confirmed clean: "
+                                       f"{', '.join(matched)}",
+                                source_functions=list(matched),
+                            ))
+
+        if not round_demotions:
+            break
+
+        for d in round_demotions:
+            for o in outcomes:
+                if o.file == d.file and o.function == d.function:
+                    o.status = "clean"
+                    break
+
+        all_demotions.extend(round_demotions)
+        logger.info(
+            "confidence propagation round %d: %d demotions",
+            iteration + 1, len(round_demotions),
+        )
+
+    return all_demotions
+
+
+def _get_callers_from_index(
+    key: str,
+    call_edge_index: Dict[str, Any],
+) -> List[Tuple[str, str]]:
+    """Get caller (file, function) pairs from the call-edge index.
+
+    Production edges have keys caller_file, caller, callee_file, callee.
+    Test edges may use the 'target' key as a file:function composite.
+
+    Returns deduplicated callers — edges are indexed under both caller
+    and callee keys so the same edge appears twice in a full scan.
+    """
+    seen: Set[Tuple[str, str]] = set()
+    callers: List[Tuple[str, str]] = []
+    key_file, _, key_func = key.rpartition(":")
+    for edge_key, edges in call_edge_index.items():
+        if not isinstance(edges, list):
+            continue
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            callee_file = edge.get("callee_file", "")
+            callee_name = edge.get("callee") or ""
+            if callee_file and callee_name:
+                callee_key = f"{callee_file}:{callee_name}"
+                if callee_key == key or callee_name == key_func:
+                    caller_file = edge.get("caller_file", "")
+                    caller_name = edge.get("caller", "")
+                    if caller_file and caller_name:
+                        pair = (caller_file, caller_name)
+                        if pair not in seen:
+                            seen.add(pair)
+                            callers.append(pair)
+                        continue
+            target = edge.get("target") or callee_name
+            if target == key or (key_func and target == key_func):
+                parts = edge_key.split(":", 1)
+                if len(parts) == 2:
+                    pair = (parts[0], parts[1])
+                    if pair not in seen:
+                        seen.add(pair)
+                        callers.append(pair)
+    return callers
+
+
+def _get_callees_from_index(
+    key: str,
+    call_edge_index: Dict[str, Any],
+) -> List[Tuple[str, str]]:
+    """Get callee (file, function) pairs from the call-edge index."""
+    callees = []
+    edges = call_edge_index.get(key) or []
+    if not isinstance(edges, list):
+        return callees
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        callee_file = edge.get("callee_file", "")
+        callee_name = edge.get("callee") or edge.get("target") or ""
+        if callee_file and callee_name:
+            callees.append((callee_file, callee_name))
+        elif callee_name:
+            target = callee_name
+            parts = target.split(":", 1)
+            if len(parts) == 2:
+                callees.append((parts[0], parts[1]))
+            else:
+                callees.append(("", target))
+    return callees
+
+
+def _extract_callee_names(hypotheses: List[Dict[str, Any]]) -> Set[str]:
+    """Extract callee function names from hypothesis text."""
+    names: Set[str] = set()
+    for h in hypotheses:
+        if not isinstance(h, dict):
+            continue
+        text = h.get("mechanism", "") + " " + h.get("counter", "")
+        for m in _CALLEE_VIOLATION_RE.finditer(text):
+            for g in m.groups():
+                if g:
+                    names.add(g)
+    return names

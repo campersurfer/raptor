@@ -217,12 +217,12 @@ def _build_taint_reaches_guard_query(
     if safe_method is None or safe_sink is None:
         return None
     return (
-        "import io.joern.dataflowengineoss.queryengine.EngineConfig\n"
-        "implicit val engineConfig: EngineConfig = EngineConfig(maxCallDepth = 2)\n"
+        "import io.joern.dataflowengineoss.queryengine.{EngineConfig, EngineContext}\n"
+        "val ctx = EngineContext(config = EngineConfig(maxCallDepth = 2))\n"
         f'val src = cpg.method.name("{safe_method}").parameter\n'
         f'val sink = cpg.method.name("{safe_method}")'
         f'.ast.isCall.name("{safe_sink}").argument\n'
-        f"sink.reachableByFlows(src).l.flatMap(_.elements.map(_.code)).l"
+        f"sink.reachableByFlows(src)(ctx).l.flatMap(_.elements.map(_.code)).l"
     )
 
 
@@ -649,6 +649,8 @@ def _run_query(server: Any, query: str) -> Optional[list]:
             return result
         return None
 
+    except (TimeoutError, KeyboardInterrupt):
+        raise
     except Exception as e:
         logger.debug("Joern query failed: %s — %s", query[:80], e)
         return None

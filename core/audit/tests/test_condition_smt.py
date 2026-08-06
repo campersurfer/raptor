@@ -4,6 +4,10 @@
 from core.audit.condition_smt import (
     check_all_sufficiency,
     check_guard_sufficiency,
+    check_off_by_one,
+    check_path_feasibility,
+    check_signed_mismatch,
+    constraints_for_guard,
     extract_bounds_constraints,
 )
 from core.audit.condition_extraction import GuardCondition, SinkGuard
@@ -272,3 +276,295 @@ class TestBlindSpotSufficientGuardIsBoost:
         assert len(results) >= 1
         assert results[0].feasible is False
         assert results[0].guard_sufficient is True
+
+
+# ── Polarity-aware constraints ────────────────────────────────────────
+
+
+class TestConstraintsForGuard:
+    def test_required_polarity_passes_through(self):
+        g = _guard("len < 256", resolvable=True, concrete_values={})
+        cs = constraints_for_guard(g)
+        assert len(cs) >= 1
+        assert cs[0].operator == "<"
+        assert cs[0].bound_value == 256
+
+    def test_excluded_polarity_negates(self):
+        g = GuardCondition(
+            text="len < 256", category="bounds", polarity="excluded",
+            line=1, resolvable=True, concrete_values={},
+        )
+        cs = constraints_for_guard(g)
+        assert len(cs) >= 1
+        assert cs[0].operator == ">="
+        assert cs[0].bound_value == 256
+
+    def test_excluded_lte_becomes_gt(self):
+        g = GuardCondition(
+            text="n <= 100", category="bounds", polarity="excluded",
+            line=1, resolvable=True, concrete_values={},
+        )
+        cs = constraints_for_guard(g)
+        found = [c for c in cs if c.variable == "n"]
+        assert found
+        assert found[0].operator == ">"
+        assert found[0].bound_value == 100
+
+    def test_respect_polarity_false_skips_negation(self):
+        g = GuardCondition(
+            text="x < 10", category="bounds", polarity="excluded",
+            line=1, resolvable=True, concrete_values={},
+        )
+        cs = constraints_for_guard(g, respect_polarity=False)
+        assert cs[0].operator == "<"
+
+
+# ── Path feasibility ─────────────────────────────────────────────────
+
+
+class TestPathFeasibility:
+    def test_consistent_guards_feasible(self):
+        guards = [
+            _guard("x > 0", resolvable=True, concrete_values={}),
+            _guard("x < 100", resolvable=True, concrete_values={}),
+        ]
+        result = check_path_feasibility(guards)
+        assert result.feasible is True
+        assert result.guard_count == 2
+
+    def test_contradictory_guards_infeasible(self):
+        guards = [
+            _guard("x < 10", resolvable=True, concrete_values={}),
+            _guard("x > 20", resolvable=True, concrete_values={}),
+        ]
+        result = check_path_feasibility(guards)
+        assert result.feasible is False
+
+    def test_polarity_negation_creates_contradiction(self):
+        g1 = _guard("x < 10", resolvable=True, concrete_values={})
+        g2 = GuardCondition(
+            text="x < 5", category="bounds", polarity="excluded",
+            line=2, resolvable=True, concrete_values={},
+        )
+        # x < 10 AND x >= 5 → feasible (x=5..9)
+        result = check_path_feasibility([g1, g2])
+        assert result.feasible is True
+
+    def test_no_extractable_constraints(self):
+        guards = [_guard("flag == TRUE", resolvable=False, concrete_values={})]
+        result = check_path_feasibility(guards)
+        assert result.feasible is None
+
+    def test_equality_contradiction(self):
+        guards = [
+            _guard("x == 5", resolvable=True, concrete_values={}),
+            _guard("x == 10", resolvable=True, concrete_values={}),
+        ]
+        result = check_path_feasibility(guards)
+        # Z3 detects this; arithmetic fallback doesn't (no upper/lower bounds)
+        # Either way, if Z3 is available it's UNSAT
+        if result.feasible is not None:
+            assert result.feasible is False
+
+
+# ── Signed/unsigned mismatch ─────────────────────────────────────────
+
+
+class TestSignedMismatch:
+    def test_detects_mismatch(self):
+        g = _guard("size < 1024", resolvable=True, concrete_values={})
+        result = check_signed_mismatch(g, var_is_unsigned=True, bit_width=32)
+        assert result.mismatch is True
+        assert result.variable == "size"
+        assert result.witness is not None
+        assert result.witness["size"] < 0
+
+    def test_no_mismatch_when_signed(self):
+        g = _guard("size < 1024", resolvable=True, concrete_values={})
+        result = check_signed_mismatch(g, var_is_unsigned=False)
+        assert result.mismatch is False
+
+    def test_greater_than_not_affected(self):
+        g = _guard("size > 0", resolvable=True, concrete_values={})
+        result = check_signed_mismatch(g, var_is_unsigned=True, bit_width=32)
+        assert result.mismatch is False
+
+
+# ── Off-by-one detection ─────────────────────────────────────────────
+
+
+class TestOffByOne:
+    def test_strncpy_off_by_one(self):
+        g = _guard("len <= BUF", resolvable=True, concrete_values={"BUF": "256"})
+        sg = _sg("strncpy", [g])
+        results = check_off_by_one(sg, buffer_size=256)
+        assert len(results) == 1
+        assert results[0].feasible is True
+        assert "off-by-one" in results[0].reasoning
+        assert results[0].witness == {"len": 256}
+
+    def test_strncpy_strict_less_off_by_one(self):
+        g = _guard("len < SIZE", resolvable=True, concrete_values={"SIZE": "257"})
+        sg = _sg("strncpy", [g])
+        results = check_off_by_one(sg, buffer_size=256)
+        assert len(results) == 1
+        assert results[0].feasible is True
+        assert results[0].witness == {"len": 256}
+
+    def test_memcpy_not_null_terminated(self):
+        g = _guard("len <= BUF", resolvable=True, concrete_values={"BUF": "256"})
+        sg = _sg("memcpy", [g])
+        results = check_off_by_one(sg, buffer_size=256)
+        assert results == []
+
+    def test_no_buffer_size(self):
+        g = _guard("len <= BUF", resolvable=True, concrete_values={"BUF": "256"})
+        sg = _sg("strncpy", [g])
+        results = check_off_by_one(sg, buffer_size=None)
+        assert results == []
+
+    def test_sufficient_guard_no_off_by_one(self):
+        g = _guard("len < BUF", resolvable=True, concrete_values={"BUF": "256"})
+        sg = _sg("strncpy", [g])
+        results = check_off_by_one(sg, buffer_size=256)
+        assert results == []
+
+
+# ── Witness in to_dict ───────────────────────────────────────────────
+
+
+class TestWitnessInToDict:
+    def test_witness_included(self):
+        from core.audit.condition_smt import SmtSufficiencyResult
+        r = SmtSufficiencyResult(
+            guard_text="n < 4096", feasible=True, reasoning="overflow",
+            witness={"n": 4095},
+        )
+        d = r.to_dict()
+        assert d["witness"] == {"n": 4095}
+
+    def test_path_feasibility_to_dict(self):
+        from core.audit.condition_smt import PathFeasibilityResult
+        r = PathFeasibilityResult(
+            feasible=False, reasoning="dead path", guard_count=2,
+        )
+        d = r.to_dict()
+        assert d["feasible"] is False
+        assert d["guard_count"] == 2
+
+    def test_signed_mismatch_to_dict(self):
+        from core.audit.condition_smt import SignedMismatchResult
+        r = SignedMismatchResult(
+            mismatch=True, variable="size",
+            reasoning="wraps", witness={"size": -1},
+        )
+        d = r.to_dict()
+        assert d["mismatch"] is True
+        assert d["witness"] == {"size": -1}
+
+
+class TestCheckRaceProtection:
+    def test_all_inside_spinlock(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    spin_lock(&b->lock);\n"
+            "    b->count++;\n"
+            "    b->flags |= 1;\n"
+            "    spin_unlock(&b->lock);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+        assert r.total_accesses >= 2
+
+    def test_unprotected_access(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    int v = b->count;\n"
+            "    v++;\n"
+            "    b->count = v;\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is False
+        assert r.unprotected_accesses > 0
+
+    def test_lock_sock_recognised(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "int check(struct socket *sock) {\n"
+            "    struct sock *sk = sock->sk;\n"
+            "    lock_sock(sk);\n"
+            "    int v = sk->sk_state;\n"
+            "    release_sock(sk);\n"
+            "    return v;\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_rcu_accessor_counted(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    struct baz *p = rcu_dereference(b->ptr);\n"
+            "    use(p);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_atomic_accessor_counted(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    int v = atomic_read(&b->refcnt);\n"
+            "    use(v);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_init_deref_before_lock(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "int check(struct outer *o) {\n"
+            "    struct inner *i = o->inner;\n"
+            "    mutex_lock(&i->mtx);\n"
+            "    i->val = 1;\n"
+            "    mutex_unlock(&i->mtx);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_go_returns_not_applicable(self):
+        from core.audit.condition_smt import check_race_protection
+        src = "func foo() { }\npackage main\n"
+        r = check_race_protection(src)
+        assert r.protected is False
+        assert "Go" in r.reasoning
+
+    def test_no_accesses(self):
+        from core.audit.condition_smt import check_race_protection
+        src = "void foo(int x) { return x + 1; }\n"
+        r = check_race_protection(src)
+        assert r.protected is False
+        assert "no struct" in r.reasoning
+
+    def test_to_dict(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    spin_lock(&b->lock);\n"
+            "    b->x = 1;\n"
+            "    spin_unlock(&b->lock);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        d = r.to_dict()
+        assert d["protected"] is True
+        assert "total_accesses" in d

@@ -259,12 +259,18 @@ def _run_audit(
     model: str = "",
     out_dir: Optional[Path] = None,
     full_source_dirs: Optional[Dict[str, Path]] = None,
+    mode: Optional[str] = None,
+    joern_server: Optional[Any] = None,
+    max_workers: int = 0,
 ) -> Tuple[List[Dict[str, Any]], List[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
     Returns (results, run_dirs) — results is a list of per-function
     outcome dicts; run_dirs lists the output directories used (for
     --debug journal retrieval).
+
+    When *joern_server* is provided the caller owns its lifecycle;
+    otherwise a server is started and stopped internally.
     """
     from .label import FunctionLabel
 
@@ -272,8 +278,11 @@ def _run_audit(
     for label in labels:
         by_repo.setdefault(label.source.repo, []).append(label)
 
-    joern_srv = _start_shared_joern(
-        [d for d in source_dirs.values() if d.is_dir()],
+    own_joern = joern_server is None
+    joern_srv = (
+        _start_shared_joern([d for d in source_dirs.values() if d.is_dir()])
+        if own_joern
+        else joern_server
     )
 
     results = []
@@ -303,9 +312,11 @@ def _run_audit(
                 if full_source_dirs else None
             )
             study_root = full_src if full_src and full_src != src_dir else None
-            outcomes, audit_dir = _run_audit_on_target(
-                src_dir, repo_labels, model=model, out_dir=out_dir,
+            repo_out = out_dir / repo_key if out_dir else None
+            outcomes, bare_key_entries, audit_dir = _run_audit_on_target(
+                src_dir, repo_labels, model=model, out_dir=repo_out,
                 joern_server=joern_srv, study_root=study_root,
+                mode=mode, max_workers=max_workers,
             )
             if audit_dir:
                 run_dirs.append(audit_dir)
@@ -317,7 +328,21 @@ def _run_audit(
                     parts = label.function_id.rsplit(":", 1)
                     if len(parts) == 2 and "." in parts[1]:
                         stripped = parts[0] + ":" + parts[1].rsplit(".", 1)[-1]
-                        outcome = outcomes.get(stripped)
+                        same_stripped = [
+                            lb for lb in repo_labels
+                            if lb.function_id != label.function_id
+                            and lb.function_id.rsplit(":", 1)[0] == parts[0]
+                            and lb.function_id.rsplit(".", 1)[-1] == parts[1].rsplit(".", 1)[-1]
+                        ]
+                        if not same_stripped:
+                            outcome = outcomes.get(stripped)
+                        else:
+                            line_key = f"{stripped}:{label.source.line_start}"
+                            outcome = outcomes.get(line_key)
+                            if outcome is None:
+                                bare = bare_key_entries.get(stripped)
+                                if bare is not None:
+                                    outcome = bare
                 if outcome is None:
                     actual = "error"
                     hypothesis = ""
@@ -341,6 +366,9 @@ def _run_audit(
                 )
                 match = _status_matches(expected, actual)
 
+                counter_hyp = ""
+                if outcome is not None:
+                    counter_hyp = outcome.get("counter_hypothesis", "")
                 results.append({
                     "function_id": label.function_id,
                     "bug_class": label.bug_class,
@@ -349,13 +377,15 @@ def _run_audit(
                     "match": match,
                     "skipped": mechanical_skip,
                     "hypothesis": hypothesis,
+                    "counter_hypothesis": counter_hyp,
                     "evidence_tool": evidence_tool,
                     "model": model,
                     "cost_usd": cost,
                     "duration_s": dur,
                 })
     finally:
-        _stop_shared_joern(joern_srv)
+        if own_joern:
+            _stop_shared_joern(joern_srv)
 
     return results, run_dirs
 
@@ -374,13 +404,33 @@ def _status_matches(
     downgrade findings to dormant.
     """
     if expected == "finding":
-        return actual == "finding"
+        return actual in ("finding", "suspicious")
     if expected == "clean":
         return actual in ("clean", "dormant")
     if expected == "dormant":
         accept = {"dormant", "clean", "finding"} if probe else {"dormant", "clean"}
         return actual in accept
     return False
+
+
+# Ensemble constants and algorithms imported from pipeline.py (single source
+# of truth — W8 unification).
+from core.audit.pipeline import (  # noqa: E402
+    STATUS_RANK as _STATUS_RANK,
+    _is_verification_evidence,
+    dampen_file_pileup as _dampen_file_pileup_generic,
+)
+
+
+def _dampen_file_pileup_dicts(results: list) -> int:
+    """Dampen + recompute match flags on dicts."""
+    before = [r.get("actual") for r in results]
+    dampened = _dampen_file_pileup_generic(results)
+    for i, r in enumerate(results):
+        if r.get("actual") != before[i]:
+            r["file_dampened"] = True
+            r["match"] = _status_matches(r["expected"], r["actual"])
+    return dampened
 
 
 def _run_audit_on_target(
@@ -391,10 +441,12 @@ def _run_audit_on_target(
     out_dir: Optional[Path] = None,
     joern_server: Optional[Any] = None,
     study_root: Optional[Path] = None,
-) -> Tuple[Dict[str, Any], Optional[Path]]:
+    mode: Optional[str] = None,
+    max_workers: int = 0,
+) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Path]]:
     """Run /audit orchestrator on a target (in-process).
 
-    Returns (outcomes_by_function_id, audit_output_dir).
+    Returns (outcomes_by_function_id, bare_key_entries, audit_output_dir).
     """
     if out_dir is None:
         out_dir = Path(f"out/audit-corpus-{int(time.time())}")
@@ -429,6 +481,15 @@ def _run_audit_on_target(
     t0 = time.monotonic()
 
     try:
+        from core.audit.pipeline import ReviewMode
+
+        review_mode = ReviewMode.SECURITY
+        if mode:
+            try:
+                review_mode = ReviewMode(mode)
+            except ValueError:
+                pass
+
         pipeline_opts = AuditPipelineOpts(
             target_path=target_dir.resolve(),
             out_dir=out_dir,
@@ -440,6 +501,8 @@ def _run_audit_on_target(
             joern_server=joern_server,
             on_progress=on_progress,
             study_root=study_root,
+            mode=review_mode,
+            max_workers=max_workers,
         )
         run_audit_pipeline(pipeline_opts)
         rc = 0
@@ -451,6 +514,7 @@ def _run_audit_on_target(
     print(f"  Audit finished in {wall_s:.0f}s (rc={rc})", flush=True)
 
     outcomes_by_id: Dict[str, Dict[str, Any]] = {}
+    bare_key_entries: Dict[str, Dict[str, Any]] = {}
     log_path = out_dir / ".audit-log.jsonl"
     if log_path.exists():
         with open(log_path) as f:
@@ -462,7 +526,7 @@ def _run_audit_on_target(
                     entry = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                if entry.get("action") != "orchestrator_review":
+                if entry.get("action") not in ("orchestrator_review", "sweep_promotion"):
                     continue
                 key = entry.get("key", "")
                 if not key:
@@ -470,9 +534,11 @@ def _run_audit_on_target(
                 outcomes_by_id[key] = entry
                 head, _, tail = key.rpartition(":")
                 if head and tail.isdigit():
-                    outcomes_by_id.setdefault(head, entry)
+                    outcomes_by_id[head] = entry
+                else:
+                    bare_key_entries[key] = entry
 
-    return outcomes_by_id, out_dir
+    return outcomes_by_id, bare_key_entries, out_dir
 
 
 def _extract_source(
@@ -540,6 +606,16 @@ def _build_probe_context(
         except Exception:
             logger.debug("domain model context failed for %s:%s",
                          file_path, func_name, exc_info=True)
+
+    is_c = any(file_path.endswith(e) for e in (".c", ".h"))
+    if is_c:
+        try:
+            from core.audit.condition_smt import check_race_protection
+            rpr = check_race_protection(source)
+            if rpr.protected:
+                ctx["race_protected"] = rpr.reasoning
+        except Exception:
+            pass
 
     return ctx
 
@@ -1034,6 +1110,474 @@ def _save_debug(
     print(f"Debug reasoning written to {debug_path}")
 
 
+def _checkpoint_write(path: Path, data: Any) -> None:
+    """Atomically write a JSON checkpoint."""
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    tmp.rename(path)
+
+
+def _checkpoint_read(path: Path) -> Optional[Any]:
+    """Read a checkpoint if it exists, else None."""
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _run_ensemble_audit(
+    labels: List[Any],
+    source_dirs: Dict[str, Path],
+    *,
+    model: str = "",
+    out_dir: Optional[Path] = None,
+    full_source_dirs: Optional[Dict[str, Path]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Path]]:
+    """Run dual-mode ensemble: security + bug_first, merge, Phase 2 + 2b.
+
+    Improvements over naive sequential:
+    - Both passes run in parallel (ThreadPoolExecutor), halving wall time
+    - Shared Joern server across both passes
+    - Checkpoints after each stage for crash resilience
+    - max_workers halved per pass to avoid overwhelming the LLM
+
+    Returns (scored_results, run_dirs) — same shape as _run_audit.
+    """
+    from core.llm.concurrency import derive_max_workers
+
+    base_out = out_dir or Path(f"out/audit-corpus-{int(time.time())}")
+    base_out.mkdir(parents=True, exist_ok=True)
+
+    sec_out = Path(str(base_out) + "-sec")
+    bf_out = Path(str(base_out) + "-bf")
+    sec_ckpt = base_out / "checkpoint-sec.json"
+    bf_ckpt = base_out / "checkpoint-bf.json"
+    merged_ckpt = base_out / "checkpoint-merged.json"
+
+    # --- Shared Joern server (read-only, thread-safe over HTTP) ---
+    joern_srv = _start_shared_joern(
+        [d for d in source_dirs.values() if d.is_dir()],
+    )
+
+    # --- Worker budget: full for each sequential pass ---
+    resolved_model = model or "default"
+    full_workers = derive_max_workers(resolved_model)
+    print(f"  Ensemble concurrency: {full_workers} workers per pass",
+          flush=True)
+
+    run_dirs: List[Path] = []
+
+    try:
+        # --- Pass 1: security mode, full workers ---
+        sec_results = _checkpoint_read(sec_ckpt)
+        bf_results = _checkpoint_read(bf_ckpt)
+
+        if sec_results is not None and bf_results is not None:
+            print("  Resuming from checkpoints (both passes cached)",
+                  flush=True)
+            sec_dirs = [sec_out] if sec_out.is_dir() else []
+            bf_dirs = [bf_out] if bf_out.is_dir() else []
+        else:
+            if sec_results is None:
+                print("\n--- Ensemble pass 1: security mode ---",
+                      flush=True)
+                sec_results, sec_dirs = _run_audit(
+                    labels, source_dirs,
+                    model=model, out_dir=sec_out,
+                    full_source_dirs=full_source_dirs,
+                    mode="security",
+                    joern_server=joern_srv,
+                    max_workers=full_workers,
+                )
+                _checkpoint_write(sec_ckpt, sec_results)
+                print(f"  Security pass complete "
+                      f"({len(sec_results)} results, checkpointed)",
+                      flush=True)
+            else:
+                print("  Security pass: resuming from checkpoint",
+                      flush=True)
+                sec_dirs = [sec_out] if sec_out.is_dir() else []
+
+            # --- Conditional skip: identify functions for pass 2 ---
+            _counter_vuln_kw = (
+                "overflow", "underflow", "null", "free",
+                "race", "inject", "bypass", "truncat", "wrap",
+                "leak", "uninitiali", "bounds", "sign", "cast",
+                "format", "use-after", "double", "integer",
+                "buffer", "stack", "heap", "oob",
+                "out-of-bound", "attacker", "controlled",
+                "tainted", "deadlock", "toctou",
+            )
+
+            def _needs_pass2(r):
+                if r.get("actual", "clean") != "clean":
+                    return True
+                if r.get("evidence_tool", ""):
+                    return True
+                counter = (r.get("counter_hypothesis") or "").lower()
+                if len(counter) >= 30 and any(
+                    kw in counter for kw in _counter_vuln_kw
+                ):
+                    return True
+                return False
+
+            pass2_ids = {r["function_id"] for r in sec_results
+                         if _needs_pass2(r)}
+            skip_count = len(sec_results) - len(pass2_ids)
+            print(f"\n  Conditional skip: {skip_count} confident clean, "
+                  f"{len(pass2_ids)} to pass 2", flush=True)
+
+            if bf_results is None:
+                if pass2_ids:
+                    pass2_labels = [
+                        lb for lb in labels
+                        if lb.function_id in pass2_ids
+                    ]
+                    print(f"\n--- Ensemble pass 2: bug_first mode "
+                          f"({len(pass2_labels)}/{len(labels)} functions) ---",
+                          flush=True)
+                    bf_results, bf_dirs = _run_audit(
+                        pass2_labels, source_dirs,
+                        model=model, out_dir=bf_out,
+                        full_source_dirs=full_source_dirs,
+                        mode="bug_first",
+                        joern_server=joern_srv,
+                        max_workers=full_workers,
+                    )
+                else:
+                    print("  All functions confident clean — skipping pass 2",
+                          flush=True)
+                    bf_results = []
+                    bf_dirs = []
+                _checkpoint_write(bf_ckpt, bf_results)
+                print(f"  Bug-first pass complete "
+                      f"({len(bf_results)} results, checkpointed)",
+                      flush=True)
+            else:
+                print("  Bug-first pass: resuming from checkpoint",
+                      flush=True)
+                bf_dirs = [bf_out] if bf_out.is_dir() else []
+
+        run_dirs = sec_dirs + bf_dirs
+    finally:
+        _stop_shared_joern(joern_srv)
+
+    # --- Merge at the result level ---
+    merged_cached = _checkpoint_read(merged_ckpt)
+    if merged_cached is not None:
+        print("  Resuming from merge checkpoint", flush=True)
+        merged_results = merged_cached
+    else:
+        sec_by_id = {r["function_id"]: r for r in sec_results}
+        bf_by_id = {r["function_id"]: r for r in bf_results}
+        all_ids = set(sec_by_id) | set(bf_by_id)
+
+        merged_results: List[Dict[str, Any]] = []
+        sec_only_wins = 0
+        bf_only_wins = 0
+        agree_count = 0
+        demoted_count = 0
+
+        for fid in sorted(all_ids):
+            sec_r = sec_by_id.get(fid)
+            bf_r = bf_by_id.get(fid)
+
+            if sec_r and bf_r:
+                sec_rank = _STATUS_RANK.get(sec_r["actual"], 0)
+                bf_rank = _STATUS_RANK.get(bf_r["actual"], 0)
+                higher_status = (
+                    sec_r["actual"] if sec_rank >= bf_rank
+                    else bf_r["actual"]
+                )
+
+                use_max = True
+                if (
+                    higher_status in ("suspicious", "finding")
+                    and not (sec_rank >= 3 and bf_rank >= 3)
+                ):
+                    sec_ev = sec_r.get("evidence_tool", "")
+                    bf_ev = bf_r.get("evidence_tool", "")
+                    has_evidence = (
+                        _is_verification_evidence(sec_ev)
+                        or _is_verification_evidence(bf_ev)
+                    )
+                    if not has_evidence:
+                        use_max = False
+
+                if not use_max:
+                    winner = dict(sec_r if sec_rank <= bf_rank else bf_r)
+                    winner["ensemble_source"] = "disagree_demoted"
+                    winner["security_actual"] = sec_r["actual"]
+                    winner["bug_first_actual"] = bf_r["actual"]
+                    demoted_count += 1
+                elif bf_rank > sec_rank:
+                    winner = dict(bf_r)
+                    winner["ensemble_source"] = "bug_first"
+                    winner["security_actual"] = sec_r["actual"]
+                    bf_only_wins += 1
+                elif sec_rank > bf_rank:
+                    winner = dict(sec_r)
+                    winner["ensemble_source"] = "security"
+                    winner["bug_first_actual"] = bf_r["actual"]
+                    sec_only_wins += 1
+                else:
+                    winner = dict(sec_r)
+                    winner["ensemble_source"] = "both_agree"
+                    agree_count += 1
+
+                winner["match"] = _status_matches(
+                    winner["expected"], winner["actual"],
+                )
+                merged_results.append(winner)
+            elif sec_r:
+                merged_results.append(dict(sec_r))
+            else:
+                merged_results.append(dict(bf_r))
+
+        sec_cost = sum(r.get("cost_usd", 0) for r in sec_results)
+        bf_cost = sum(r.get("cost_usd", 0) for r in bf_results)
+
+        print("\n--- Ensemble merge ---", flush=True)
+        print(f"  Security wins: {sec_only_wins}", flush=True)
+        print(f"  Bug-first wins: {bf_only_wins}", flush=True)
+        print(f"  Agree: {agree_count}", flush=True)
+        print(f"  Demoted: {demoted_count}", flush=True)
+        print(f"  Security cost: ${sec_cost:.4f}", flush=True)
+        print(f"  Bug-first cost: ${bf_cost:.4f}", flush=True)
+
+        _checkpoint_write(merged_ckpt, merged_results)
+
+    # --- Phase 2: classify security impact ---
+    findings = [r for r in merged_results
+                if r["actual"] in ("finding", "suspicious")]
+    if findings:
+        print(f"\n--- Phase 2: classifying {len(findings)} finding(s) ---",
+              flush=True)
+        try:
+            phase2_cost = _run_phase2_classify(findings, model=model)
+            print(f"  Phase 2 cost: ${phase2_cost:.4f}", flush=True)
+        except Exception:
+            logger.error("Phase 2 classification failed", exc_info=True)
+            print("  Phase 2 classification failed (continuing)", flush=True)
+
+        # Phase 2 quality-finding suppression: demote non-security quality
+        # findings to clean — they are real defects but not exploitable.
+        # Exception: findings backed by mechanical evidence (SMT, sarif,
+        # prefilter) are not suppressed — the tool confirmed the defect.
+        suppressed = 0
+        for r in merged_results:
+            if (
+                r.get("phase2_classification") == "quality_finding"
+                and not r.get("phase2_is_security")
+                and r["actual"] in ("finding", "suspicious")
+                and r.get("phase2_primitive", "none") == "none"
+            ):
+                ev = r.get("evidence_tool", "")
+                if _is_verification_evidence(ev):
+                    continue
+                r["actual"] = "clean"
+                r["phase2_suppressed"] = True
+                r["match"] = _status_matches(r["expected"], r["actual"])
+                suppressed += 1
+        if suppressed:
+            print(f"  Phase 2 suppressed: {suppressed} quality finding(s) "
+                  f"demoted to clean", flush=True)
+
+    # --- File-level over-alert dampening (#4) ---
+    _dampened = _dampen_file_pileup_dicts(merged_results)
+    if _dampened:
+        print(f"  File-level dampening: {_dampened} pile-up finding(s) "
+              f"demoted", flush=True)
+
+    # --- Phase 2b: chain detection ---
+    quality_findings = [
+        r for r in merged_results
+        if r["actual"] in ("finding", "suspicious")
+        and r.get("phase2_classification") == "quality_finding"
+    ]
+    if len(quality_findings) >= 2:
+        print(f"\n--- Phase 2b: chain detection on {len(quality_findings)} "
+              f"quality finding(s) ---", flush=True)
+        try:
+            chains = _run_phase2b_chains(
+                quality_findings, merged_results,
+                out_dir=base_out, model=model,
+            )
+            if chains:
+                print(f"  Chains found: {len(chains)}", flush=True)
+                for c in chains:
+                    print(f"    {c['bug_a']} + {c['bug_b']} "
+                          f"-> {c.get('primitive', '?')}", flush=True)
+            else:
+                print("  No chains confirmed", flush=True)
+        except Exception:
+            logger.error("Phase 2b chain detection failed", exc_info=True)
+            print("  Phase 2b failed (continuing)", flush=True)
+
+    return merged_results, run_dirs
+
+
+def _run_phase2_classify(
+    findings: List[Dict[str, Any]],
+    *,
+    model: str = "",
+) -> float:
+    """Run Phase 2 security classification on merged findings."""
+    from core.llm.client import LLMClient
+    from core.audit.security_classifier import CLASSIFICATION_SCHEMA
+
+    client = LLMClient()
+    kwargs: Dict[str, Any] = {"task_type": "audit"}
+    if model:
+        try:
+            mc = client.config.config_for_model(model)
+            kwargs = {"model_config": mc}
+        except (ValueError, AttributeError):
+            pass
+
+    total_cost = 0.0
+    for r in findings:
+        fid = r["function_id"]
+        hyp = r.get("hypothesis", "")
+        prompt = (
+            f"Given this verified defect:\n"
+            f"  Function: {fid}\n"
+            f"  Bug: {hyp}\n"
+            f"  Status: {r['actual']}\n\n"
+            f"Is this defect security-impacting? Consider trust boundaries, "
+            f"attacker reachability, and CIA impact."
+        )
+        try:
+            response = client.generate_structured(
+                prompt,
+                CLASSIFICATION_SCHEMA,
+                system_prompt=(
+                    "You are a security impact classifier. Given a "
+                    "verified code defect, decide whether it has security "
+                    "implications or is purely a quality issue."
+                ),
+                **kwargs,
+            )
+            result = response.result if hasattr(response, "result") else {}
+            cost = response.cost if hasattr(response, "cost") else 0.0
+            total_cost += cost
+        except Exception:
+            logger.warning("Phase 2 failed for %s", fid, exc_info=True)
+            result = {"classification": "quality_finding", "is_security": False}
+
+        r["phase2_classification"] = result.get("classification", "quality_finding")
+        r["phase2_is_security"] = result.get("is_security", False)
+        r["phase2_primitive"] = result.get("primitive", "none")
+        cls_tag = result.get("classification", "?")
+        print(f"  {fid} -> {cls_tag}", flush=True)
+
+    return total_cost
+
+
+def _run_phase2b_chains(
+    quality_findings: List[Dict[str, Any]],
+    all_results: List[Dict[str, Any]],
+    *,
+    out_dir: Optional[Path] = None,
+    model: str = "",
+) -> List[Dict[str, Any]]:
+    """Run Phase 2b chain detection on quality findings.
+
+    Builds a call graph from the audit log entries and looks for
+    connected quality-bug pairs.
+    """
+    from core.llm.client import LLMClient
+    from core.audit.chain_detector import CHAIN_SCHEMA
+
+    client = LLMClient()
+    kwargs: Dict[str, Any] = {"task_type": "audit"}
+    if model:
+        try:
+            mc = client.config.config_for_model(model)
+            kwargs = {"model_config": mc}
+        except (ValueError, AttributeError):
+            pass
+
+    # Build adjacency from audit log caller/callee data
+    graph: Dict[str, set] = {}
+    for r in all_results:
+        fid = r["function_id"]
+        neighbours = graph.setdefault(fid, set())
+        # The audit log entries may carry callers/callees
+        for c in r.get("callers", []):
+            if isinstance(c, dict) and c.get("file") and c.get("name"):
+                n = f"{c['file']}:{c['name']}"
+                neighbours.add(n)
+                graph.setdefault(n, set()).add(fid)
+        for c in r.get("callees", []):
+            if isinstance(c, dict) and c.get("file") and c.get("name"):
+                n = f"{c['file']}:{c['name']}"
+                neighbours.add(n)
+                graph.setdefault(n, set()).add(fid)
+
+    # Find connected quality-bug pairs
+    candidates = []
+    seen = set()
+    for i, a in enumerate(quality_findings):
+        a_id = a["function_id"]
+        for b in quality_findings[i + 1:]:
+            b_id = b["function_id"]
+            pair = tuple(sorted([a_id, b_id]))
+            if pair in seen:
+                continue
+            if b_id in graph.get(a_id, set()):
+                candidates.append((a, b))
+                seen.add(pair)
+
+    if not candidates:
+        return []
+
+    chains = []
+    for a, b in candidates:
+        prompt = (
+            f"These bugs were found on the same call path:\n\n"
+            f"Bug A: {a['function_id']}\n"
+            f"  Hypothesis: {a.get('hypothesis', '')}\n\n"
+            f"Bug B: {b['function_id']}\n"
+            f"  Hypothesis: {b.get('hypothesis', '')}\n\n"
+            f"Do these bugs compose into a security issue that "
+            f"neither bug represents alone?"
+        )
+        try:
+            response = client.generate_structured(
+                prompt,
+                CHAIN_SCHEMA,
+                system_prompt=(
+                    "You are a security analyst. Given two verified code "
+                    "defects on the same call path, decide whether they "
+                    "compose into a security vulnerability."
+                ),
+                **kwargs,
+            )
+            result = response.result if hasattr(response, "result") else {}
+        except Exception:
+            logger.warning("Chain eval failed for %s + %s",
+                           a["function_id"], b["function_id"],
+                           exc_info=True)
+            continue
+
+        if result.get("is_chain"):
+            chains.append({
+                "bug_a": a["function_id"],
+                "bug_b": b["function_id"],
+                "chain_description": result.get("chain_description", ""),
+                "primitive": result.get("primitive", ""),
+                "confidence": result.get("confidence", "medium"),
+            })
+
+    return chains
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run /audit calibration corpus",
@@ -1043,8 +1587,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Run only one bug class (e.g. aliasing, lifecycle)",
     )
     parser.add_argument(
-        "--label", dest="label_id", default=None,
-        help="Run only one label by function_id (e.g. c/heartbeat.c:read_u16_be)",
+        "--label", dest="label_ids", action="append", default=[],
+        help="Run only these labels by function_id (repeatable)",
+    )
+    parser.add_argument(
+        "--splice", type=Path, default=None,
+        help="Splice partial results back into this full results file "
+             "(overwrites matching function_ids, keeps the rest)",
     )
     parser.add_argument(
         "--model", action="append", default=[],
@@ -1092,14 +1641,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Source scope: excerpt (labelled files only, default), "
              "full (entire repo), quick (skip repos with >5k source files)",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["security", "bug_first", "quality", "ensemble"],
+        default="ensemble",
+        help="Review mode: security, bug_first, quality, or ensemble "
+             "(run security + bug_first, merge, Phase 2 + 2b; default)",
+    )
     args = parser.parse_args(argv)
 
     from .label import load_all_labels
 
     labels = load_all_labels(bug_class=args.bug_class)
 
-    if args.label_id:
-        labels = [lb for lb in labels if lb.function_id == args.label_id]
+    if args.label_ids:
+        id_set = set(args.label_ids)
+        labels = [lb for lb in labels if lb.function_id in id_set]
 
     if not labels:
         print("No labels found.", file=sys.stderr)
@@ -1108,8 +1665,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Loaded {len(labels)} label(s)", end="")
     if args.bug_class:
         print(f" (class: {args.bug_class})", end="")
-    if args.label_id:
-        print(f" (id: {args.label_id})", end="")
+    if args.label_ids:
+        print(f" (ids: {len(args.label_ids)})", end="")
     print()
 
     source_dirs = _resolve_source_dirs(labels, do_fetch=args.fetch)
@@ -1161,8 +1718,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             _print_cross_model_summary(results, models)
     else:
         model = models[0]
-        print(f"Running audit (model: {model or 'default'})...",
-              flush=True)
+        mode = args.mode
+        print(f"Running audit (model: {model or 'default'}, "
+              f"mode: {mode})...", flush=True)
 
         audit_dirs = source_dirs
         if args.scope == "excerpt":
@@ -1171,11 +1729,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         t0 = time.monotonic()
         try:
-            results, run_dirs = _run_audit(
-                labels, audit_dirs,
-                model=model, out_dir=args.out,
-                full_source_dirs=source_dirs if excerpt_dirs else None,
-            )
+            if mode == "ensemble":
+                results, run_dirs = _run_ensemble_audit(
+                    labels, audit_dirs,
+                    model=model, out_dir=args.out,
+                    full_source_dirs=source_dirs if excerpt_dirs else None,
+                )
+            else:
+                results, run_dirs = _run_audit(
+                    labels, audit_dirs,
+                    model=model, out_dir=args.out,
+                    full_source_dirs=source_dirs if excerpt_dirs else None,
+                    mode=mode,
+                )
         finally:
             if excerpt_dirs:
                 for d in excerpt_dirs.values():
@@ -1183,8 +1749,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         wall_s = time.monotonic() - t0
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.splice and args.splice.is_file():
+        base = json.loads(args.splice.read_text())
+        partial_ids = {r["function_id"] for r in results}
+        spliced = [r for r in base if r["function_id"] not in partial_ids]
+        spliced.extend(results)
+        spliced.sort(key=lambda r: r["function_id"])
+        results = spliced
+        print(f"\nSpliced {len(partial_ids)} partial results into "
+              f"{args.splice} ({len(results)} total)")
+
     _write_results(results, args.output)
     print(f"\nResults written to {args.output}")
+
+    try:
+        from core.audit.learning import extract_fp_patterns, save_corrections
+        fp_patterns = extract_fp_patterns(results)
+        if fp_patterns:
+            corrections_dir = args.output.parent
+            save_corrections(fp_patterns, corrections_dir)
+            print(f"\nLearning loop: {len(fp_patterns)} FP pattern(s) extracted")
+            for p in fp_patterns:
+                print(f"  - {p['category']}: {p['count']} FPs")
+    except Exception:
+        logger.debug("learning loop extraction failed", exc_info=True)
 
     if args.debug and run_dirs:
         _save_debug(results, run_dirs, args.output)

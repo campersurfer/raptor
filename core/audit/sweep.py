@@ -17,6 +17,7 @@ import json as _json
 import logging
 import os
 import pickle
+import re as _re
 import subprocess
 import sys
 import threading
@@ -27,6 +28,33 @@ from typing import Any, Callable, Dict, List, Optional
 from ._util import is_valid_identifier, safe_join
 
 logger = logging.getLogger(__name__)
+
+
+_ROLE_RE = _re.compile(r"^//\s*@role:\s*(\w+)", _re.MULTILINE)
+
+
+def get_rule_role(rule_path: str) -> str:
+    """Parse ``// @role: detection|verification`` from a rule file.
+
+    Returns ``"detection"`` (default for stock rules without an
+    annotation) or ``"verification"``.  Detection rules surface
+    candidates; only verification rules may promote status directly.
+    Dynamic per-hypothesis rules (not on disk) bypass this check
+    entirely — the orchestrator's ``_is_detection_only`` returns
+    False for files not in the stock library.
+    """
+    try:
+        with open(rule_path) as f:
+            head = f.read(2048)
+        m = _ROLE_RE.search(head)
+        if m:
+            role = m.group(1).lower()
+            if role in ("detection", "verification"):
+                return role
+    except OSError:
+        pass
+    return "detection"
+
 
 _IDENTIFIER_QUALIFIED_RE = None  # lazy import
 
@@ -189,6 +217,7 @@ class SweepResult:
     errors: List[str] = field(default_factory=list)
     rule_id: Optional[str] = None
     raw_output: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
 
     def to_log_entry(self) -> Dict[str, Any]:
         entry: Dict[str, Any] = {
@@ -312,6 +341,7 @@ def run_coccinelle_sweep(
     defines: Optional[Dict[str, str]] = None,
     line_start: Optional[int] = None,
     line_end: Optional[int] = None,
+    domain_vocab: Any = None,
 ) -> SweepResult:
     """Run a Coccinelle rule against a single C file.
 
@@ -351,12 +381,27 @@ def run_coccinelle_sweep(
                 errors=["coccinelle (spatch) not installed"],
             )
 
-        result = run_rule(
-            full_path,
-            cocci_rule,
-            defines=defines or {},
-            timeout=120,
-        )
+        effective_rule = cocci_rule
+        _rendered_tmp = None
+        if domain_vocab is not None:
+            try:
+                from engine.coccinelle.vocab_renderer import render as _render_cocci
+                _rendered_tmp = _render_cocci(Path(cocci_rule), domain_vocab)
+                if _rendered_tmp is not None:
+                    effective_rule = str(_rendered_tmp)
+            except Exception:
+                pass
+
+        try:
+            result = run_rule(
+                full_path,
+                effective_rule,
+                defines=defines or {},
+                timeout=120,
+            )
+        finally:
+            if _rendered_tmp is not None:
+                _rendered_tmp.unlink(missing_ok=True)
 
         matches = []
         for f in result.matches:
@@ -399,7 +444,45 @@ _SMT_VERBS = {
     "check-overflow-to-oob": "raptor-smt-check-overflow-to-oob",
     "check-negative-bypass": "raptor-smt-check-negative-bypass",
     "validate-path": "raptor-smt-validate-path",
+    "check-auth-bypass": "raptor-smt-check-auth-bypass",
+    "check-lock-discipline": "raptor-smt-check-lock-discipline",
+    "check-resource-leak": "raptor-smt-check-resource-leak",
+    "check-null-propagation": "raptor-smt-check-null-propagation",
+    "check-integer-narrowing": "raptor-smt-check-integer-narrowing",
+    "check-early-release": "raptor-smt-check-early-release",
+    "check-lock-domain": "raptor-smt-check-lock-domain",
+    "check-toctou": "raptor-smt-check-toctou",
 }
+
+_SMT_VERB_ROLES = {
+    "check-overflow": "verification",
+    "check-oob": "verification",
+    "check-null-deref": "verification",
+    "check-overflow-to-oob": "detection",
+    "check-negative-bypass": "detection",
+    "validate-path": "verification",
+    "check-auth-bypass": "verification",
+    "check-lock-discipline": "verification",
+    "check-resource-leak": "verification",
+    "check-null-propagation": "verification",
+    "check-integer-narrowing": "verification",
+    "check-early-release": "verification",
+    "check-lock-domain": "detection",
+    "check-toctou": "verification",
+}
+
+
+def get_smt_verb_role(verb: str) -> str:
+    """Return the role of an SMT verb: ``"detection"`` or ``"verification"``.
+
+    Detection verbs identify arithmetic patterns that *could* be
+    exploitable but lack domain constraints (e.g. caller-enforced
+    ranges).  Verification verbs model enough semantics to be
+    authoritative — their findings can promote status directly.
+
+    Unknown verbs default to ``"detection"``.
+    """
+    return _SMT_VERB_ROLES.get(verb, "detection")
 
 
 def run_smt_sweep(
@@ -659,6 +742,12 @@ def _run_smt_verb_inner(
                 )
             result = check_null_deref(ptr, profile="uint64")
         elif verb == "check-overflow":
+            if _lang_has_overflow_safety(file_path):
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
             from packages.exploit_feasibility.smt_verbs import check_overflow
             operands = _extract_arithmetic_operands(hypothesis, source)
             if len(operands) < 2:
@@ -668,7 +757,26 @@ def _run_smt_verb_inner(
                     rule_id=f"smt:{verb}",
                 )
             result = check_overflow(operands, "+", profile="uint32")
+            if result.get("feasible") and not any(
+                _re.search(
+                    r"\b" + _re.escape(op) + r"\b.*[<>!=]=?",
+                    source,
+                )
+                for op in operands
+            ):
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                    detail="overflow feasible but no source-level guards on operands",
+                )
         elif verb == "check-oob":
+            if _lang_has_overflow_safety(file_path):
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
             from packages.exploit_feasibility.smt_verbs import check_oob
             index, size = _extract_oob_operands(hypothesis, source)
             if not index or not size:
@@ -690,6 +798,182 @@ def _run_smt_verb_inner(
                     rule_id=f"smt:{verb}",
                 )
             result = check_overflow_to_oob(count, elem_size, index, profile="uint32")
+        elif verb == "check-auth-bypass":
+            from core.audit.condition_smt import check_auth_bypass
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            auth_result = check_auth_bypass(source)
+            if auth_result.bypass_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=auth_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=auth_result.to_dict(),
+            )
+        elif verb == "check-integer-narrowing":
+            from core.audit.condition_smt import check_integer_narrowing
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            narr_result = check_integer_narrowing(source)
+            if narr_result.narrowing_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=narr_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=narr_result.to_dict(),
+            )
+        elif verb == "check-lock-discipline":
+            from core.audit.condition_smt import check_lock_discipline
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            lock_result = check_lock_discipline(source)
+            if lock_result.violation_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=lock_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=lock_result.to_dict(),
+            )
+        elif verb == "check-null-propagation":
+            from core.audit.condition_smt import check_null_propagation
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            null_result = check_null_propagation(source)
+            if null_result.null_deref_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=null_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=null_result.to_dict(),
+            )
+        elif verb == "check-resource-leak":
+            from core.audit.condition_smt import check_resource_leak
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            leak_result = check_resource_leak(source)
+            if leak_result.leak_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=leak_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=leak_result.to_dict(),
+            )
+        elif verb == "check-early-release":
+            from core.audit.condition_smt import check_early_release
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            er_result = check_early_release(source)
+            if er_result.early_release_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=er_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=er_result.to_dict(),
+            )
+        elif verb == "check-lock-domain":
+            from core.audit.condition_smt import check_lock_domain
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            ld_result = check_lock_domain(source)
+            if ld_result.mismatch_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=ld_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=ld_result.to_dict(),
+            )
+        elif verb == "check-toctou":
+            from core.audit.condition_smt import check_toctou
+            if not source:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                )
+            tt_result = check_toctou(source)
+            if tt_result.toctou_found:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="confirmed",
+                    rule_id=f"smt:{verb}",
+                    details=tt_result.to_dict(),
+                )
+            return SweepResult(
+                tool="smt", file_path=file_path,
+                function_name=function_name, outcome="refuted",
+                rule_id=f"smt:{verb}",
+                details=tt_result.to_dict(),
+            )
         elif verb == "validate-path":
             from packages.exploit_feasibility.smt_path import validate_path
             conditions = _extract_path_conditions(hypothesis, source)
@@ -768,6 +1052,26 @@ def _extract_negative_bypass_operands(
     return value, limit
 
 
+_OVERFLOW_SAFE_EXTS = frozenset({".go", ".py", ".rs", ".java"})
+
+
+def _lang_has_overflow_safety(file_path: str) -> bool:
+    """Languages where unconstrained SMT overflow/OOB checks are meaningless."""
+    from pathlib import Path
+    return Path(file_path).suffix in _OVERFLOW_SAFE_EXTS
+
+
+def _operand_in_source_arithmetic(operand: str, source: str) -> bool:
+    """Check if *operand* appears adjacent to an arithmetic operator in source."""
+    import re
+    cleaned = re.sub(
+        r'//[^\n]*|/\*.*?\*/|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'',
+        " ", source, flags=re.DOTALL,
+    )
+    pat = rf"(?:\b{re.escape(operand)}\b\s*[+\-*/%]|[+\-*/%]\s*\b{re.escape(operand)}\b)"
+    return bool(re.search(pat, cleaned))
+
+
 def _extract_ptr_operand(hypothesis: str) -> Optional[str]:
     """Extract pointer name from hypothesis like 'NULL pointer dereference of ptr'."""
     import re
@@ -783,21 +1087,30 @@ def _extract_ptr_operand(hypothesis: str) -> Optional[str]:
 def _extract_arithmetic_operands(
     hypothesis: str, source: str,
 ) -> list:
-    """Extract operand identifiers from hypothesis about integer overflow."""
+    """Extract operand identifiers from hypothesis about integer overflow.
+
+    After extracting candidates from hypothesis text, verifies each
+    actually participates in an arithmetic expression in the source.
+    """
     import re
     backtick_ids = re.findall(r"`(\w+)`", hypothesis)
     if len(backtick_ids) >= 2:
-        return [i for i in backtick_ids[:3] if _IDENT_RE.fullmatch(i)]
-    ids = _IDENT_RE.findall(hypothesis)
-    candidates = [
-        i for i in ids
-        if i.lower() not in {
-            "integer", "overflow", "the", "in", "of", "can", "cause",
-            "value", "large", "leading", "to", "size", "check", "a",
-            "an", "this", "that", "with", "from", "by", "for", "is",
-        }
-    ]
-    return candidates[:2]
+        raw = [i for i in backtick_ids[:3] if _IDENT_RE.fullmatch(i)]
+    else:
+        ids = _IDENT_RE.findall(hypothesis)
+        raw = [
+            i for i in ids
+            if i.lower() not in {
+                "integer", "overflow", "the", "in", "of", "can", "cause",
+                "value", "large", "leading", "to", "size", "check", "a",
+                "an", "this", "that", "with", "from", "by", "for", "is",
+            }
+        ]
+        raw = raw[:3]
+    if source:
+        verified = [c for c in raw if _operand_in_source_arithmetic(c, source)]
+        return verified[:2]
+    return raw[:2]
 
 
 def _extract_oob_operands(
@@ -1021,6 +1334,7 @@ def run_consistency_check(
     target_path: Path,
     function_name: str,
     cocci_rule: str,
+    domain_vocab: Any = None,
 ) -> SweepResult:
     """Run a Coccinelle consistency check across the entire target.
 
@@ -1063,12 +1377,27 @@ def run_consistency_check(
                 errors=["coccinelle (spatch) not installed"],
             )
 
-        result = run_rule(
-            target_path,
-            cocci_rule,
-            defines={"func": function_name},
-            timeout=300,
-        )
+        effective_rule = cocci_rule
+        _rendered_tmp = None
+        if domain_vocab is not None:
+            try:
+                from engine.coccinelle.vocab_renderer import render as _render_cocci
+                _rendered_tmp = _render_cocci(Path(cocci_rule), domain_vocab)
+                if _rendered_tmp is not None:
+                    effective_rule = str(_rendered_tmp)
+            except Exception:
+                pass
+
+        try:
+            result = run_rule(
+                target_path,
+                effective_rule,
+                defines={"func": function_name},
+                timeout=300,
+            )
+        finally:
+            if _rendered_tmp is not None:
+                _rendered_tmp.unlink(missing_ok=True)
 
         matches = []
         for match in result.matches:

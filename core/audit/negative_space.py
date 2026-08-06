@@ -467,6 +467,7 @@ def _looks_like_handler(gap: Dict[str, Any]) -> bool:
 def check_sibling_negative_space(
     gaps: Sequence[Dict[str, Any]],
     conventions: Sequence[SecurityConvention],
+    peer_groups=None,
 ) -> List[NegativeSpaceFinding]:
     """Detect convention violations by comparing sibling functions.
 
@@ -477,6 +478,9 @@ def check_sibling_negative_space(
 
     This catches the "one arm drifted" pattern: 3 renderers use
     html_escape, the 4th uses strip_tags.
+
+    When *peer_groups* is provided, reuses them instead of resolving
+    internally — avoids a redundant resolve_peer_groups call.
     """
     gaps = [g for g in gaps if not g.get("dead")]
     from core.audit.sibling_analysis import (
@@ -485,14 +489,16 @@ def check_sibling_negative_space(
         SiblingType,
         find_asymmetries,
     )
-    from core.analysis.peer_groups import resolve_peer_groups
 
-    func_dicts = [
-        {"name": g.get("name", ""), "file": g.get("file", ""), "line": g.get("line", 0)}
-        for g in gaps
-        if g.get("name")
-    ]
-    peer_groups = resolve_peer_groups(func_dicts)
+    if peer_groups is None:
+        from core.analysis.peer_groups import resolve_peer_groups
+
+        func_dicts = [
+            {"name": g.get("name", ""), "file": g.get("file", ""), "line": g.get("line", 0)}
+            for g in gaps
+            if g.get("name")
+        ]
+        peer_groups = resolve_peer_groups(func_dicts)
     if not peer_groups:
         return []
 
@@ -654,6 +660,7 @@ def check_resource_exhaustion(
     gaps: Sequence[Dict[str, Any]],
     *,
     target_path: Optional[Path] = None,
+    domain_vocab: Any = None,
 ) -> List[NegativeSpaceFinding]:
     """Detect resource exhaustion patterns."""
     findings: List[NegativeSpaceFinding] = []
@@ -682,7 +689,19 @@ def check_resource_exhaustion(
                 title="Potentially catastrophic regex backtracking",
             ))
 
-        if _UNBOUNDED_ALLOC.search(source):
+        unbounded_re = _UNBOUNDED_ALLOC
+        if domain_vocab is not None:
+            extra = getattr(domain_vocab, "allocators", frozenset())
+            if extra:
+                alloc_alts = "|".join(
+                    re.escape(n) for n in sorted(extra, key=len, reverse=True)
+                )
+                unbounded_re = re.compile(
+                    rf"(?:malloc|calloc|realloc|{alloc_alts}|new\s+\w+\[)\s*\("
+                    r"\s*\w+\s*(?:\+|\*)\s*\w+",
+                    re.I,
+                )
+        if unbounded_re.search(source):
             is_checked = bool(re.search(
                 r"if\s*\(.*(?:size|len|count|num).*[<>]", source, re.I,
             ))
@@ -1073,6 +1092,7 @@ def check_signal_safety(
     gaps: Sequence[Dict[str, Any]],
     *,
     target_path: Optional[Path] = None,
+    domain_vocab: Any = None,
 ) -> List[NegativeSpaceFinding]:
     """Flag signal handlers that call signal-unsafe functions."""
     findings: List[NegativeSpaceFinding] = []
@@ -1100,7 +1120,13 @@ def check_signal_safety(
             for c in callees
         }
 
-        unsafe_used = callee_names & _SIGNAL_UNSAFE_CALLS
+        unsafe_names = _SIGNAL_UNSAFE_CALLS
+        if domain_vocab is not None:
+            unsafe_names = unsafe_names | (
+                getattr(domain_vocab, "allocators", frozenset())
+                | getattr(domain_vocab, "deallocators", frozenset())
+            )
+        unsafe_used = callee_names & unsafe_names
         if unsafe_used:
             findings.append(NegativeSpaceFinding(
                 check_type="signal_safety",
@@ -1504,8 +1530,31 @@ def check_lock_ordering(
     gaps: Sequence[Dict[str, Any]],
     *,
     target_path: Optional[Path] = None,
+    domain_vocab: Any = None,
 ) -> List[NegativeSpaceFinding]:
     """Extends blind spot 11: lock ordering and locking discipline analysis."""
+    lock_acquire_re = _LOCK_ACQUIRE
+    lock_missing_re = _LOCK_MISSING_UNLOCK
+    unlock_re = _UNLOCK_PATTERN
+    if domain_vocab and (domain_vocab.lock_acquires or domain_vocab.lock_releases):
+        extra_acq = "|".join(
+            rf"{re.escape(n)}\s*\(" for n in domain_vocab.lock_acquires
+        )
+        extra_rel = "|".join(
+            rf"{re.escape(n)}\s*\(" for n in domain_vocab.lock_releases
+        )
+        if extra_acq:
+            lock_acquire_re = re.compile(
+                _LOCK_ACQUIRE.pattern + "|" + extra_acq,
+            )
+            lock_missing_re = re.compile(
+                _LOCK_MISSING_UNLOCK.pattern + "|" + extra_acq, re.I,
+            )
+        if extra_rel:
+            unlock_re = re.compile(
+                _UNLOCK_PATTERN.pattern + "|" + extra_rel, re.I,
+            )
+
     findings: List[NegativeSpaceFinding] = []
 
     for gap in gaps:
@@ -1517,7 +1566,7 @@ def check_lock_ordering(
         file = gap.get("file", "")
         function = gap.get("name", "")
 
-        lock_matches = _LOCK_ACQUIRE.findall(source)
+        lock_matches = lock_acquire_re.findall(source)
         lock_names = []
         for groups in lock_matches:
             name = next((g for g in groups if g), None)
@@ -1562,9 +1611,9 @@ def check_lock_ordering(
                     title="Lock acquisition in signal handler context",
                 ))
 
-        if _LOCK_MISSING_UNLOCK.search(source) and not _CONTEXT_MANAGER_LOCK.search(source):
-            has_acquire = _LOCK_MISSING_UNLOCK.search(source)
-            has_release = _UNLOCK_PATTERN.search(source)
+        if lock_missing_re.search(source) and not _CONTEXT_MANAGER_LOCK.search(source):
+            has_acquire = lock_missing_re.search(source)
+            has_release = unlock_re.search(source)
             has_error_path = re.search(
                 r"(?:raise\s+\w+|return\s+(?:None|False|-1|err)|except\s+\w+)",
                 source,
@@ -1586,7 +1635,7 @@ def check_lock_ordering(
                     title="Missing unlock in error path",
                 ))
 
-        if _LOCK_MISSING_UNLOCK.search(source):
+        if lock_missing_re.search(source):
             for call in _NON_REENTRANT_CALLS:
                 if re.search(rf"\b{call}\s*\(", source):
                     findings.append(NegativeSpaceFinding(

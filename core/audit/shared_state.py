@@ -93,6 +93,9 @@ class SharedState:
     # "file:function".
     mechanical_findings: dict[str, list[Any]] = field(default_factory=dict)
 
+    # Lazy inject-mode detector resolver (check_lock_domain, uninit_leak).
+    inject_resolver: Any = None
+
     # Fuzz coverage data merged from sibling runs.
     fuzz_coverage: dict[str, Any] = field(default_factory=dict)
 
@@ -188,6 +191,7 @@ class SharedState:
     # post-loop to avoid file-level races across concurrent workers.
     _reading_list_items: list[dict[str, Any]] = field(default_factory=list)
     _reading_list_lock: threading.Lock = field(default_factory=threading.Lock)
+    _early_study_fired: bool = False
 
     # Live-discovered sinks, sanitizers, and entry points accumulated
     # from LLM review outcomes during the loop.

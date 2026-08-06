@@ -216,6 +216,25 @@ def assemble_context(
         )
     ctx["strategy_exemplars"] = _load_strategy_exemplars(strategies)
     ctx["strategy_primers"] = _load_strategy_primers(strategies)
+    # Always inject security context + bug patterns (independent of primers)
+    if out_dir:
+        try:
+            from core.concepts.audit_bridge import domain_security_context
+            sc_block = domain_security_context(out_dir)
+            if sc_block:
+                ctx["domain_security_context"] = sc_block
+        except Exception:
+            logger.debug("domain security context failed", exc_info=True)
+        try:
+            from core.concepts.audit_bridge import domain_bug_patterns
+            bp_block = domain_bug_patterns(
+                out_dir, file_path, function_name, ctx.get("source", ""),
+            )
+            if bp_block:
+                ctx["domain_bug_patterns"] = bp_block
+        except Exception:
+            logger.debug("domain bug patterns failed", exc_info=True)
+
     _has_domain_primers = False
     if out_dir:
         try:
@@ -276,6 +295,20 @@ def assemble_context(
         logger.warning("prompt defence failed", exc_info=True)
 
     return ctx
+
+
+_KERNEL_PATH_HINTS = (
+    "kernel/", "drivers/", "fs/", "net/", "mm/", "arch/",
+    "block/", "crypto/", "security/", "sound/", "ipc/", "init/",
+    "lib/", "virt/",
+)
+
+
+def _is_kernel_c(ctx: Dict[str, Any]) -> bool:
+    fp = ctx.get("file", "")
+    if not fp.endswith((".c", ".h")):
+        return False
+    return any(fp.startswith(h) or f"/{h}" in fp for h in _KERNEL_PATH_HINTS)
 
 
 def format_context_for_prompt(
@@ -391,6 +424,12 @@ def format_context_for_prompt(
             spec_priority = 0 if has_mechanical else 1
             sections.append(PromptSection("inferred_spec", "\n" + spec_text, spec_priority))
 
+    if ctx.get("precondition_verifications"):
+        from .spec_inference import format_precondition_verification
+        pv_text = format_precondition_verification(ctx["precondition_verifications"])
+        if pv_text:
+            sections.append(PromptSection("precondition_verification", "\n" + pv_text, 0))
+
     if ctx.get("typestate_violations"):
         from core.analysis.typestate import format_typestate_for_context
         ts_text = format_typestate_for_context(ctx["typestate_violations"])
@@ -445,22 +484,62 @@ def format_context_for_prompt(
         ep.append("</untrusted>")
         sections.append(PromptSection("evidence", "\n".join(ep), 0))
 
+    if ctx.get("mechanical_detector_findings"):
+        mdf = ctx["mechanical_detector_findings"]
+        lines_mdf = ["\n### Pre-loop mechanical findings"]
+        for mf in mdf:
+            det = mf.get("detector", "?")
+            desc = mf.get("description", "")
+            mf_line = mf.get("line", 0)
+            lines_mdf.append(f"- [{det}] L{mf_line}: {desc}")
+        lines_mdf.append(
+            "\nThese mechanical signals were found BEFORE your review. "
+            "They are leads, not proof. Consider whether they indicate "
+            "a real vulnerability in this function."
+        )
+        sections.append(PromptSection(
+            "mechanical_detector_findings", "\n".join(lines_mdf), 1,
+        ))
+
+    if ctx.get("callee_contract_violation"):
+        ccv = ctx["callee_contract_violation"]
+        ccv_block = (
+            "\n### Callee-contract violation\n"
+            f"Your previous review marked this function **clean** because "
+            f"you assumed `{ccv['callee']}` {ccv['assumption']}.\n\n"
+            f"However, the review of `{ccv['callee']}` found it has a "
+            f"**{ccv['callee_status']}**: {ccv.get('callee_hypothesis', '')}\n\n"
+            f"Re-evaluate this function given that your callee assumption "
+            f"was wrong. Does the callee's actual behaviour make THIS "
+            f"function vulnerable?"
+        )
+        sections.append(PromptSection("callee_contract", ccv_block, 0))
+
     if ctx.get("sink_unreachable"):
         narrowed = ctx.get("sink_narrowed_classes", [])
+        review_mode = ctx.get("review_mode", "security")
+        if review_mode in ("bug_first", "quality"):
+            focus = (
+                "Focus on: logic bugs, resource handling, error paths, "
+                "contract violations, concurrency."
+            )
+        else:
+            focus = (
+                "Focus on: logic bugs, auth bypass, crypto misuse, race "
+                "conditions, information disclosure."
+            )
         if narrowed:
             narrowed_str = ", ".join(narrowed)
             sections.append(PromptSection("scope_narrowing",
                 "\n### Scope narrowing (mechanical)\n"
                 "This function has no transitive path to any dangerous API. "
                 f"The following CWE classes are excluded: {narrowed_str}. "
-                "Focus on: logic bugs, auth bypass, crypto misuse, race "
-                "conditions, information disclosure.", 0))
+                f"{focus}", 0))
         else:
             sections.append(PromptSection("scope_narrowing",
                 "\n### Scope narrowing (mechanical)\n"
                 "This function has no transitive path to any dangerous API. "
-                "Focus on: logic bugs, auth bypass, crypto misuse, race "
-                "conditions, information disclosure. Do NOT hypothesise "
+                f"{focus} Do NOT hypothesise "
                 "injection or memory corruption via sink.", 0))
 
     if ctx.get("codeql_no_alerts"):
@@ -469,6 +548,139 @@ def format_context_for_prompt(
             "CodeQL found no alerts for this file. Focus on logic bugs, "
             "auth/authz, crypto misuse, and concurrency issues rather than "
             "standard injection or overflow patterns.", 1))
+
+    if ctx.get("race_protected"):
+        sections.append(PromptSection("race_protected",
+            "\n### Mechanical race-protection verification\n"
+            "Static analysis confirms " + ctx["race_protected"] + ". "
+            "Do NOT hypothesise data races or TOCTOU conditions unless "
+            "you can identify a specific access that escapes all lock "
+            "scopes and does not use atomic/RCU/per-CPU accessors.", 1))
+
+    if _is_kernel_c(ctx):
+        sections.append(PromptSection("kernel_exemplars",
+            "\n### Kernel-internal patterns (NOT bugs)\n"
+            "This is Linux kernel C code. The following patterns are "
+            "correct by construction and must NOT be flagged:\n"
+            "- **RCU read-side**: `rcu_read_lock(); p = rcu_dereference(x); "
+            "use(p); rcu_read_unlock();` — the dereference is safe within "
+            "the read-side critical section.\n"
+            "- **Spinlock delegation**: a function that only calls "
+            "`spin_lock()`/`spin_unlock()` around a single operation is a "
+            "helper, not a lock-discipline violation.\n"
+            "- **Refcount helpers**: `kref_get()`/`kref_put()` with a "
+            "release callback is the standard lifecycle pattern.\n"
+            "- **Bitwise flag helpers**: functions that OR/AND bitmask "
+            "constants into a flags field are not integer overflows.\n"
+            "- **Completion variables**: `wait_for_completion()` / "
+            "`complete()` pairs across functions are correct.\n"
+            "Only flag these patterns if you can identify a SPECIFIC "
+            "violation (e.g., use after rcu_read_unlock, missing "
+            "rcu_read_lock, double kref_put).", 1))
+        sections.append(PromptSection("kernel_bug_patterns",
+            "\n### Kernel bug patterns to CHECK\n"
+            "These patterns appear in real kernel bugs. They are also "
+            "extremely common in CORRECT code — most instances are safe. "
+            "Only flag a pattern below when you can demonstrate a "
+            "CONCRETE triggering scenario: name the specific caller, "
+            "the specific input value, and the specific incorrect "
+            "outcome. If the code handles the case correctly (guards, "
+            "locks, ordering), classify as clean.\n"
+            "- **Lifecycle double-free/use-after-free**: a resource "
+            "(socket, device, inode, work item) is freed on one path "
+            "but can be reached again on another — check that teardown "
+            "functions clear pointers or set flags that prevent re-entry. "
+            "Watch for `list_del` without `list_del_init` (the dangling "
+            "list entry is visible to concurrent walkers).\n"
+            "- **Integer truncation in `min_t`/`max_t`**: the kernel's "
+            "`min_t(int, a, b)` casts both operands to `int` — if `a` "
+            "or `b` is `size_t` or `unsigned long`, high bits are "
+            "silently dropped. This can produce zero or negative results "
+            "from large-but-valid inputs.\n"
+            "- **Credential check ordering**: `ptrace_may_access`, "
+            "`security_task_*`, or `ns_capable` checked BEFORE acquiring "
+            "the lock that protects the state being authorised — another "
+            "thread can change the state between the check and use.\n"
+            "- **Refcount imbalance on error paths**: a `get`/`hold`/"
+            "`grab` increments a refcount but the error path returns "
+            "without a matching `put`/`release`/`drop`, leaking the "
+            "reference.", 1))
+
+    lang = ctx.get("language", "")
+    if lang == "go":
+        sections.append(PromptSection("go_exemplars",
+            "\n### Go patterns (NOT bugs)\n"
+            "- **Mutex guard**: `mu.Lock(); defer mu.Unlock()` is the "
+            "standard pattern. Only flag if the lock is NOT deferred or "
+            "if a return path skips unlock.\n"
+            "- **Error-and-return**: `if err != nil { return ..., err }` "
+            "is correct error propagation, not a missing check.\n"
+            "- **Type assertion with ok**: `v, ok := x.(T)` is safe; "
+            "only `v := x.(T)` (without ok) panics on mismatch.\n"
+            "- **Goroutine + channel**: a goroutine writing to a channel "
+            "read by the caller is the standard concurrency pattern, not "
+            "a race condition.\n"
+            "Only flag these patterns if you can identify a SPECIFIC "
+            "violation (e.g., lock without unlock on an error path, "
+            "unchecked type assertion, channel never read).", 2))
+        sections.append(PromptSection("go_bug_patterns",
+            "\n### Go bug patterns to CHECK\n"
+            "These patterns appear in real Go bugs. They are also "
+            "extremely common in CORRECT code — most instances are safe. "
+            "Only flag a pattern below when you can demonstrate a "
+            "CONCRETE triggering scenario: name the specific goroutine, "
+            "the specific interleaving, and the specific incorrect "
+            "outcome. If the code handles the case correctly (locks, "
+            "channels, atomic ops), classify as clean.\n"
+            "- **RLock early release**: `mu.RLock()` released before the "
+            "read values are fully consumed — a concurrent writer can "
+            "invalidate the data between RUnlock and use. Watch for "
+            "`defer mu.RUnlock()` at the top followed by a return that "
+            "captures a slice header but the backing array can be "
+            "reallocated by a concurrent call.\n"
+            "- **Error-write interleaving**: `io.Writer.Write` is called "
+            "without holding a lock, so concurrent writes from different "
+            "goroutines can interleave output mid-message. This is a "
+            "real data-corruption bug, not a hypothetical.\n"
+            "- **Integer truncation in type conversions**: `int(uint64Val)` "
+            "silently truncates on 32-bit platforms. `int32(int64Val)` "
+            "always truncates. Check arithmetic on lengths and offsets.", 2))
+    elif lang == "python":
+        sections.append(PromptSection("python_exemplars",
+            "\n### Python patterns (NOT bugs)\n"
+            "- **Flask/Django decorator auth**: `@login_required` or "
+            "`@requires_auth` applied to a view function delegates "
+            "authentication to the framework. The function itself does "
+            "not need to re-check credentials.\n"
+            "- **Context manager**: `with open(f) as fh:` ensures cleanup. "
+            "Not a resource leak.\n"
+            "- **Property accessor**: `@property` methods that return "
+            "a stored attribute are trivially safe.\n"
+            "Only flag auth issues if the decorator is MISSING, not if "
+            "the function trusts it.", 2))
+    elif lang in ("c", "cpp") and not _is_kernel_c(ctx):
+        fp = ctx.get("file", "")
+        if any(kw in fp.lower() for kw in (
+            "crypto", "cipher", "aes", "sha", "hmac", "ssl", "tls",
+            "esp", "ipsec", "encrypt", "decrypt",
+        )):
+            sections.append(PromptSection("crypto_exemplars",
+                "\n### Crypto helper patterns (NOT bugs)\n"
+                "- **Alignment helpers**: functions that use PTR_ALIGN "
+                "or manual alignment arithmetic on a caller-provided "
+                "buffer are correct IF the caller allocated enough space. "
+                "The helper itself cannot overflow.\n"
+                "- **Size calculation**: functions that compute allocation "
+                "sizes from algorithm parameters (block size, IV length, "
+                "key length) using standard kernel/library macros are "
+                "not integer overflows unless the parameters themselves "
+                "are attacker-controlled.\n"
+                "- **Transformation chains**: encrypt-then-MAC or similar "
+                "multi-step pipelines where each step processes the output "
+                "of the previous step are correct by construction if the "
+                "buffer was allocated for the full chain.\n"
+                "Only flag if you can show the caller violates the "
+                "allocation contract, not if the helper trusts it.", 2))
 
     if ctx.get("active_constraints"):
         cp = [
@@ -701,6 +913,15 @@ def format_context_for_prompt(
                 + (f" ({cwes} mitigated)" if cwes else "")
             )
         sections.append(PromptSection("framework_guarantees", "\n".join(fp), 1))
+
+    if ctx.get("domain_security_context"):
+        sections.append(PromptSection(
+            "domain_security_context",
+            "\n" + ctx["domain_security_context"], 1))
+    if ctx.get("domain_bug_patterns"):
+        sections.append(PromptSection(
+            "domain_bug_patterns",
+            "\n" + ctx["domain_bug_patterns"], 1))
 
     if ctx.get("domain_model"):
         sections.append(PromptSection("domain_model", "\n" + ctx["domain_model"], 1))
@@ -967,13 +1188,24 @@ def _format_glance_prompt(ctx: Dict[str, Any]) -> str:
     evidence, or strategy context — the LLM just decides if this
     function warrants further investigation.
     """
+    mode = ctx.get("review_mode", "security")
+    if mode in ("bug_first", "quality"):
+        question = (
+            "\nDoes this function contain a potential defect — logic "
+            "error, resource leak, error handling gap, or incorrect "
+            "assumption? Answer in one sentence."
+        )
+    else:
+        question = (
+            "\nIs this function security-relevant? Could it contain a "
+            "vulnerability (memory safety, injection, auth bypass, "
+            "information disclosure, logic flaw)? Answer in one sentence."
+        )
     parts = [
         f"## {ctx['file']}:{ctx['function']}",
         f"\n### Source (lines {ctx['line_start']}-{ctx.get('line_end', '?')})",
         f"```\n{ctx.get('source', '(not available)')}\n```",
-        "\nIs this function security-relevant? Could it contain a "
-        "vulnerability (memory safety, injection, auth bypass, "
-        "information disclosure, logic flaw)? Answer in one sentence.",
+        question,
     ]
     return "\n".join(parts)
 

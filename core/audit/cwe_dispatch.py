@@ -104,7 +104,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "sinks": [],
     },
     "CWE-476": {
-        "smt": None,
+        "smt": "check-null-propagation",
         "cocci": "missing_null_check.cocci",
         "joern": False,
         "codeql": "cpp/null-dereference",
@@ -120,14 +120,21 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     },
     # Concurrency
     "CWE-362": {
-        "smt": None,
+        "smt": "check-lock-domain",
         "cocci": "lock_imbalance.cocci",
         "joern": False,
         "codeql": None,
         "sinks": [],
     },
+    "CWE-367": {
+        "smt": "check-toctou",
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
     "CWE-667": {
-        "smt": None,
+        "smt": "check-lock-discipline",
         "cocci": "lock_imbalance.cocci",
         "joern": False,
         "codeql": None,
@@ -135,7 +142,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     },
     # Authentication / authorisation
     "CWE-287": {
-        "smt": None,
+        "smt": "check-auth-bypass",
         "cocci": None,
         "joern": True,
         "codeql": None,
@@ -146,7 +153,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "dark_verify": True,
     },
     "CWE-862": {
-        "smt": None,
+        "smt": "check-auth-bypass",
         "cocci": None,
         "joern": True,
         "codeql": None,
@@ -157,7 +164,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "dark_verify": True,
     },
     "CWE-863": {
-        "smt": None,
+        "smt": "check-auth-bypass",
         "cocci": None,
         "joern": True,
         "codeql": None,
@@ -166,6 +173,29 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
             "check_access", "require_auth", "can_access",
         ],
         "dark_verify": True,
+    },
+    # Resource management
+    "CWE-401": {
+        "smt": "check-resource-leak",
+        "cocci": None,
+        "joern": False,
+        "codeql": "cpp/resource-not-released-in-destructor",
+        "sinks": [],
+    },
+    "CWE-775": {
+        "smt": "check-resource-leak",
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    # Integer narrowing
+    "CWE-681": {
+        "smt": "check-integer-narrowing",
+        "cocci": None,
+        "joern": False,
+        "codeql": "cpp/integer-overflow",
+        "sinks": [],
     },
 }
 
@@ -179,6 +209,51 @@ def lookup(cwe: str) -> Optional[Dict[str, Any]]:
     if not normalized.startswith("CWE-"):
         normalized = f"CWE-{normalized}"
     return CWE_TO_TOOL_DISPATCH.get(normalized)
+
+
+_HYPOTHESIS_CWE_MAP = [
+    (r"race\s+condition|data\s+race|concurrent.*(?:write|access|modif)", "CWE-362"),
+    (r"toctou|time.of.check.*time.of.use|check.*then.*use.*race", "CWE-367"),
+    (r"deadlock|livelock|lock.*order|double.*lock", "CWE-667"),
+    (r"use.after.free|dangling.*pointer|freed.*(?:object|memory|buffer)", "CWE-416"),
+    (r"double.free|free.*twice", "CWE-415"),
+    (r"(?:integer|arithmetic).*overflow|integer.*wrap", "CWE-190"),
+    (r"(?:integer|arithmetic).*underflow", "CWE-191"),
+    (r"null.*(?:pointer|deref)|nullptr.*deref|deref.*null", "CWE-476"),
+    (r"(?:buffer|heap|stack).*overflow|out.of.bounds.*(?:write|access)", "CWE-787"),
+    (r"out.of.bounds.*read|oob.*read", "CWE-125"),
+    (r"format.*string.*(?:vuln|inject|attack)", "CWE-134"),
+    (r"(?:command|os|shell).*inject", "CWE-78"),
+    (r"sql.*inject", "CWE-89"),
+    (r"(?:auth|permission|privilege).*bypass", "CWE-863"),
+    (r"missing.*auth|no.*auth.*check", "CWE-862"),
+    (r"resource.*leak|memory.*leak|missing.*free", "CWE-401"),
+    (r"(?:integer|type).*(?:truncat|narrow)", "CWE-681"),
+    (r"uninitiali[sz]ed", "CWE-457"),
+]
+
+_HYPOTHESIS_CWE_RE = None
+
+
+def infer_cwe_from_hypothesis(hypothesis: str) -> Optional[str]:
+    """Extract a CWE from hypothesis text via keyword matching.
+
+    Returns the first matching CWE that has a dispatch entry, or None.
+    Used as fallback when the LLM doesn't populate the CWE field.
+    """
+    global _HYPOTHESIS_CWE_RE
+    if _HYPOTHESIS_CWE_RE is None:
+        import re
+        _HYPOTHESIS_CWE_RE = [
+            (re.compile(pattern, re.IGNORECASE), cwe)
+            for pattern, cwe in _HYPOTHESIS_CWE_MAP
+        ]
+
+    for regex, cwe in _HYPOTHESIS_CWE_RE:
+        if regex.search(hypothesis or ""):
+            if lookup(cwe) is not None:
+                return cwe
+    return None
 
 
 def sinks_for_cwe(cwe: str) -> List[str]:

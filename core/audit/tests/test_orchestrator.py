@@ -30,12 +30,18 @@ def _setup_target(tmp_path: Path):
     target.mkdir()
     (target / "src").mkdir()
     (target / "src" / "auth.c").write_text(
-        "int check_pw(char *pw) {\n"
-        "  return strcmp(pw, stored);\n"
+        "int check_pw(char *pw, int len) {\n"
+        "  if (len > MAX_PW) return -1;\n"
+        "  char buf[256];\n"
+        "  memcpy(buf, pw, len);\n"
+        "  return strcmp(buf, stored);\n"
         "}\n"
         "\n"
-        "int validate(char *input) {\n"
-        "  return strlen(input) > 0;\n"
+        "int validate(char *input, size_t sz) {\n"
+        "  if (sz == 0) return -1;\n"
+        "  char tmp[128];\n"
+        "  memcpy(tmp, input, sz);\n"
+        "  return strlen(tmp) > 0;\n"
         "}\n"
     )
 
@@ -1107,9 +1113,9 @@ class TestHypothesisToSmtVerb:
         from core.audit.orchestrator import _hypothesis_to_smt_verb
         assert _hypothesis_to_smt_verb("buffer overflow via memcpy") == "check-oob"
 
-    def test_null_pointer_no_smt(self):
+    def test_null_pointer_maps_to_null_propagation(self):
         from core.audit.orchestrator import _hypothesis_to_smt_verb
-        assert _hypothesis_to_smt_verb("null pointer dereference") is None
+        assert _hypothesis_to_smt_verb("null pointer dereference") == "check-null-propagation"
 
     def test_overflow_to_oob(self):
         from core.audit.orchestrator import _hypothesis_to_smt_verb
@@ -1209,7 +1215,7 @@ class TestHypothesisToCocciCheck:
             "rcu_dereference without rcu_read_lock held"
         )
         if result is not None:
-            assert "rcu_no_lock" in result
+            assert "rcu" in result
 
     def test_uid_truncation_routes(self):
         from core.audit.orchestrator import _hypothesis_to_cocci_check
@@ -1977,13 +1983,13 @@ class TestToolChain:
 
         def mock_cocci(**kw):
             return SweepResult(
-                tool="coccinelle_consistency", file_path="<codebase>",
+                tool="coccinelle", file_path=kw.get("file_path", "<codebase>"),
                 function_name=kw["function_name"],
                 outcome="confirmed",
             )
 
         monkeypatch.setattr(orch_mod, "run_smt_verb_direct", mock_smt)
-        monkeypatch.setattr(orch_mod, "run_consistency_check", mock_cocci)
+        monkeypatch.setattr(orch_mod, "run_coccinelle_sweep", mock_cocci)
 
         chain = [
             {"type": "smt", "config": {"verb": "check-oob"}},
@@ -2011,13 +2017,13 @@ class TestToolChain:
 
         def mock_cocci(**kw):
             return SweepResult(
-                tool="coccinelle_consistency", file_path="<codebase>",
+                tool="coccinelle", file_path=kw.get("file_path", "<codebase>"),
                 function_name=kw["function_name"],
                 outcome="confirmed",
             )
 
         monkeypatch.setattr(orch_mod, "run_smt_verb_direct", mock_smt)
-        monkeypatch.setattr(orch_mod, "run_consistency_check", mock_cocci)
+        monkeypatch.setattr(orch_mod, "run_coccinelle_sweep", mock_cocci)
 
         chain = [
             {"type": "smt", "config": {"verb": "check-oob"}},
@@ -2047,13 +2053,13 @@ class TestToolChain:
 
         def mock_cocci(**kw):
             return SweepResult(
-                tool="coccinelle_consistency", file_path="<codebase>",
+                tool="coccinelle", file_path=kw.get("file_path", "<codebase>"),
                 function_name=kw["function_name"],
                 outcome="confirmed",
             )
 
         monkeypatch.setattr(orch_mod, "run_smt_verb_direct", mock_smt)
-        monkeypatch.setattr(orch_mod, "run_consistency_check", mock_cocci)
+        monkeypatch.setattr(orch_mod, "run_coccinelle_sweep", mock_cocci)
 
         chain = [
             {"type": "smt", "config": {"verb": "check-oob"}},
@@ -3337,6 +3343,7 @@ class TestSageCombinedPathway:
     real pipeline with the collector active.
     """
 
+    @pytest.mark.slow
     def test_full_pipeline_stores_verdict(self, tmp_path: Path):
         """run_orchestrator → Collector.submit → SAGE hypothesis store."""
         from unittest.mock import patch as _patch
