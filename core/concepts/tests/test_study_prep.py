@@ -1769,3 +1769,68 @@ class TestChaseReadingListDefinitions:
         result = prep._chase_reading_list_definitions(rl, tmp_path, target)
         names = {p.name for p in result}
         assert "local_lock.h" in names
+
+
+# ------------------------------------------------------------------
+# Type reinjection
+# ------------------------------------------------------------------
+
+class TestReinjectReferencedTypes:
+    def _make_item(self, name, kind="struct", tier=0, definition="",
+                   owned_types=None):
+        return prep.StudyItem(
+            id=f"{kind}_{name}", kind=kind, name=name, file="test.h",
+            definition=definition, relevance_tier=tier,
+            owned_types=owned_types or [],
+        )
+
+    def test_reinjects_owned_type(self):
+        focus = self._make_item("crypto_tfm", owned_types=["crypto_type"])
+        dep = self._make_item("crypto_type", tier=3)
+        pre_filter = {it.name.lower(): it for it in [focus, dep]}
+        result = prep._reinject_referenced_types(
+            [focus], pre_filter, prep._INFRA_TYPES)
+        names = {it.name for it in result}
+        assert "crypto_type" in names
+        assert dep.relevance_tier == 2
+
+    def test_reinjects_pointer_field_from_definition(self):
+        defn = "struct foo { struct bar_ctx *ctx; int x; };"
+        focus = self._make_item("foo", definition=defn)
+        dep = self._make_item("bar_ctx", tier=3)
+        pre_filter = {it.name.lower(): it for it in [focus, dep]}
+        result = prep._reinject_referenced_types(
+            [focus], pre_filter, prep._INFRA_TYPES)
+        names = {it.name for it in result}
+        assert "bar_ctx" in names
+
+    def test_skips_infra_types(self):
+        defn = "struct foo { struct list_head list; struct bar *b; };"
+        focus = self._make_item("foo", definition=defn)
+        infra = self._make_item("list_head", tier=3)
+        dep = self._make_item("bar", tier=3)
+        pre_filter = {it.name.lower(): it for it in [focus, infra, dep]}
+        result = prep._reinject_referenced_types(
+            [focus], pre_filter, prep._INFRA_TYPES)
+        names = {it.name for it in result}
+        assert "list_head" not in names
+        assert "bar" in names
+
+    def test_skips_already_surviving(self):
+        a = self._make_item("alpha", tier=0, owned_types=["beta"])
+        b = self._make_item("beta", tier=1)
+        pre_filter = {it.name.lower(): it for it in [a, b]}
+        result = prep._reinject_referenced_types(
+            [a, b], pre_filter, prep._INFRA_TYPES)
+        assert len(result) == 2
+
+    def test_only_scans_focus_items(self):
+        focus = self._make_item("primary", tier=0)
+        ctx = self._make_item("secondary", tier=2,
+                              owned_types=["deep_type"])
+        deep = self._make_item("deep_type", tier=3)
+        pre_filter = {it.name.lower(): it for it in [focus, ctx, deep]}
+        result = prep._reinject_referenced_types(
+            [focus, ctx], pre_filter, prep._INFRA_TYPES)
+        names = {it.name for it in result}
+        assert "deep_type" not in names
