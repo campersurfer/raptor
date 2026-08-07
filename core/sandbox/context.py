@@ -1006,6 +1006,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             effective_read_paths.append(target)
         if readable_paths:
             effective_read_paths.extend(readable_paths)
+        if etc_overlay:
+            for ns_path in etc_overlay:
+                if isinstance(ns_path, str) and ns_path not in effective_read_paths:
+                    effective_read_paths.append(ns_path)
     elif readable_paths:
         logger.warning(
             "Sandbox: readable_paths=%s ignored because restrict_reads=False "
