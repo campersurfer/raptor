@@ -482,7 +482,8 @@ def get_smt_verb_role(verb: str) -> str:
 
     Unknown verbs default to ``"detection"``.
     """
-    return _SMT_VERB_ROLES.get(verb, "detection")
+    bare = verb.split(":")[0]
+    return _SMT_VERB_ROLES.get(bare, "detection")
 
 
 def run_smt_sweep(

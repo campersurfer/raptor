@@ -11,6 +11,8 @@ import io.shiftleft.semanticcpg.language._
 import io.shiftleft.codepropertygraph.generated.nodes.CfgNode
 import scala.util.Try
 
+implicit val engineContext: EngineContext = EngineContext()
+
 val dangerousSinks = List(
   // Command execution
   "system", "popen", "exec", "execve", "execvp", "execl", "execlp",

@@ -60,12 +60,14 @@ class JoernQuery:
             return f"{method_sel}.callee.fullName.l"
         if self.query_type == QueryType.TAINT_TO_SINKS:
             return (
+                f"implicit val ctx: EngineContext = EngineContext()\n"
                 f"def src = {method_sel}.parameter\n"
                 f"def sink = cpg.call.name(\"memcpy|strcpy|sprintf|exec|system|popen\").argument\n"
                 f"sink.reachableByFlows(src).p"
             )
         if self.query_type == QueryType.TAINT_FROM_SOURCES:
             return (
+                f"implicit val ctx: EngineContext = EngineContext()\n"
                 f"def src = cpg.call.name(\"recv|read|fread|fgets|getenv\").argument\n"
                 f"def sink = {method_sel}.parameter\n"
                 f"sink.reachableByFlows(src).p"

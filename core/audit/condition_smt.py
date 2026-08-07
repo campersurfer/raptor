@@ -1532,6 +1532,16 @@ def check_lock_discipline(
             ):
                 continue
 
+            # if (...) { unlock(); return; } — same-indent unlock
+            ret_indent = len(lines[ret_line]) - len(lines[ret_line].lstrip())
+            if any(
+                ul < ret_line and ul > acq_line
+                and (ret_line - ul) <= 3
+                and (len(lines[ul]) - len(lines[ul].lstrip())) == ret_indent
+                for ul in unlock_lines
+            ):
+                continue
+
             ret_text = lines[ret_line].strip()
             if _return_is_in_error_goto_block(
                 ret_line, lines, goto_targets, labels, unlock_name,
