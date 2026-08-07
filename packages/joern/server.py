@@ -135,6 +135,7 @@ class JoernServer:
         self._proc: subprocess.Popen | None = None
         self._base_url: str | None = None
         self._cpg_loaded = False
+        self._cpg_path: Path | None = None
         self._http_client: Any | None = None
         self._version_downgrade: bool = False
         self._last_post_error: str = ""
@@ -278,6 +279,26 @@ class JoernServer:
         except Exception:
             return False
 
+    def restart(self) -> bool:
+        """Stop, restart, and reload the CPG.
+
+        Used after a query timeout leaves the single-threaded REPL
+        saturated — subsequent queries would queue behind the stuck
+        query indefinitely.  Returns True if the server came back and
+        the CPG was reloaded successfully.
+        """
+        cpg_path = self._cpg_path
+        logger.info("restarting Joern server (stuck query recovery)")
+        self.stop()
+        try:
+            self.start()
+        except RuntimeError:
+            logger.error("Joern server failed to restart")
+            return False
+        if cpg_path is not None and cpg_path.exists():
+            return self.import_cpg(cpg_path)
+        return True
+
     def import_cpg(self, cpg_path: Path, *, timeout: int = 120) -> bool:
         """Load a pre-built CPG into the running server.
 
@@ -308,6 +329,7 @@ class JoernServer:
 
         logger.info("CPG loaded in %.1fs", elapsed)
         self._cpg_loaded = True
+        self._cpg_path = cpg_path
 
         self._warmup_dataflow()
 
@@ -383,6 +405,11 @@ class JoernServer:
 
         if resp is None:
             detail = self._last_post_error or "server did not respond"
+            # A timeout means the single-threaded REPL is stuck on this
+            # query (or a prior one).  Restart so subsequent queries
+            # don't queue behind the stuck one indefinitely.
+            if "timed out" in detail:
+                self.restart()
             return JoernResult(
                 query=cpgql,
                 errors=[detail],
@@ -469,29 +496,27 @@ class JoernServer:
         payload: dict,
         timeout: int,
     ) -> dict[str, Any] | None:
+        # Fresh client per request.  The Joern REPL is single-threaded;
+        # a timed-out query leaves stale state in the connection pool
+        # that blocks all subsequent queries on the reused socket.  The
+        # ~50ms TCP setup overhead is negligible vs query execution time.
+        client = _httpx.Client(
+            timeout=_httpx.Timeout(timeout, connect=5.0),
+        )
         try:
-            if self._http_client is None:
-                self._http_client = _httpx.Client(
-                    timeout=_httpx.Timeout(timeout, connect=5.0),
-                )
-            resp = self._http_client.post(
-                url, json=payload, timeout=timeout,
-            )
+            resp = client.post(url, json=payload)
             return resp.json()
         except Exception as e:
             if "timed out" in str(e).lower() or "timeout" in type(e).__name__.lower():
                 self._last_post_error = f"query timed out after {timeout}s"
             elif "connect" in str(e).lower() or "refused" in str(e).lower():
                 self._last_post_error = f"connection failed: {e}"
-                # Drop stale connection pool — the server is gone.
-                self._http_client = None
             else:
                 self._last_post_error = str(e)
-                # Any unexpected error could leave the pool in a bad
-                # state; drop it so the next call starts fresh.
-                self._http_client = None
             logger.debug("query-sync (httpx) failed: %s", e)
             return None
+        finally:
+            client.close()
 
     def _post_urllib(
         self,
@@ -648,6 +673,9 @@ class JoernServer:
             time.sleep(poll_interval)
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
+        # The server is stuck on this query.  Restart so subsequent
+        # queries don't queue behind it.
+        self.restart()
         return JoernResult(
             query=cpgql, errors=["timeout (async poll)"],
             elapsed_ms=elapsed_ms,

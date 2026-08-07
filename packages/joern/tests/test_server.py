@@ -344,7 +344,8 @@ class TestQueryCancellable:
         srv._base_url = "http://127.0.0.1:9999"
 
         with patch.object(srv, "_post_async", return_value="uuid-789"), \
-             patch.object(srv, "_get_result", return_value=None):
+             patch.object(srv, "_get_result", return_value=None), \
+             patch.object(srv, "restart", return_value=False):
             result = srv.query_cancellable(
                 "cpg.method.l", timeout=1, poll_interval=0.1,
             )
@@ -360,6 +361,50 @@ class TestQueryCancellable:
         srv = JoernServer()
         srv._base_url = None
         assert srv._get_result("some-uuid") is None
+
+
+class TestRestart:
+    def test_restart_after_query_timeout(self):
+        """When query() gets a timeout, it restarts the server so
+        subsequent queries don't queue behind the stuck one."""
+        srv = JoernServer()
+        srv._cpg_loaded = True
+        srv._base_url = "http://127.0.0.1:9999"
+
+        with patch.object(srv, "_post_sync", return_value=None), \
+             patch.object(srv, "restart", return_value=True) as mock_restart:
+            srv._last_post_error = "query timed out after 300s"
+            result = srv.query("cpg.method.l")
+        assert result.errors
+        mock_restart.assert_called_once()
+
+    def test_no_restart_on_non_timeout_error(self):
+        """Non-timeout errors should not trigger a restart."""
+        srv = JoernServer()
+        srv._cpg_loaded = True
+        srv._base_url = "http://127.0.0.1:9999"
+
+        with patch.object(srv, "_post_sync", return_value=None), \
+             patch.object(srv, "restart") as mock_restart:
+            srv._last_post_error = "connection failed: refused"
+            result = srv.query("cpg.method.l")
+        assert result.errors
+        mock_restart.assert_not_called()
+
+    def test_restart_preserves_cpg_path(self, tmp_path):
+        """restart() should reload the CPG from the stored path."""
+        cpg_file = tmp_path / "cpg.bin"
+        cpg_file.write_bytes(b"")
+
+        srv = JoernServer()
+        srv._cpg_path = cpg_file
+
+        with patch.object(srv, "stop"), \
+             patch.object(srv, "start"), \
+             patch.object(srv, "import_cpg", return_value=True) as mock_import:
+            result = srv.restart()
+        assert result is True
+        mock_import.assert_called_once_with(cpg_file)
 
 
 class TestRunTaintExistsQuery:
