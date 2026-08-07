@@ -17,6 +17,7 @@ from core.audit.orchestrator import (
     _multi_pass_review,
     _hypothesis_to_semgrep_rule,
     _hypothesis_to_tool_chain,
+    _promote_hypothesis_inconsistent,
     _resolve_gate_demoted,
     _run_tool_chain,
     get_reviewed_set,
@@ -3499,4 +3500,65 @@ class TestJoernTarget:
         from core.audit.orchestrator import _joern_target
         cfg = self._cfg(tmp_path, scope="does/not/exist")
         assert _joern_target(cfg) == cfg.target_path
+
+
+class TestPromoteHypothesisInconsistent:
+    """Tests for _promote_hypothesis_inconsistent."""
+
+    def _result(self, outcomes):
+        r = OrchestratorResult()
+        r.outcomes = list(outcomes)
+        r.clean = sum(1 for o in outcomes if o.status == "clean")
+        r.suspicious = sum(
+            1 for o in outcomes if o.status == "suspicious"
+        )
+        return r
+
+    def _outcome(self, status="clean", body="", hypotheses=None):
+        return ReviewOutcome(
+            file="f.c",
+            function="fn",
+            status=status,
+            body=body,
+            hypothesis="",
+            hypotheses=hypotheses or [],
+            evidence_tool="",
+            cost_usd=0,
+            model="test",
+            duration_s=0,
+        )
+
+    def test_promotes_clean_with_unrefuted_hypothesis(self):
+        o = self._outcome(
+            hypotheses=[{"mechanism": "oob", "confidence": "high"}],
+        )
+        r = self._result([o])
+        _promote_hypothesis_inconsistent(r)
+        assert r.outcomes[0].status == "suspicious"
+
+    def test_skips_gate_demoted_outcome(self):
+        o = self._outcome(
+            body="[suspicious-demotion: no verification evidence "
+                 "with Joern available]\n\noriginal body",
+            hypotheses=[{"mechanism": "oob", "confidence": "high"}],
+        )
+        r = self._result([o])
+        _promote_hypothesis_inconsistent(r)
+        assert r.outcomes[0].status == "clean"
+
+    def test_skips_outcome_without_hypotheses(self):
+        o = self._outcome()
+        r = self._result([o])
+        _promote_hypothesis_inconsistent(r)
+        assert r.outcomes[0].status == "clean"
+
+    def test_skips_refuted_only_hypotheses(self):
+        o = self._outcome(
+            hypotheses=[
+                {"mechanism": "oob", "confidence": "refuted"},
+            ],
+        )
+        r = self._result([o])
+        _promote_hypothesis_inconsistent(r)
+        assert r.outcomes[0].status == "clean"
 

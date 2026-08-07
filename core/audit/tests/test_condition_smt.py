@@ -4,11 +4,13 @@
 from core.audit.condition_smt import (
     check_all_sufficiency,
     check_guard_sufficiency,
+    check_lock_discipline,
     check_off_by_one,
     check_path_feasibility,
     check_signed_mismatch,
     constraints_for_guard,
     extract_bounds_constraints,
+    _extract_lock_object,
 )
 from core.audit.condition_extraction import GuardCondition, SinkGuard
 
@@ -588,3 +590,94 @@ class TestCheckRaceProtection:
         d = r.to_dict()
         assert d["protected"] is True
         assert "total_accesses" in d
+
+
+class TestExtractLockObject:
+    def test_simple_pointer(self):
+        line = "    spin_lock(&ep->lock);"
+        assert _extract_lock_object(line, line.index("(") + 1) == "ep->lock"
+
+    def test_address_of_stripped(self):
+        line = "    mutex_lock(&my_mutex);"
+        assert _extract_lock_object(line, line.index("(") + 1) == "my_mutex"
+
+    def test_with_flags_arg(self):
+        line = "    spin_lock_irqsave(&ep->lock, flags);"
+        assert _extract_lock_object(line, line.index("(") + 1) == "ep->lock"
+
+    def test_no_args(self):
+        line = "    rcu_read_lock();"
+        assert _extract_lock_object(line, line.index("(") + 1) == ""
+
+
+class TestCheckLockDiscipline:
+    def test_balanced_single_lock(self):
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    spin_lock(&b->lock);\n"
+            "    b->x = 1;\n"
+            "    spin_unlock(&b->lock);\n"
+            "}\n"
+        )
+        r = check_lock_discipline(src)
+        assert not r.violation_found
+
+    def test_unbalanced_single_lock(self):
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    spin_lock(&b->lock);\n"
+            "    b->x = 1;\n"
+            "    return;\n"
+            "}\n"
+        )
+        r = check_lock_discipline(src)
+        assert r.violation_found
+
+    def test_two_different_locks_no_fp(self):
+        """Regression: __ep_remove pattern — two distinct lock objects,
+        each properly balanced.  Must NOT fire."""
+        src = (
+            "void __ep_remove(struct eventpoll *ep, struct epitem *epi) {\n"
+            "    spin_lock(&file->f_lock);\n"
+            "    list_del_init(&epi->fllink);\n"
+            "    spin_unlock(&file->f_lock);\n"
+            "\n"
+            "    spin_lock_irq(&ep->lock);\n"
+            "    list_del_init(&epi->rdllink);\n"
+            "    spin_unlock_irq(&ep->lock);\n"
+            "}\n"
+        )
+        r = check_lock_discipline(src)
+        assert not r.violation_found
+
+    def test_two_locks_one_unbalanced(self):
+        """Two locks, but the second one has a return before release."""
+        src = (
+            "int foo(struct bar *b) {\n"
+            "    spin_lock(&b->lock_a);\n"
+            "    b->x = 1;\n"
+            "    spin_unlock(&b->lock_a);\n"
+            "\n"
+            "    spin_lock(&b->lock_b);\n"
+            "    if (b->err)\n"
+            "        return -1;\n"
+            "    spin_unlock(&b->lock_b);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        r = check_lock_discipline(src)
+        assert r.violation_found
+
+    def test_nested_locks_balanced(self):
+        """Nested acquire of two different locks, both released."""
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    spin_lock(&b->outer);\n"
+            "    spin_lock(&b->inner);\n"
+            "    b->x = 1;\n"
+            "    spin_unlock(&b->inner);\n"
+            "    spin_unlock(&b->outer);\n"
+            "}\n"
+        )
+        r = check_lock_discipline(src)
+        assert not r.violation_found

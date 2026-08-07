@@ -1507,8 +1507,8 @@ def check_lock_discipline(
     goto_targets = _extract_goto_targets(lines)
     labels = _extract_labels(lines)
 
-    for acq_line, lock_func, unlock_name in acquires:
-        unlock_lines = _find_unlocks(lines, unlock_name)
+    for acq_line, lock_func, unlock_name, lock_obj in acquires:
+        unlock_lines = _find_unlocks(lines, unlock_name, lock_obj)
         if not unlock_lines:
             return LockDisciplineResult(
                 violation_found=True,
@@ -1528,6 +1528,16 @@ def check_lock_discipline(
             if any(
                 ul < ret_line and ul > acq_line
                 and (len(lines[ul]) - len(lines[ul].lstrip())) <= acq_indent
+                for ul in unlock_lines
+            ):
+                continue
+
+            # if (...) { unlock(); return; } — same-indent unlock
+            ret_indent = len(lines[ret_line]) - len(lines[ret_line].lstrip())
+            if any(
+                ul < ret_line and ul > acq_line
+                and (ret_line - ul) <= 3
+                and (len(lines[ul]) - len(lines[ul].lstrip())) == ret_indent
                 for ul in unlock_lines
             ):
                 continue
@@ -1575,11 +1585,45 @@ def check_lock_discipline(
     return LockDisciplineResult(reasoning="all lock/unlock pairs balanced on return paths")
 
 
+def _extract_lock_object(line: str, match_end: int) -> str:
+    """Extract the first argument to a lock/unlock call as a normalised key.
+
+    Returns the text between the opening '(' and the first ',' or ')',
+    stripped of '&' and whitespace.  When the argument cannot be parsed
+    (macros, nested calls), returns "" so callers fall back to
+    name-only matching.
+    """
+    rest = line[match_end:]
+    depth = 0
+    buf: List[str] = []
+    for ch in rest:
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            if depth == 0:
+                break
+            depth -= 1
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            break
+        else:
+            buf.append(ch)
+    raw = "".join(buf).strip().lstrip("&").strip()
+    if not raw or raw.startswith("("):
+        return ""
+    return raw
+
+
 def _extract_lock_acquires(
     lines: List[str],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
-) -> List[Tuple[int, str, str]]:
-    """Extract (line_idx, lock_function, expected_unlock) tuples."""
+) -> List[Tuple[int, str, str, str]]:
+    """Extract (line_idx, lock_function, expected_unlock, lock_object).
+
+    ``lock_object`` is the normalised first argument (e.g. ``ep->lock``).
+    Empty string when the argument cannot be parsed.
+    """
     pairs = list(_LOCK_PAIRS)
     if vocab.lock_acquires and vocab.lock_releases:
         used = {m.pattern for m, _ in _LOCK_PAIRS}
@@ -1605,7 +1649,7 @@ def _extract_lock_acquires(
             pairs.append((re.compile(pat_str), unlock_name))
             known_acq.add(pat_str)
 
-    results: List[Tuple[int, str, str]] = []
+    results: List[Tuple[int, str, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if stripped.startswith("//") or stripped.startswith("/*"):
@@ -1613,7 +1657,8 @@ def _extract_lock_acquires(
         for pattern, unlock_name in pairs:
             m = pattern.search(line)
             if m:
-                results.append((i, m.group(1), unlock_name))
+                lock_obj = _extract_lock_object(line, m.end())
+                results.append((i, m.group(1), unlock_name, lock_obj))
                 break
     return results
 
@@ -1632,13 +1677,25 @@ def _paired_name_match(acquire: str, release: str) -> bool:
     return a.rsplit("_", 1)[0] == r.rsplit("_", 1)[0]
 
 
-def _find_unlocks(lines: List[str], unlock_name: str) -> List[int]:
-    """Find line indices where unlock_name is called."""
-    pat = re.compile(rf"\b{re.escape(unlock_name)}(?:_irq(?:restore)?|_bh)?\s*\(")
+def _find_unlocks(
+    lines: List[str],
+    unlock_name: str,
+    lock_object: str = "",
+) -> List[int]:
+    """Find line indices where unlock_name is called on lock_object."""
+    pat = re.compile(
+        rf"\b{re.escape(unlock_name)}(?:_irq(?:restore)?|_bh)?\s*\("
+    )
     results: List[int] = []
     for i, line in enumerate(lines):
-        if pat.search(line):
-            results.append(i)
+        m = pat.search(line)
+        if not m:
+            continue
+        if lock_object:
+            obj = _extract_lock_object(line, m.end())
+            if obj and obj != lock_object:
+                continue
+        results.append(i)
     return results
 
 
@@ -3001,7 +3058,7 @@ def _check_early_release_c(
             return EarlyReleaseResult(reasoning="no lock acquires found")
         acquires = release_only
 
-    for acq_line, lock_func, unlock_name in acquires:
+    for acq_line, lock_func, unlock_name, *_ in acquires:
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
         )
@@ -3245,7 +3302,7 @@ def _check_lock_domain_c(
     acquires = _extract_lock_acquires(lines, vocab)
 
     lock_scopes: List[Tuple[int, int, str, str]] = []
-    for acq_line, lock_func, unlock_name in acquires:
+    for acq_line, lock_func, unlock_name, *_ in acquires:
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
         )
@@ -3649,7 +3706,7 @@ def check_race_protection(
         vocab = _EMPTY_VOCAB
     acquires = _extract_lock_acquires(lines, vocab)
     lock_scopes: List[Tuple[int, int]] = []
-    for acq_line, _lock_func, unlock_name in acquires:
+    for acq_line, _lock_func, unlock_name, *_ in acquires:
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
         )

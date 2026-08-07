@@ -9478,6 +9478,9 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
         if outcome.status != "clean":
             continue
 
+        if outcome.body.startswith("[suspicious-demotion:"):
+            continue
+
         hypotheses = outcome.hypotheses or []
         if not hypotheses and outcome.review_result:
             hypotheses = outcome.review_result.get("hypotheses") or []
