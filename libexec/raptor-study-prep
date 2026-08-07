@@ -1818,6 +1818,7 @@ def _grep_scope(
 def _llm_seed_concepts_from_names(
     semantic_concepts: list[str],
     all_names: list[str],
+    model: str | None = None,
 ) -> list[str]:
     """Ask LLM to map semantic concepts to concrete identifiers.
 
@@ -1828,7 +1829,17 @@ def _llm_seed_concepts_from_names(
         return []
     try:
         from packages.llm_analysis import get_client
-        client = get_client()
+        if model:
+            from core.llm.config import LLMConfig
+            cfg = LLMConfig()
+            mc = cfg.config_for_model(model)
+            if mc.api_key:
+                client = get_client(config=LLMConfig(
+                    primary_model=mc, fallback_models=[]))
+            else:
+                client = get_client()
+        else:
+            client = get_client()
     except Exception:
         print("study-prep: WARNING: no LLM available for concept seeding",
               file=sys.stderr)
@@ -1870,6 +1881,7 @@ def _llm_seed_concepts_from_names(
 def _llm_seed_concepts(
     semantic_concepts: list[str],
     study_list_path: Path,
+    model: str | None = None,
 ) -> list[str]:
     """Wrapper: reads names from study-list.json, then delegates to _from_names."""
     if not study_list_path.is_file():
@@ -1879,7 +1891,7 @@ def _llm_seed_concepts(
     except (OSError, json.JSONDecodeError):
         return []
     all_names = sorted({item["name"] for item in data.get("items", [])})
-    return _llm_seed_concepts_from_names(semantic_concepts, all_names)
+    return _llm_seed_concepts_from_names(semantic_concepts, all_names, model=model)
 
 
 def _discover_docs(
@@ -2150,6 +2162,8 @@ def main() -> None:
                          "Use for follow-up passes where only the named identifiers matter.")
     ap.add_argument("--threads", type=int, default=None,
                     help="Worker threads for file extraction (default: cpu_count).")
+    ap.add_argument("--model", default=None,
+                    help="LLM model override for concept seeding.")
     parsed, _extras = ap.parse_known_args(sys.argv[1:])
 
     target = Path(parsed.target).resolve()
@@ -2400,7 +2414,7 @@ def main() -> None:
             print("study-prep: no prior study-list.json — will seed concepts "
                   "from in-memory items after extraction", file=sys.stderr)
         else:
-            seeded = _llm_seed_concepts(semantic_concepts, study_list_path)
+            seeded = _llm_seed_concepts(semantic_concepts, study_list_path, model=parsed.model)
             if seeded:
                 identifiers.extend(seeded)
                 _deferred_concepts = []
@@ -2534,7 +2548,7 @@ def main() -> None:
     if _deferred_concepts and items:
         all_item_names = sorted({it.name for it in items})
         seeded = _llm_seed_concepts_from_names(
-            _deferred_concepts, all_item_names)
+            _deferred_concepts, all_item_names, model=parsed.model)
         if seeded:
             identifiers.extend(seeded)
             print(f"study-prep: deferred concept seeding: {len(seeded)} identifiers "

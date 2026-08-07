@@ -298,7 +298,10 @@ _OVERVIEW_SCHEMA = {
 }
 
 
-def _overview_from_directory(target: Path) -> tuple[list[str], list[str], str, str]:
+def _overview_from_directory(
+    target: Path,
+    model: str | None = None,
+) -> tuple[list[str], list[str], str, str]:
     """Cheap inventory: file names + header types + one LLM call.
 
     Returns (identifiers, concepts, summary, subject_title).
@@ -358,7 +361,17 @@ def _overview_from_directory(target: Path) -> tuple[list[str], list[str], str, s
 
     try:
         from packages.llm_analysis import get_client
-        client = get_client()
+        if model:
+            from core.llm.config import LLMConfig
+            cfg = LLMConfig()
+            mc = cfg.config_for_model(model)
+            if mc.api_key:
+                client = get_client(config=LLMConfig(
+                    primary_model=mc, fallback_models=[]))
+            else:
+                client = get_client()
+        else:
+            client = get_client()
     except Exception:
         print("study-loop: WARNING: no LLM available for overview",
               file=sys.stderr)
@@ -953,7 +966,7 @@ def main() -> int:
         print("study-loop: no identifier/concept given — running overview",
               file=sys.stderr)
         overview_idents, overview_concepts, overview_summary, overview_title = (
-            _overview_from_directory(target)
+            _overview_from_directory(target, model=parsed.model)
         )
         if not overview_idents and not overview_concepts:
             print(
@@ -1005,6 +1018,8 @@ def main() -> int:
     if parsed.include_dirs:
         for d in parsed.include_dirs:
             prep_cmd.extend(["--include-dir", d])
+    if parsed.model:
+        prep_cmd.extend(["--model", parsed.model])
 
     rc = _run(prep_cmd, verbose=parsed.verbose)
     if rc != 0:
