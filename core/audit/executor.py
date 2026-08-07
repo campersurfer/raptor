@@ -396,13 +396,11 @@ async def _run_async_body(
                 stats.dispatched += 1
                 child = asyncio.create_task(_run_task(task))
                 inflight.add(child)
-                child.add_done_callback(inflight.discard)
         while len(glance_pending) >= _GLANCE_BATCH_SIZE:
             batch = glance_pending[:_GLANCE_BATCH_SIZE]
             del glance_pending[:_GLANCE_BATCH_SIZE]
             child = asyncio.create_task(_run_batch(batch))
             inflight.add(child)
-            child.add_done_callback(inflight.discard)
 
     async def _after_completion() -> None:
         """Shared post-review work: checkpoint + dispatch newly ready."""
@@ -511,19 +509,24 @@ async def _run_async_body(
     initial = graph.pop_ready(ec.max_workers)
     _dispatch_ready(initial)
 
-    while True:
+    while inflight or glance_pending:
         if glance_pending and not _should_stop():
             batch = list(glance_pending)
             glance_pending.clear()
             child = asyncio.create_task(_run_batch(batch))
             inflight.add(child)
-            child.add_done_callback(inflight.discard)
         if not inflight:
             break
-        results = await asyncio.gather(*inflight, return_exceptions=True)
-        for r in results:
-            if isinstance(r, BaseException):
-                logger.warning("unhandled task exception: %s", r, exc_info=r)
+        done, _pending = await asyncio.wait(
+            inflight, return_when=asyncio.FIRST_COMPLETED,
+        )
+        inflight -= done
+        for t in done:
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning(
+                    "unhandled task exception: %s",
+                    t.exception(), exc_info=t.exception(),
+                )
 
     repass = graph.repass_tasks()
     if repass and not _should_stop():
@@ -578,14 +581,17 @@ async def _run_async_body(
                 break
             t = asyncio.create_task(_run_repass(task))
             repass_inflight.add(t)
-            t.add_done_callback(repass_inflight.discard)
         while repass_inflight:
-            rp_results = await asyncio.gather(
-                *repass_inflight, return_exceptions=True,
+            done, _rp = await asyncio.wait(
+                repass_inflight, return_when=asyncio.FIRST_COMPLETED,
             )
-            for r in rp_results:
-                if isinstance(r, BaseException):
-                    logger.warning("unhandled repass exception: %s", r, exc_info=r)
+            repass_inflight -= done
+            for t in done:
+                if not t.cancelled() and t.exception() is not None:
+                    logger.warning(
+                        "unhandled repass exception: %s",
+                        t.exception(), exc_info=t.exception(),
+                    )
 
     stats.wall_time_s = time.monotonic() - wall_start
     return stats
