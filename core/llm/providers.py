@@ -43,6 +43,12 @@ logger = get_logger()
 
 _ZERO_PRICE_WARNED: set[str] = set()
 
+# Instructor resilience: allow this many consecutive failures before
+# permanently disabling tool-use structured output for a provider.
+# A single transient error (dispatcher startup race, network hiccup)
+# won't kill Instructor for the rest of the session.
+_INSTRUCTOR_MAX_CONSEC_FAILURES = 3
+
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
 _CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)-(\d+)")
 
@@ -1157,7 +1163,8 @@ class OpenAICompatibleProvider(LLMProvider):
             )
 
         self.instructor_client = None
-        self._instructor_warned = False
+        self._instructor_consec_failures = 0
+        self._instructor_backed = None  # stashed client during backoff
         if INSTRUCTOR_AVAILABLE:
             self.instructor_client = instructor.from_openai(self.client)
         else:
@@ -1343,6 +1350,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     cache_read_tokens=cache_read_tokens,
                 )
 
+                self._instructor_consec_failures = 0
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
@@ -1350,14 +1358,23 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
             except Exception as e:
-                if not self._instructor_warned:
-                    logger.warning("Instructor structured generation failed for %s/%s — disabling for this provider, using JSON fallback", self.config.provider, self.config.model_name)
-                    self._instructor_warned = True
-                else:
-                    from core.security.log_sanitisation import escape_nonprintable as _esc
-                    logger.debug("Instructor fallback (repeat): %s", _esc(str(e)))
-                # Disable Instructor for this provider — same error will repeat
-                self.instructor_client = None
+                self._instructor_consec_failures += 1
+                from core.security.log_sanitisation import escape_nonprintable as _esc
+                logger.warning(
+                    "Instructor structured generation failed for %s/%s (%d/%d). "
+                    "Exception (%s): %s",
+                    self.config.provider, self.config.model_name,
+                    self._instructor_consec_failures, _INSTRUCTOR_MAX_CONSEC_FAILURES,
+                    type(e).__name__, _esc(str(e))[:512],
+                )
+                if self._instructor_consec_failures >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
+                    logger.warning(
+                        "Instructor disabled for %s/%s after %d consecutive failures",
+                        self.config.provider, self.config.model_name,
+                        self._instructor_consec_failures,
+                    )
+                    self._instructor_backed = self.instructor_client
+                    self.instructor_client = None
 
         # Fallback: JSON-in-prompt
         return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
@@ -1968,7 +1985,8 @@ class AnthropicProvider(LLMProvider):
             logger.debug("AnthropicProvider: direct SDK (no dispatcher)")
 
         self.instructor_client = None
-        self._instructor_warned = False
+        self._instructor_consec_failures = 0
+        self._instructor_backed = None  # stashed client during backoff
         if INSTRUCTOR_AVAILABLE:
             self.instructor_client = instructor.from_anthropic(self.client)
         else:
@@ -2145,6 +2163,7 @@ class AnthropicProvider(LLMProvider):
                     cache_write_tokens=cache_write_tokens,
                 )
 
+                self._instructor_consec_failures = 0
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
@@ -2152,14 +2171,23 @@ class AnthropicProvider(LLMProvider):
                 )
 
             except Exception as e:
-                if not self._instructor_warned:
-                    logger.warning("Instructor structured generation failed for %s/%s — disabling for this provider, using JSON fallback", self.config.provider, self.config.model_name)
-                    self._instructor_warned = True
-                else:
-                    from core.security.log_sanitisation import escape_nonprintable as _esc
-                    logger.debug("Instructor fallback (repeat): %s", _esc(str(e)))
-                # Disable Instructor for this provider — same error will repeat
-                self.instructor_client = None
+                self._instructor_consec_failures += 1
+                from core.security.log_sanitisation import escape_nonprintable as _esc
+                logger.warning(
+                    "Instructor structured generation failed for %s/%s (%d/%d). "
+                    "Exception (%s): %s",
+                    self.config.provider, self.config.model_name,
+                    self._instructor_consec_failures, _INSTRUCTOR_MAX_CONSEC_FAILURES,
+                    type(e).__name__, _esc(str(e))[:512],
+                )
+                if self._instructor_consec_failures >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
+                    logger.warning(
+                        "Instructor disabled for %s/%s after %d consecutive failures",
+                        self.config.provider, self.config.model_name,
+                        self._instructor_consec_failures,
+                    )
+                    self._instructor_backed = self.instructor_client
+                    self.instructor_client = None
 
         # Fallback: JSON-in-prompt
         return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
