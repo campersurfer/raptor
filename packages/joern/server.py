@@ -18,6 +18,7 @@ import logging
 import re
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -139,6 +140,7 @@ class JoernServer:
         self._http_client: Any | None = None
         self._version_downgrade: bool = False
         self._last_post_error: str = ""
+        self._restart_lock = threading.Lock()
 
     def start(self) -> None:
         """Boot the Joern server and wait for readiness."""
@@ -286,18 +288,29 @@ class JoernServer:
         saturated — subsequent queries would queue behind the stuck
         query indefinitely.  Returns True if the server came back and
         the CPG was reloaded successfully.
+
+        Thread-safe: concurrent callers serialise on ``_restart_lock``
+        so only one restart proceeds; the others return True (the
+        server is already fresh).
         """
-        cpg_path = self._cpg_path
-        logger.info("restarting Joern server (stuck query recovery)")
-        self.stop()
+        if not self._restart_lock.acquire(blocking=False):
+            # Another thread is already restarting — wait for it.
+            with self._restart_lock:
+                return self._proc is not None and self._cpg_loaded
         try:
-            self.start()
-        except RuntimeError:
-            logger.error("Joern server failed to restart")
-            return False
-        if cpg_path is not None and cpg_path.exists():
-            return self.import_cpg(cpg_path)
-        return True
+            cpg_path = self._cpg_path
+            logger.info("restarting Joern server (stuck query recovery)")
+            self.stop()
+            try:
+                self.start()
+            except RuntimeError:
+                logger.error("Joern server failed to restart")
+                return False
+            if cpg_path is not None and cpg_path.exists():
+                return self.import_cpg(cpg_path)
+            return True
+        finally:
+            self._restart_lock.release()
 
     def import_cpg(self, cpg_path: Path, *, timeout: int = 120) -> bool:
         """Load a pre-built CPG into the running server.
