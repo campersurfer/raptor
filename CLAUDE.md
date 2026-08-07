@@ -34,6 +34,7 @@ When a `/command` fires:
 4. Operator arguments pass through **verbatim**. If a subcommand isn't in the .md's documented surface, run it anyway and let the dispatch's own error surface. Do NOT silently rewrite to a similar subcommand.
 5. Never infer the dispatch from the description or from training-memory. The .md is authoritative; CI (`.github/scripts/check_command_metadata.py`) enforces every command has a parseable `dispatch:` field whose target exists on disk.
 6. When unsure which libexec script exists, check `ls libexec/raptor-<name>*` — do not guess names.
+7. When a skill body references another `/command` (e.g. `/understand --map` inside `/audit`), resolve it through the same dispatch lookup: read `.claude/commands/<name>.md` to find the actual CLI and its flag syntax. Do not invent flags — if unsure, run the dispatch target with `--help`.
 
 ---
 
