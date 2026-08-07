@@ -2038,8 +2038,8 @@ def _chase_reading_list_definitions(
     for item in raw.get("items", []):
         if item.get("resolved"):
             continue
-        ctx = item.get("context", "")
-        q = item.get("question", "")
+        ctx = item.get("context") or ""
+        q = item.get("question") or ""
         # "Unresolved type: struct scatterlist" → scatterlist
         m = _CTX_FULL_RE.search(ctx)
         if m:
