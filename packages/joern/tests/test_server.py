@@ -95,6 +95,23 @@ class TestJoernServerQuery:
         assert result.errors
         assert "blocked" in result.errors[0]
 
+    def test_query_fails_fast_when_server_process_dead(self):
+        """If the server process has exited, query() returns an error
+        immediately rather than blocking on a stale HTTP connection."""
+        from unittest.mock import MagicMock
+
+        srv = JoernServer()
+        srv._cpg_loaded = True
+        srv._base_url = "http://127.0.0.1:9999"
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1  # process exited
+        srv._proc = mock_proc
+
+        result = srv.query("cpg.method.l")
+        assert result.errors
+        assert "server process exited" in result.errors[0]
+
 
 class TestJoernServerQueryScript:
     def test_script_not_found(self, tmp_path):

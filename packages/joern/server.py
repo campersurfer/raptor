@@ -357,6 +357,15 @@ class JoernServer:
         """Execute a CPGQL query and return parsed results."""
         if timeout is None:
             timeout = self._query_timeout_s
+
+        # Fast check: if the server process is dead, fail immediately
+        # rather than blocking on a stale HTTP connection.
+        if self._proc is not None and self._proc.poll() is not None:
+            return JoernResult(
+                query=cpgql,
+                errors=["server process exited"],
+            )
+
         if not self._cpg_loaded:
             return JoernResult(
                 query=cpgql,
@@ -474,8 +483,13 @@ class JoernServer:
                 self._last_post_error = f"query timed out after {timeout}s"
             elif "connect" in str(e).lower() or "refused" in str(e).lower():
                 self._last_post_error = f"connection failed: {e}"
+                # Drop stale connection pool — the server is gone.
+                self._http_client = None
             else:
                 self._last_post_error = str(e)
+                # Any unexpected error could leave the pool in a bad
+                # state; drop it so the next call starts fresh.
+                self._http_client = None
             logger.debug("query-sync (httpx) failed: %s", e)
             return None
 
@@ -567,6 +581,13 @@ class JoernServer:
         """
         if timeout is None:
             timeout = self._query_timeout_s
+
+        if self._proc is not None and self._proc.poll() is not None:
+            return JoernResult(
+                query=cpgql,
+                errors=["server process exited"],
+            )
+
         if not self._cpg_loaded:
             return JoernResult(
                 query=cpgql,
