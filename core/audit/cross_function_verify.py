@@ -87,9 +87,9 @@ def _init_dispatch() -> None:
             r"|(?:list|queue|buffer)\s+(?:not\s+)?(?:clean|drain|flush|free)"
             r"|missing\s+(?:clean|free|release)"
             r"|omit(?:s|ted)?\s+(?:clean|free|release)"
+            r"|incomplete\s+(?:clean|teardown|shutdown|release)"
             r"|(?:freed|free)\s+.*(?:pointer|reference)\s+.*(?:remains|dangling|stale)"
-            r"|(?:pointer|reference)\s+.*(?:remains|dangling|stale)"
-            r"|use.after.free",
+            r"|(?:pointer|reference)\s+.*(?:remains|dangling|stale)",
             re.IGNORECASE,
         ), "incomplete_cleanup"),
     ]
@@ -558,7 +558,7 @@ def _verify_incomplete_cleanup(
             },
         )
 
-    if len(uncleaned) > 0 and cleaned_fields:
+    if len(uncleaned) > 0 and len(cleaned_fields) >= 2:
         evidence = (
             f"Potential cleanup gap in {function_name}: "
             f"{len(uncleaned)} fields accessed but not cleaned "

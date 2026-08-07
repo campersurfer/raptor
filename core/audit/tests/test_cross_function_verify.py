@@ -353,6 +353,35 @@ class TestDispatcher:
         assert result.verified is True
         assert result.verifier_name == "incomplete_cleanup"
 
+    def test_uaf_hypothesis_does_not_trigger_incomplete_cleanup(self):
+        server = MockJoernServer()
+        server.add_response(
+            ".ast.isFieldIdentifier.map",
+            'List((count, 5))',
+        )
+        server.add_response(".argument.isFieldIdentifier", 'List()')
+        result = cross_function_verify(
+            function_name="fuse_conn_get",
+            file_path="fs/fuse/fuse_i.h",
+            hypothesis="use-after-free window: concurrent access to fc->count",
+            server=server,
+        )
+        assert result is None
+
+    def test_broad_heuristic_requires_two_cleaned_fields(self):
+        server = MockJoernServer()
+        server.add_response(
+            ".ast.isFieldIdentifier.map",
+            'List((count, 5), (flags, 10), (state, 15))',
+        )
+        server.add_response(".argument.isFieldIdentifier", 'List((flags, 30))')
+        result = _verify_incomplete_cleanup(
+            "some_helper",
+            "resource leak in some_helper",
+            server,
+        )
+        assert result is None
+
 
 class TestGateHelper:
     def test_no_evidence(self):
