@@ -99,11 +99,16 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
     from core.audit.llm_review import make_review_fn
     from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
 
-    llm_cfg = None
-    if opts.max_cost_usd is not None:
-        from core.llm.config import LLMConfig
+    from core.llm.config import LLMConfig
 
+    if opts.max_cost_usd is not None:
         llm_cfg = LLMConfig(max_cost_per_scan=opts.max_cost_usd)
+    else:
+        # No operator cap — disable the LLM-client-level budget gate.
+        # The orchestrator has its own _check_budget(); the $10 LLMConfig
+        # default is a safety rail for /scan and /agentic but premature
+        # for /audit which routinely reviews hundreds of functions.
+        llm_cfg = LLMConfig(max_cost_per_scan=float("inf"))
     client = LLMClient(config=llm_cfg)
 
     models = opts.models or ["default"]
@@ -322,11 +327,16 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
 
     t0 = time.monotonic()
 
-    llm_cfg = None
-    if opts.max_cost_usd is not None:
-        from core.llm.config import LLMConfig
+    from core.llm.config import LLMConfig
 
+    if opts.max_cost_usd is not None:
         llm_cfg = LLMConfig(max_cost_per_scan=opts.max_cost_usd)
+    else:
+        # No operator cap — disable the LLM-client-level budget gate.
+        # The orchestrator has its own _check_budget(); the $10 LLMConfig
+        # default is a safety rail for /scan and /agentic but premature
+        # for /audit which routinely reviews hundreds of functions.
+        llm_cfg = LLMConfig(max_cost_per_scan=float("inf"))
     client = LLMClient(config=llm_cfg)
 
     models = opts.models or ["default"]
