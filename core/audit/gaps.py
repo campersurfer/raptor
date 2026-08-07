@@ -715,6 +715,8 @@ def _fold_journal_into_covered(
         try:
             from .journal import load_index
             for entry in load_index(project_dir).values():
+                if entry.verdict == "error":
+                    continue
                 covered.add(f"{entry.file}:{entry.function}")
         except Exception:
             logger.warning(

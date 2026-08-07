@@ -393,10 +393,16 @@ def get_reviewed_set(out_dir: Path) -> set:
 
     Keys may be bare (file:name, legacy) or lined (file:name:line).
     Both forms are added so the workqueue filter matches either.
+
+    Error statuses are excluded — they represent transient failures
+    (budget exceeded, API error, truncation) and must be retried on
+    the next run, not suppressed as "already reviewed".
     """
     reviewed = set()
     for entry in load_audit_log(out_dir):
         if entry.get("action") in ("record", "orchestrator_review"):
+            if entry.get("status") == "error":
+                continue
             key = entry.get("key", "")
             if key:
                 reviewed.add(key)

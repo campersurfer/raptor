@@ -153,6 +153,13 @@ class TestReviewedSet:
     def test_empty(self, tmp_path: Path) -> None:
         assert reviewed_set(tmp_path) == set()
 
+    def test_error_verdicts_excluded(self, tmp_path: Path) -> None:
+        append_entry(tmp_path, _entry(file="a.c", function="ok", verdict="clean"))
+        append_entry(tmp_path, _entry(file="b.c", function="fail", verdict="error"))
+        keys = reviewed_set(tmp_path)
+        assert "a.c:ok" in keys
+        assert "b.c:fail" not in keys
+
 
 class TestLatestEntries:
     def test_most_recent_wins(self, tmp_path: Path) -> None:

@@ -120,6 +120,18 @@ class TestGetReviewedSet:
         assert "src/auth.c:check_pw" in result
         assert "src/auth.c" not in result
 
+    def test_error_status_excluded(self, tmp_path: Path):
+        log = tmp_path / ".audit-log.jsonl"
+        log.write_text(
+            '{"action":"orchestrator_review","key":"src/a.c:ok","status":"clean"}\n'
+            '{"action":"orchestrator_review","key":"src/b.c:fail","status":"error"}\n'
+            '{"action":"record","key":"src/c.c:also_fail","status":"error"}\n'
+        )
+        result = get_reviewed_set(tmp_path)
+        assert "src/a.c:ok" in result
+        assert "src/b.c:fail" not in result
+        assert "src/c.c:also_fail" not in result
+
 
 @pytest.mark.slow
 class TestRunOrchestrator:

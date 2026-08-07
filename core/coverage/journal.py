@@ -267,8 +267,13 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
 
 
 def reviewed_set(out_dir: Path) -> set[str]:
-    """Return ``{file:function}`` keys for fast resume lookup."""
-    return {e.key for e in load_entries(out_dir)}
+    """Return ``{file:function}`` keys for fast resume lookup.
+
+    Error verdicts are excluded — they represent transient failures
+    (budget exceeded, API error, truncation) and must be retried on
+    the next run, not suppressed as "already reviewed".
+    """
+    return {e.key for e in load_entries(out_dir) if e.verdict != "error"}
 
 
 def latest_entries(out_dir: Path) -> dict[str, ReviewJournalEntry]:
