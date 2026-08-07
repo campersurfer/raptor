@@ -601,7 +601,8 @@ def _try_taint_approx_resolve(
     if param_idx is None:
         return None
 
-    if param_idx in approx.dangerous_flows and approx.dangerous_flows[param_idx]:
+    df = approx.get("dangerous_flows", {}) if isinstance(approx, dict) else getattr(approx, "dangerous_flows", {})
+    if param_idx in df and df[param_idx]:
         return PropagationResult(
             constraint=constraint,
             resolved=True,
@@ -609,7 +610,8 @@ def _try_taint_approx_resolve(
             resolver_used="taint_approx",
         )
 
-    if approx.has_opaque_flow:
+    has_opaque = approx.get("has_opaque_flow", False) if isinstance(approx, dict) else getattr(approx, "has_opaque_flow", False)
+    if has_opaque:
         return None
 
     return None

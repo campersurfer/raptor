@@ -388,6 +388,20 @@ def _joern_target(config: OrchestratorConfig) -> Path:
     return config.target_path
 
 
+def _get_dangerous_flows(approx) -> Optional[dict]:
+    """Extract dangerous_flows from a TaintApprox object or dict.
+
+    The taint-approx cache round-trips through JSON, so on a resumed
+    run ``approx`` may be a plain dict instead of a ``TaintApprox``
+    object.  Handle both uniformly.
+    """
+    if approx is None:
+        return None
+    if isinstance(approx, dict):
+        return approx.get("dangerous_flows") or None
+    return getattr(approx, "dangerous_flows", None) or None
+
+
 def get_reviewed_set(out_dir: Path) -> set:
     """Load set of already-reviewed keys from audit log.
 
@@ -4698,7 +4712,7 @@ def _build_context(
         if rec and rec.sink_unreachable:
             has_mechanical_flow = (
                 rec.all_joern_flows()
-                or (rec.taint_approx and rec.taint_approx.dangerous_flows)
+                or (rec.taint_approx and _get_dangerous_flows(rec.taint_approx))
                 or rec.binary_sink_edges
             )
             if not has_mechanical_flow:
@@ -6824,9 +6838,14 @@ def _run_clean_check_sweep(
                 sink = getattr(flow, "sink_call", "?")
                 parts.append(f"- Joern CPG: parameter `{src}` flows to `{sink}()`")
             approx = getattr(rec, "taint_approx", None)
-            if approx and getattr(approx, "dangerous_flows", None):
-                params = getattr(approx, "params", [])
-                for pidx, sinks in approx.dangerous_flows.items():
+            df = _get_dangerous_flows(approx) if approx else None
+            if df:
+                params = (
+                    getattr(approx, "params", None)
+                    or (approx.get("params") if isinstance(approx, dict) else None)
+                    or []
+                )
+                for pidx, sinks in df.items():
                     pname = params[pidx] if pidx < len(params) else f"arg{pidx}"
                     for sink_name, _ in sinks[:2]:
                         parts.append(

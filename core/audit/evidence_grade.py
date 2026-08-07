@@ -243,10 +243,11 @@ def grade_evidence_record(record: Any) -> List[GradedEvidence]:
 
     if getattr(record, "taint_approx", None) is not None:
         approx = record.taint_approx
-        if hasattr(approx, "dangerous_flows") and approx.dangerous_flows:
+        df = approx.get("dangerous_flows", {}) if isinstance(approx, dict) else getattr(approx, "dangerous_flows", {})
+        if df:
             items.append(grade_evidence(
                 EvidenceSource.TAINT_APPROX,
-                f"{len(approx.dangerous_flows)} tainted parameter flows",
+                f"{len(df)} tainted parameter flows",
             ))
 
     if getattr(record, "taint_summary", None) is not None:
