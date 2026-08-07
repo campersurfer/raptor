@@ -398,11 +398,7 @@ def resolve_joern_evidence(
             on_joern_progress(msg)
 
     if joern_server is not None and joern_server.is_alive():
-        _progress("Joern pre-sweep (server mode, blocking)...")
-        flows = build_joern_evidence(
-            target_path, out_dir, joern_overrides, _progress, joern_server,
-        )
-        return (flows, None)
+        _progress("Joern pre-sweep (server mode, background)...")
 
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="joern-cpg")
     future = executor.submit(

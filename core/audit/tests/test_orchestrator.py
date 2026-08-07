@@ -3194,6 +3194,7 @@ class TestSageHypothesisPathway:
             kw = mock_store.call_args
             assert kw[1]["evidence_tool"] == "chain_context"
 
+    @pytest.mark.slow
     def test_source_hash_precompute_via_orchestrator(self, tmp_path: Path):
         """run_orchestrator pre-computes _sage_source_hash on gaps with line_start."""
         from unittest.mock import patch as _patch
@@ -3381,6 +3382,7 @@ class TestSageCombinedPathway:
         assert call["status"] == "clean"
         assert call["source_hash"], "Source hash must be non-empty"
 
+    @pytest.mark.slow
     def test_full_pipeline_finding_and_observation(self, tmp_path: Path):
         """Tool-confirmed finding stores both hypothesis verdict AND observation."""
         from unittest.mock import patch as _patch

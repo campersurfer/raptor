@@ -1927,9 +1927,12 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         project_dir=None if config.force else _project_dir,
     )
 
+    _joern_last_activity = [time.monotonic()]
+
     if gaps:
 
         def _joern_progress_cb(msg: str) -> None:
+            _joern_last_activity[0] = time.monotonic()
             if on_progress:
                 placeholder = ReviewOutcome(
                     file="",
@@ -2258,6 +2261,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "project_sinks": project_sinks,
         "joern_flows": joern_flows,
         "joern_future": joern_future,
+        "joern_last_activity": _joern_last_activity,
         "iris_taint_specs": iris_taint_specs,
         "prior_constraints": prior_constraints,
         "open_keys": open_keys,
@@ -2374,6 +2378,7 @@ def _run_audit_body(
     if _prep.get("project_sinks") is not None:
         config.project_sinks = _prep["project_sinks"]
     joern_future = _prep["joern_future"]
+    _joern_last_activity = _prep["joern_last_activity"]
     iris_taint_specs = _prep["iris_taint_specs"]
     prior_constraints = _prep["prior_constraints"]
     gaps = _prep["gaps"]
@@ -2828,13 +2833,11 @@ def _run_audit_body(
                 shared.evidence_index = evidence_index
             joern_state["future"] = None
         elif jf is not None:
-            joern_elapsed = time.monotonic() - (
-                joern_state["submit_time"] or start_time
-            )
-            if joern_elapsed > joern_timeout_s:
+            idle_s = time.monotonic() - _joern_last_activity[0]
+            if idle_s > joern_timeout_s:
                 logger.warning(
-                    "Joern CPG build stalled after %.0fs — cancelling",
-                    joern_elapsed,
+                    "Joern stalled (%.0fs since last activity) — cancelling",
+                    idle_s,
                 )
                 jf.cancel()
                 joern_state["future"] = None
