@@ -17,6 +17,7 @@ import argparse
 import faulthandler
 import json
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -26,7 +27,6 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check ───
-import os  # noqa: E402
 if not (os.environ.get("CLAUDECODE") or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
         f"{sys.argv[0]}: internal dispatch script.\n"
@@ -69,6 +69,14 @@ def main() -> int:
         help="Path to a JSON schema file for structured output",
     )
     parser.add_argument(
+        "--raw", action="store_true",
+        help="Print response text only (no JSON formatting for structured output)",
+    )
+    parser.add_argument(
+        "--system-file", type=Path, default=None,
+        help="Load system prompt from a file",
+    )
+    parser.add_argument(
         "--debug", action="store_true",
         help="Show model metadata, cost, and provider logging",
     )
@@ -99,6 +107,16 @@ def main() -> int:
     if not prompt:
         print("error: no prompt provided", file=sys.stderr)
         return 1
+
+    # --- resolve system prompt ---
+    system_prompt = args.system
+    if args.system_file:
+        if not args.system_file.is_file():
+            print(f"error: system file not found: {args.system_file}",
+                  file=sys.stderr)
+            return 1
+        system_prompt = args.system_file.read_text(
+            encoding="utf-8", errors="replace")
 
     # --- create client + model config ---
     from core.llm.client import LLMClient
@@ -135,10 +153,13 @@ def main() -> int:
             schema = json.loads(args.json_schema.read_text())
             response = client.generate_structured(
                 prompt, schema,
-                system_prompt=args.system,
+                system_prompt=system_prompt,
                 **kwargs,
             )
-            print(json.dumps(response.result, indent=2))
+            if args.raw:
+                print(json.dumps(response.result))
+            else:
+                print(json.dumps(response.result, indent=2))
             if args.debug:
                 print(f"\n--- model={response.model} "
                       f"cost=${response.cost:.4f} ---",
@@ -146,7 +167,7 @@ def main() -> int:
         else:
             response = client.generate(
                 prompt,
-                system_prompt=args.system,
+                system_prompt=system_prompt,
                 **kwargs,
             )
             print(response.content)
