@@ -62,8 +62,8 @@ class TestCollectorSubmitAndFlush:
 
         lines = log_path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 2
-        assert json.loads(lines[0])["key"] == "src/auth.py:a"
-        assert json.loads(lines[1])["key"] == "src/auth.py:b"
+        assert json.loads(lines[0])["key"] == "src/auth.py:a:10"
+        assert json.loads(lines[1])["key"] == "src/auth.py:b:10"
 
     def test_flush_is_idempotent(self, tmp_path: Path) -> None:
         c = Collector(out_dir=tmp_path, target_path=tmp_path)

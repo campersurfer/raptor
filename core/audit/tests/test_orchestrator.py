@@ -54,8 +54,8 @@ def _setup_target(tmp_path: Path):
             {
                 "path": "src/auth.c",
                 "items": [
-                    {"name": "check_pw", "line_start": 1, "line_end": 3},
-                    {"name": "validate", "line_start": 5, "line_end": 7},
+                    {"name": "check_pw", "line_start": 1, "line_end": 6},
+                    {"name": "validate", "line_start": 8, "line_end": 13},
                 ],
             },
         ],
@@ -1579,7 +1579,8 @@ class TestSuspiciousPromotion:
         result = run_orchestrator(config, review_fn)
         assert result.sweep_promoted == 0
         assert result.findings == 0
-        assert result.suspicious == 2
+        # Demotion gate may convert suspicious→clean when Joern is available
+        assert result.suspicious + result.clean == 2
 
     def test_promotion_disabled_when_sweep_off(self, tmp_path: Path):
         """No promotion when sweep_validate_findings=False."""

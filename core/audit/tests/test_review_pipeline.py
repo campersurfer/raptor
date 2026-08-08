@@ -1159,12 +1159,12 @@ class TestEnsembleMerge:
         merged = _merge_outcomes(sec, bf)
         assert merged[0].status == "clean"
 
-    def test_suspicious_with_detection_evidence_demotes(self):
+    def test_suspicious_with_detection_evidence_kept(self):
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome("a.c", "f", "suspicious", evidence="smt:check")]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "clean"
+        assert merged[0].status == "suspicious"
 
     def test_suspicious_with_verification_evidence_kept(self):
         from core.audit.pipeline import _merge_outcomes

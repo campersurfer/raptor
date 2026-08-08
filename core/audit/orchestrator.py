@@ -6608,12 +6608,10 @@ def _sweep_validate(
     """
     review = outcome.review_result or {}
     hypothesis = _resolve_hypothesis(outcome)
-    evidence_tool = _sanitize_llm_et(
-        review.get("evidence_tool") or outcome.evidence_tool or "",
-    )
-
-    if _is_tool_confirmed(evidence_tool):
+    raw_et = review.get("evidence_tool") or outcome.evidence_tool or ""
+    if _is_tool_confirmed(raw_et):
         return outcome
+    evidence_tool = _sanitize_llm_et(raw_et)
 
     if not hypothesis:
         logger.info(
@@ -6914,11 +6912,10 @@ def _proactive_validate(
 
     dispatched = dispatched_tools or set()
 
-    evidence_tool = _sanitize_llm_et(
-        review.get("evidence_tool") or outcome.evidence_tool or "",
-    )
-    if _is_tool_confirmed(evidence_tool):
+    raw_et = review.get("evidence_tool") or outcome.evidence_tool or ""
+    if _is_tool_confirmed(raw_et):
         return outcome
+    evidence_tool = _sanitize_llm_et(raw_et)
 
     confirmed_tools = []
 
