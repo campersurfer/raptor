@@ -454,6 +454,48 @@ _SYNTHESIS_SCHEMA = {
                 "read/write.'"
             ),
         },
+        "architecture": {
+            "type": "object",
+            "description": (
+                "Structural properties of the codebase that "
+                "constrain which vulnerability classes are possible."
+            ),
+            "properties": {
+                "threading_model": {
+                    "type": "string",
+                    "enum": [
+                        "single_threaded",
+                        "multi_threaded",
+                        "unknown",
+                    ],
+                    "description": (
+                        "Whether the program uses threads. "
+                        "'single_threaded' = no pthreads/C11 threads; "
+                        "'multi_threaded' = uses pthreads or similar."
+                    ),
+                },
+                "event_model": {
+                    "type": "string",
+                    "description": (
+                        "How the program waits for events: "
+                        "'select_loop', 'epoll', 'kqueue', "
+                        "'callback', 'blocking_io', or 'none'."
+                    ),
+                },
+                "forks": {
+                    "type": "boolean",
+                    "description": "True if the program calls fork().",
+                },
+                "signal_handlers": {
+                    "type": "boolean",
+                    "description": (
+                        "True if the program registers signal handlers "
+                        "via signal() or sigaction()."
+                    ),
+                },
+            },
+            "required": ["threading_model"],
+        },
     },
     "required": ["subject_title", "overview", "trust_summary"],
 }
@@ -462,17 +504,17 @@ _SYNTHESIS_SCHEMA = {
 def _synthesise_overview(
     dm_data: dict,
     model: str | None,
-) -> tuple[str, str, str]:
-    """Generate subject_title + overview + trust_summary from domain model.
+) -> tuple[str, str, str, dict | None]:
+    """Generate subject_title + overview + trust_summary + architecture.
 
-    Returns (subject_title, overview_summary, trust_summary).
-    Falls back to ("", "", "") on any failure.
+    Returns (subject_title, overview_summary, trust_summary, architecture).
+    Falls back to ("", "", "", None) on any failure.
     """
     concepts = dm_data.get("concepts", [])
     invariants = dm_data.get("invariants", [])
     contracts = dm_data.get("contracts", [])
     if not concepts:
-        return "", "", ""
+        return "", "", "", None
 
     concept_lines = "\n".join(
         f"- {c['id']}: {c.get('description', '')}" for c in concepts
@@ -499,7 +541,11 @@ def _synthesise_overview(
         "Synthesise a descriptive title and a 3-5 paragraph prose "
         "overview of this subsystem for a security researcher. "
         "Focus on the architecture and design decisions, not "
-        "individual function behaviour."
+        "individual function behaviour.\n\n"
+        "Also classify the architecture: is it single-threaded or "
+        "multi-threaded? Does it use an event loop (select/poll/epoll)? "
+        "Does it fork? Does it register signal handlers? These "
+        "properties determine which vulnerability classes apply."
     )
 
     try:
@@ -516,9 +562,9 @@ def _synthesise_overview(
         else:
             client = get_client()
     except Exception:
-        return "", "", ""
+        return "", "", "", None
     if client is None:
-        return "", "", ""
+        return "", "", "", None
 
     try:
         response = client.generate_structured(
@@ -528,12 +574,13 @@ def _synthesise_overview(
     except Exception as exc:
         print(f"study-loop: WARNING: synthesis LLM call failed: {exc}",
               file=sys.stderr)
-        return "", "", ""
+        return "", "", "", None
 
     cost = getattr(response, "cost", 0.0)
     title = result.get("subject_title", "")
     overview = result.get("overview", "")
     trust = result.get("trust_summary", "")
+    arch = result.get("architecture")
     if trust:
         for sep in (". ", "; "):
             if sep in trust:
@@ -546,7 +593,11 @@ def _synthesise_overview(
     if title:
         print(f"study-loop: synthesised title: {title} (${cost:.4f})",
               file=sys.stderr)
-    return title or "", overview or "", trust or ""
+    if arch:
+        tm = arch.get("threading_model", "unknown")
+        print(f"study-loop: architecture: threading={tm}",
+              file=sys.stderr)
+    return title or "", overview or "", trust or "", arch
 
 
 # ------------------------------------------------------------------
@@ -1125,10 +1176,18 @@ def main() -> int:
             dm_data.pop("definitions", None)
             dm_data.pop("mechanical_findings", None)
 
-            # Synthesise overview from learned concepts (one LLM call)
-            if not dm_data.get("subject_title") and dm_data.get("concepts"):
-                syn_title, syn_overview, syn_trust = _synthesise_overview(
-                    dm_data, parsed.model)
+            # Synthesise overview from learned concepts (one LLM call).
+            # Run when subject_title is missing OR architecture block
+            # hasn't been populated yet (architecture was added after
+            # earlier runs already cached subject_title).
+            needs_synthesis = dm_data.get("concepts") and (
+                not dm_data.get("subject_title")
+                or not dm_data.get("architecture")
+            )
+            if needs_synthesis:
+                syn_title, syn_overview, syn_trust, syn_arch = (
+                    _synthesise_overview(dm_data, parsed.model)
+                )
                 if syn_title:
                     dm_data["subject_title"] = syn_title
                 if syn_overview:
@@ -1137,6 +1196,8 @@ def main() -> int:
                     sc = dm_data.get("security_context") or {}
                     sc["trust_summary"] = syn_trust
                     dm_data["security_context"] = sc
+                if syn_arch and isinstance(syn_arch, dict):
+                    dm_data["architecture"] = syn_arch
 
             fd, tmp_name = tempfile.mkstemp(
                 dir=str(output_dir), suffix=".tmp", prefix=".dm-")

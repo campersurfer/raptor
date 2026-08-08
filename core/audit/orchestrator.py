@@ -1395,6 +1395,48 @@ def review_one_function(
                 f"[gate violation: {'; '.join(gate_violations)}]",
             )
 
+    # ── Refutation gates ──────────────────────────────────────────────
+    # Cheap mechanical checks that kill false-positive hypotheses.
+    # Runs after G2 finding gates, before suspicious-demotion.
+    if outcome.status in ("finding", "suspicious"):
+        try:
+            from .refutation import refute_hypothesis
+
+            rv = refute_hypothesis(
+                outcome,
+                domain_model=domain_model,
+                checklist=checklist,
+                config=config,
+                joern_server=joern_server,
+            )
+            if rv is not None:
+                append_audit_log(config.out_dir, {
+                    "action": "refutation_gate",
+                    "gate": rv.gate,
+                    "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
+                    "file": outcome.file,
+                    "function": outcome.function,
+                    "reason": rv.reason,
+                    "demote_to": rv.demote_to,
+                    "original_status": outcome.status,
+                    "applied": True,
+                })
+                logger.info(
+                    "refutation gate [%s] %s:%s — %s → %s",
+                    rv.gate, outcome.file, outcome.function,
+                    rv.reason, rv.demote_to,
+                )
+                outcome = _demote_outcome(
+                    outcome, f"[{rv.gate}: {rv.reason}]",
+                )
+                outcome.status = rv.demote_to
+        except Exception:
+            logger.debug(
+                "refutation gate error for %s:%s",
+                outcome.file, outcome.function,
+                exc_info=True,
+            )
+
     # ── Suspicious demotion gate ────────────────────────────────────
     # Runs AFTER finding gates (G2) so that finding→suspicious demotions
     # are also caught.
@@ -2821,6 +2863,7 @@ def _run_audit_body(
                 fuzz_coverage,
                 evidence_index,
                 discovered_evidence=discovered_evidence,
+                domain_model=domain_model,
             ), batch
 
         review_idx = 0
@@ -3265,6 +3308,53 @@ def _run_audit_body(
         logger.debug("entering _promote_hypothesis_inconsistent")
         _promote_hypothesis_inconsistent(result)
         logger.debug("exited _promote_hypothesis_inconsistent")
+
+        # Run refutation gates on newly-promoted suspicious outcomes.
+        # Hypothesis-consistency promotes clean→suspicious when the LLM
+        # had high-confidence race/leak hypotheses but said "clean".
+        # The per-function refutation gate (line ~1398) missed these
+        # because they were clean at that point.
+        try:
+            from .refutation import refute_hypothesis
+
+            for i, outcome in enumerate(result.outcomes):
+                if outcome.status != "suspicious":
+                    continue
+                if "[hypothesis-consistency:" not in outcome.body:
+                    continue
+                rv = refute_hypothesis(
+                    outcome,
+                    domain_model=domain_model,
+                    checklist=checklist,
+                    config=config,
+                    joern_server=joern_server,
+                )
+                if rv is not None:
+                    append_audit_log(config.out_dir, {
+                        "action": "refutation_gate_post_promote",
+                        "gate": rv.gate,
+                        "file": outcome.file,
+                        "function": outcome.function,
+                        "reason": rv.reason,
+                        "demote_to": rv.demote_to,
+                        "original_status": "suspicious",
+                    })
+                    logger.info(
+                        "refutation gate (post-promote) [%s] %s:%s — %s → %s",
+                        rv.gate, outcome.file, outcome.function,
+                        rv.reason, rv.demote_to,
+                    )
+                    result.outcomes[i] = _demote_outcome(
+                        outcome, f"[{rv.gate}: {rv.reason}]",
+                    )
+                    result.outcomes[i].status = rv.demote_to
+                    result.suspicious -= 1
+                    result.clean += 1
+        except Exception:
+            logger.debug(
+                "refutation gate (post-promote) error",
+                exc_info=True,
+            )
 
         logger.debug("entering _promote_smt_clean")
         _promote_smt_clean(result, config, checklist)
@@ -5659,6 +5749,7 @@ def _review_items(
     fuzz_coverage: Optional[Dict[str, Any]],
     evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
     discovered_evidence: Optional[Dict[str, Any]] = None,
+    domain_model: Optional[Dict[str, Any]] = None,
 ) -> List[ReviewOutcome]:
     """Review a group of trivial functions from the same file individually."""
     outcomes = []
@@ -5738,6 +5829,46 @@ def _review_items(
                 outcome = _demote_outcome(
                     outcome,
                     f"[gate violation: {'; '.join(gate_violations)}]",
+                )
+
+        # ── Refutation gates (batch path) ─────────────────────────
+        if outcome.status in ("finding", "suspicious"):
+            try:
+                from .refutation import refute_hypothesis
+
+                rv = refute_hypothesis(
+                    outcome,
+                    domain_model=domain_model,
+                    checklist=checklist,
+                    config=config,
+                )
+                if rv is not None:
+                    append_audit_log(config.out_dir, {
+                        "action": "refutation_gate",
+                        "gate": rv.gate,
+                        "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
+                        "file": outcome.file,
+                        "function": outcome.function,
+                        "reason": rv.reason,
+                        "demote_to": rv.demote_to,
+                        "original_status": outcome.status,
+                        "applied": True,
+                        "batch": True,
+                    })
+                    logger.info(
+                        "refutation gate [%s] %s:%s — %s → %s (batch)",
+                        rv.gate, outcome.file, outcome.function,
+                        rv.reason, rv.demote_to,
+                    )
+                    outcome = _demote_outcome(
+                        outcome, f"[{rv.gate}: {rv.reason}]",
+                    )
+                    outcome.status = rv.demote_to
+            except Exception:
+                logger.debug(
+                    "refutation gate error for %s:%s (batch)",
+                    gap.get("file"), gap.get("name"),
+                    exc_info=True,
                 )
 
         try:

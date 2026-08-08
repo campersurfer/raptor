@@ -150,7 +150,16 @@ REVIEW_SCHEMA = {
             ),
         },
         "body": {"type": "string"},
-        "cwe": {"type": "string"},
+        "cwe": {
+            "type": "string",
+            "description": (
+                "CWE identifier for the vulnerability class, e.g. "
+                "'CWE-362' for race conditions, 'CWE-190' for integer "
+                "overflow, 'CWE-120' for buffer overflow. Use the most "
+                "specific CWE that applies. Empty string if status is "
+                "clean."
+            ),
+        },
         "counter_hypothesis": {
             "type": "string",
             "description": (
@@ -549,7 +558,7 @@ REVIEW_SCHEMA = {
     },
     "required": [
         "hypothesis", "counter_hypothesis", "hypotheses",
-        "body", "verdict_rationale", "status",
+        "body", "cwe", "verdict_rationale", "status",
     ],
 }
 
@@ -559,7 +568,7 @@ REVIEW_SCHEMA_BLIND = {
         "hypothesis": REVIEW_SCHEMA["properties"]["hypothesis"],
         "hypotheses": REVIEW_SCHEMA["properties"]["hypotheses"],
         "body": {"type": "string"},
-        "cwe": {"type": "string"},
+        "cwe": REVIEW_SCHEMA["properties"]["cwe"],
         "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
         "observations": REVIEW_SCHEMA["properties"]["observations"],
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
@@ -570,7 +579,7 @@ REVIEW_SCHEMA_BLIND = {
     },
     "required": [
         "hypothesis", "counter_hypothesis", "hypotheses",
-        "body", "verdict_rationale", "status",
+        "body", "cwe", "verdict_rationale", "status",
     ],
 }
 

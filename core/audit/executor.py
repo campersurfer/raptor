@@ -674,6 +674,46 @@ def _process_glance_batch(
         if outcomes and i < len(outcomes) and outcomes[i].status != "error":
             outcome = outcomes[i]
             outcome.line = task.gap.get("line_start", 0)
+
+            # ── Refutation gates (glance batch) ───────────────────
+            if outcome.status in ("finding", "suspicious"):
+                try:
+                    from .refutation import refute_hypothesis
+
+                    rv = refute_hypothesis(
+                        outcome,
+                        domain_model=getattr(shared, "domain_model", None),
+                        checklist=shared.checklist,
+                        config=config,
+                    )
+                    if rv is not None:
+                        from .orchestrator import append_audit_log
+
+                        append_audit_log(config.out_dir, {
+                            "action": "refutation_gate",
+                            "gate": rv.gate,
+                            "key": f"{outcome.file}:{outcome.function}:{task.gap.get('line_start', 0)}",
+                            "file": outcome.file,
+                            "function": outcome.function,
+                            "reason": rv.reason,
+                            "demote_to": rv.demote_to,
+                            "original_status": outcome.status,
+                            "applied": True,
+                            "batch": True,
+                        })
+                        from .orchestrator import _demote_outcome
+
+                        outcome = _demote_outcome(
+                            outcome, f"[{rv.gate}: {rv.reason}]",
+                        )
+                        outcome.status = rv.demote_to
+                except Exception:
+                    logger.debug(
+                        "refutation gate error for %s:%s (glance batch)",
+                        task.gap.get("file"), task.gap.get("name"),
+                        exc_info=True,
+                    )
+
             if collector is not None:
                 collector.submit(outcome, task.gap)
             else:

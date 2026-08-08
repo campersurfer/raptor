@@ -1815,6 +1815,190 @@ class TestResolveGateDemoted:
         assert result.outcomes[0].status == "finding"
 
 
+class TestRefutationGateWirePoint:
+    """Refutation gates demote findings/suspicious via the orchestrator wire point."""
+
+    def test_race_in_single_threaded_demoted_to_clean(self, tmp_path: Path):
+        """Architecture gate demotes a race-condition finding to clean."""
+        target = tmp_path / "target"
+        target.mkdir()
+        src = target / "src"
+        src.mkdir()
+        (src / "net.c").write_text(
+            "void newaddress(void) {\n"
+            "  // single-threaded event-driven program\n"
+            "}\n"
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "src/net.c",
+                "items": [
+                    {"name": "newaddress", "line_start": 1, "line_end": 3,
+                     "sloc": 3},
+                ],
+            }],
+            "metadata": {"total_items": 1, "total_sloc": 3},
+        }
+        (out / "checklist.json").write_text(json.dumps(checklist))
+
+        # Domain model says single-threaded
+        dm = {
+            "architecture": {"threading_model": "single_threaded"},
+            "contracts": [],
+        }
+        (out / "domain-model.json").write_text(json.dumps(dm))
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"],
+                function=ctx["function"],
+                status="finding",
+                body="race condition on shared state",
+                hypothesis="data race in newaddress concurrent modification",
+                review_result={"cwe": "CWE-362"},
+            )
+
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            batch_sloc_threshold=0,
+        )
+        result = run_orchestrator(config, review_fn)
+        # The refutation gate should demote to clean
+        assert result.findings == 0
+        outcomes = [o for o in result.outcomes if o.function == "newaddress"]
+        assert len(outcomes) == 1
+        assert outcomes[0].status == "clean"
+        assert "architecture" in outcomes[0].body
+
+    def test_tool_confirmed_finding_not_refuted(self, tmp_path: Path):
+        """Finding with tool evidence is not touched by refutation gates.
+
+        The reachability gate (G7) may still demote the finding for
+        other reasons (no callers), but the refutation gate must not
+        fire — tool evidence protects it.
+        """
+        target = tmp_path / "target"
+        target.mkdir()
+        src = target / "src"
+        src.mkdir()
+        (src / "net.c").write_text(
+            "void newaddress(void) {\n"
+            "  // has a real race confirmed by a tool\n"
+            "}\n"
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "src/net.c",
+                "items": [
+                    {"name": "newaddress", "line_start": 1, "line_end": 3,
+                     "sloc": 3},
+                ],
+            }],
+            "metadata": {"total_items": 1, "total_sloc": 3},
+        }
+        (out / "checklist.json").write_text(json.dumps(checklist))
+
+        dm = {
+            "architecture": {"threading_model": "single_threaded"},
+            "contracts": [],
+        }
+        (out / "domain-model.json").write_text(json.dumps(dm))
+
+        def review_fn(ctx, config):
+            return ReviewOutcome(
+                file=ctx["file"],
+                function=ctx["function"],
+                status="finding",
+                body="race condition confirmed by tool",
+                hypothesis="data race in newaddress concurrent modification",
+                evidence_tool="semgrep:race-detect",
+                review_result={"cwe": "CWE-362"},
+            )
+
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            batch_sloc_threshold=0,
+        )
+        result = run_orchestrator(config, review_fn)
+        outcomes = [o for o in result.outcomes if o.function == "newaddress"]
+        assert len(outcomes) == 1
+        # Refutation gate must not have fired — no "[architecture:" in body
+        assert "architecture" not in outcomes[0].body
+        # Tool evidence still present
+        assert outcomes[0].evidence_tool == "semgrep:race-detect"
+
+    def test_hypothesis_promoted_race_refuted_post_loop(self, tmp_path: Path):
+        """Race hypothesis promoted by hypothesis-consistency is caught
+        by the post-promote refutation gate.
+
+        Flow: LLM returns clean with high-confidence CWE-362 hypothesis
+        → hypothesis-consistency promotes to suspicious → refutation gate
+        catches the race-in-single-threaded and demotes back to clean.
+        """
+        target = tmp_path / "target"
+        target.mkdir()
+        src = target / "src"
+        src.mkdir()
+        (src / "cache.c").write_text(
+            "void cache_update(void) {\n"
+            "  // updates cache entries\n"
+            "}\n"
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "src/cache.c",
+                "items": [
+                    {"name": "cache_update", "line_start": 1, "line_end": 3,
+                     "sloc": 3},
+                ],
+            }],
+            "metadata": {"total_items": 1, "total_sloc": 3},
+        }
+        (out / "checklist.json").write_text(json.dumps(checklist))
+
+        dm = {
+            "architecture": {"threading_model": "single_threaded"},
+            "contracts": [],
+        }
+        (out / "domain-model.json").write_text(json.dumps(dm))
+
+        def review_fn(ctx, config):
+            # LLM says clean but retains a high-confidence race hypothesis
+            return ReviewOutcome(
+                file=ctx["file"],
+                function=ctx["function"],
+                status="clean",
+                body="no issues found",
+                hypothesis="race condition on cache entries",
+                hypotheses=[{
+                    "mechanism": "race condition on shared cache: "
+                                "concurrent threads modify cache entries "
+                                "without synchronisation",
+                    "confidence": "high",
+                    # No counter — LLM contradicts itself
+                }],
+                review_result={"cwe": "CWE-362"},
+            )
+
+        config = OrchestratorConfig(
+            target_path=target, out_dir=out, resume=False,
+            batch_sloc_threshold=0,
+        )
+        result = run_orchestrator(config, review_fn)
+        outcomes = [o for o in result.outcomes if o.function == "cache_update"]
+        assert len(outcomes) == 1
+        # Hypothesis-consistency promoted clean → suspicious,
+        # then refutation gate demoted suspicious → clean
+        assert outcomes[0].status == "clean"
+        assert "architecture" in outcomes[0].body
+
+
 class TestHasRefutingCounter:
     """Unit tests for _has_refuting_counter."""
 
