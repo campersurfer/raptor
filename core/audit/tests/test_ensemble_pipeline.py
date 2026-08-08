@@ -300,6 +300,28 @@ class TestPipelinedMerge:
         merged = _merge_outcomes([sec], [bf])
         assert merged[0].cost_usd == pytest.approx(0.08)
 
+    def test_merge_keeps_detection_only_evidence(self):
+        """Detection-role evidence (e.g. smt:check-lock-domain) prevents demotion."""
+        sec = _MockOutcome(
+            status="suspicious", file="a.c", function="foo",
+            hypothesis="lock issue",
+            evidence_tool="smt:check-lock-domain",
+        )
+        bf = _MockOutcome(status="clean", file="a.c", function="foo")
+        merged = _merge_outcomes([sec], [bf])
+        assert merged[0].status == "suspicious"
+
+    def test_merge_demotes_llm_claimed_evidence(self):
+        """llm-claimed evidence is not mechanical — still demotes."""
+        sec = _MockOutcome(
+            status="suspicious", file="a.c", function="foo",
+            hypothesis="lock issue",
+            evidence_tool="llm-claimed:smt:check-lock-domain",
+        )
+        bf = _MockOutcome(status="clean", file="a.c", function="foo")
+        merged = _merge_outcomes([sec], [bf])
+        assert merged[0].status == "clean"
+
 
 # ── Fix B: counter-hypothesis veto ─────────────────────────────────
 

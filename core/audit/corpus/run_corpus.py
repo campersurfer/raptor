@@ -420,6 +420,7 @@ def _status_matches(
 # of truth — W8 unification).
 from core.audit.pipeline import (  # noqa: E402
     STATUS_RANK as _STATUS_RANK,
+    _has_any_mechanical_evidence,
     _is_verification_evidence,
     dampen_file_pileup as _dampen_file_pileup_generic,
 )
@@ -1306,8 +1307,8 @@ def _run_ensemble_audit(
                     sec_ev = sec_r.get("evidence_tool", "")
                     bf_ev = bf_r.get("evidence_tool", "")
                     has_evidence = (
-                        _is_verification_evidence(sec_ev)
-                        or _is_verification_evidence(bf_ev)
+                        _has_any_mechanical_evidence(sec_ev)
+                        or _has_any_mechanical_evidence(bf_ev)
                     )
                     if not has_evidence:
                         use_max = False

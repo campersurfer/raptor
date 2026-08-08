@@ -1287,24 +1287,6 @@ def review_one_function(
                     outcome.evidence_tool, outcome.hypothesis,
                 )
 
-    # ── Suspicious demotion gate ────────────────────────────────────
-    # Suspicious without verification evidence demotes to clean.
-    # Only active when Joern is running (cross-function verifiers need
-    # the CPG to confirm interprocedural bugs that intra-function
-    # SMT/Coccinelle can't reach).
-    if (
-        outcome.status == "suspicious"
-        and joern_server is not None
-        and not _is_verification_evidence_for_gate(outcome)
-    ):
-        outcome.status = "clean"
-        outcome.body = (
-            "[suspicious-demotion: no verification evidence "
-            "with Joern available]\n\n" + outcome.body
-        )
-        with result._lock:
-            result.suspicious_demoted = getattr(result, "suspicious_demoted", 0) + 1
-
     # ── Refinement ────────────────────────────────────────────────────
     if config.max_refinements > 0:
         try:
@@ -1412,6 +1394,26 @@ def review_one_function(
                 outcome,
                 f"[gate violation: {'; '.join(gate_violations)}]",
             )
+
+    # ── Suspicious demotion gate ────────────────────────────────────
+    # Runs AFTER finding gates (G2) so that finding→suspicious demotions
+    # are also caught.
+    # Suspicious without verification evidence demotes to clean.
+    # Only active when Joern is running (cross-function verifiers need
+    # the CPG to confirm interprocedural bugs that intra-function
+    # SMT/Coccinelle can't reach).
+    if (
+        outcome.status == "suspicious"
+        and joern_server is not None
+        and not _is_verification_evidence_for_gate(outcome)
+    ):
+        outcome.status = "clean"
+        outcome.body = (
+            "[suspicious-demotion: no verification evidence "
+            "with Joern available]\n\n" + outcome.body
+        )
+        with result._lock:
+            result.suspicious_demoted = getattr(result, "suspicious_demoted", 0) + 1
 
     # ── Dynamic validation ────────────────────────────────────────────
     if config.dynamic_validation and outcome.status == "finding":
@@ -9496,11 +9498,15 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
     """Promote clean outcomes whose own hypotheses contradict the verdict.
 
     Mirror of ``_demote_self_contradictions``.  When the LLM returns
-    'clean' but retains at least one hypothesis at high or medium
-    confidence, the verdict is inconsistent with the analysis — the
-    model described a plausible bug then second-guessed itself under
-    context pressure.  Promote to suspicious so the sweep pass can
-    attempt mechanical verification.
+    'clean' but retains at least one hypothesis at high confidence
+    without a counter-argument, the verdict is inconsistent with the
+    analysis — the model described a plausible bug then second-guessed
+    itself under context pressure.  Promote to suspicious so the sweep
+    pass can attempt mechanical verification.
+
+    Medium-confidence hypotheses are insufficient: the LLM rating a
+    hypothesis medium then choosing clean is exercising judgement, not
+    contradicting itself.
     """
     for i, outcome in enumerate(result.outcomes):
         if outcome.status != "clean":
@@ -9518,7 +9524,8 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
         unrefuted = [
             h for h in hypotheses
             if isinstance(h, dict)
-            and (h.get("confidence") or "").lower() in ("high", "medium")
+            and (h.get("confidence") or "").lower() == "high"
+            and not h.get("counter")
         ]
         if not unrefuted:
             continue
@@ -9531,7 +9538,7 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
             status="suspicious",
             body=(
                 f"[hypothesis-consistency: {len(unrefuted)} unrefuted "
-                f"hypothesis(es) at high/medium confidence]\n\n"
+                f"high-confidence hypothesis(es)]\n\n"
                 f"{outcome.body}"
             ),
             hypothesis=outcome.hypothesis,
@@ -9547,7 +9554,7 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
         result.suspicious += 1
         logger.info(
             "hypothesis-consistency promotion: %s:%s — %d unrefuted "
-            "hypothesis(es) despite clean verdict (%s)",
+            "high-confidence hypothesis(es) despite clean verdict (%s)",
             outcome.file, outcome.function, len(unrefuted), mechanism,
         )
 

@@ -207,7 +207,7 @@ class Collector:
 
         entry: dict[str, Any] = {
             "action": "orchestrator_review",
-            "key": f"{outcome.file}:{outcome.function}",
+            "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
             "status": outcome.status,
             "model": outcome.model,
             "cost_usd": outcome.cost_usd,

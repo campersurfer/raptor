@@ -176,6 +176,19 @@ def _is_verification_evidence(ev: str) -> bool:
     return True
 
 
+def _has_any_mechanical_evidence(ev: str) -> bool:
+    """True when evidence comes from any mechanical tool (including detection-role).
+
+    Weaker than ``_is_verification_evidence`` — accepts detection-role
+    SMT/Coccinelle evidence.  Used by the ensemble merge to prevent
+    discarding findings that have real tool support even if the tool's
+    role is detection rather than verification.
+    """
+    if not ev or ev.startswith(_NON_MECHANICAL):
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Dual-mode accessor — works on ReviewOutcome objects and plain dicts
 # ---------------------------------------------------------------------------
@@ -277,8 +290,8 @@ def _merge_outcomes(sec_outcomes, bf_outcomes):
                 sec_ev = sec.evidence_tool or ""
                 bf_ev = bf.evidence_tool or ""
                 has_evidence = (
-                    _is_verification_evidence(sec_ev)
-                    or _is_verification_evidence(bf_ev)
+                    _has_any_mechanical_evidence(sec_ev)
+                    or _has_any_mechanical_evidence(bf_ev)
                 )
                 if not has_evidence:
                     use_max = False
