@@ -7658,7 +7658,25 @@ def _deepen_suspicious(
 
         outcome.line = gap.get("line_start", 0)
 
-        if outcome.status in ("finding", "suspicious", "dormant"):
+        # Accept the deepen verdict when it's non-clean, OR when
+        # the clean came from a structured demotion (all-refuted or
+        # rationale-consistency) rather than a bare LLM flip-flop.
+        _rr = outcome.review_result or {}
+        _deepen_dominated = outcome.status == "clean" and not (
+            _rr.get("all_refuted_demotion")
+            or _rr.get("rationale_consistency_demotion")
+        )
+
+        if _deepen_dominated:
+            logger.info(
+                "deepen [%d/%d] %s:%s: stayed %s (clean without structured basis)",
+                idx,
+                len(targets),
+                gap["file"],
+                gap["name"],
+                prior_outcome.status,
+            )
+        else:
             if outcome.status == "finding":
                 if config.sweep_validate_findings:
                     outcome = _sweep_validate(
@@ -7727,15 +7745,6 @@ def _deepen_suspicious(
                 gap["name"],
                 prior_outcome.status,
                 outcome.status,
-            )
-        else:
-            logger.info(
-                "deepen [%d/%d] %s:%s: stayed %s",
-                idx,
-                len(targets),
-                gap["file"],
-                gap["name"],
-                prior_outcome.status,
             )
 
     if _outcomes_to_remove:

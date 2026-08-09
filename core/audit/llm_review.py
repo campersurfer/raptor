@@ -1082,6 +1082,7 @@ def make_review_fn(
             if all_refuted:
                 status = "clean"
                 result["status"] = status
+                result["all_refuted_demotion"] = True
                 logger.info(
                     "all-refuted demotion %s:%s: %d hypotheses refuted%s",
                     ctx["file"], ctx["function"], len(hypotheses),
@@ -1105,6 +1106,7 @@ def make_review_fn(
                     prior = status
                     status = "clean"
                     result["status"] = status
+                    result["rationale_consistency_demotion"] = True
                     logger.info(
                         "rationale-consistency demotion %s:%s: "
                         "rationale says clean but status was %s",
