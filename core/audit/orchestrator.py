@@ -8817,6 +8817,9 @@ def _promote_clean_refuted(
         gap = _find_gap_in_checklist(checklist or {}, outcome.file, outcome.function)
         line_end = gap.get("line_end") if gap else None
 
+        if outcome.line == 0 and gap:
+            outcome.line = gap.get("line_start", 0)
+
         source = _read_raw_source(
             config.target_path,
             outcome.file,
@@ -9170,6 +9173,13 @@ def _promote_smt_clean(
         gap = _find_gap_in_checklist(checklist or {}, outcome.file, outcome.function)
         line_end = gap.get("line_end") if gap else None
 
+        if outcome.line == 0 and gap:
+            logger.warning(
+                "smt-clean: %s:%s has outcome.line=0, using gap line_start=%d",
+                outcome.file, outcome.function, gap.get("line_start", 0),
+            )
+            outcome.line = gap.get("line_start", 0)
+
         source = _read_raw_source(
             config.target_path, outcome.file, outcome.line, line_end,
         )
@@ -9295,6 +9305,9 @@ def _promote_auth_bypass(
 
         gap = _find_gap_in_checklist(checklist or {}, outcome.file, outcome.function)
         line_end = gap.get("line_end") if gap else None
+
+        if outcome.line == 0 and gap:
+            outcome.line = gap.get("line_start", 0)
 
         source = _read_raw_source(
             config.target_path,
