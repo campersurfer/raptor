@@ -493,6 +493,7 @@ class LoopTerminated:
         "tool_timeout",              # handler timeout, not configured to terminate
         "context_overflow",          # request would exceed context window
         "provider_error",            # transport / API failure after retries
+        "credit_exhausted",          # account out of credit / billing failure
         "give_up",                   # caller-supplied should_continue returned False
     ]
     iterations: int
@@ -561,6 +562,7 @@ class ToolLoopResult:
         "tool_timeout",
         "context_overflow",
         "provider_error",
+        "credit_exhausted",
         "give_up",
     ]
     error_message: str | None = None

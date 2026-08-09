@@ -538,11 +538,18 @@ class ToolUseLoop:
                         cache_control=self._cache_control,
                         **self._provider_specific,
                     )
-            except Exception:
+            except Exception as exc:
+                from core.llm.providers import is_credit_exhausted
+                reason = (
+                    "credit_exhausted"
+                    if is_credit_exhausted(exc)
+                    else "provider_error"
+                )
                 self._emit(LoopTerminated(
-                    reason="provider_error",
+                    reason=reason,
                     iterations=iteration,
                     total_cost_usd=total_cost_usd,
+                    error_message=str(exc),
                 ))
                 raise
 

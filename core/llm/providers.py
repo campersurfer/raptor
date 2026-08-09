@@ -2717,6 +2717,36 @@ def _is_rate_limit(exc: BaseException) -> bool:
     return getattr(exc, "status_code", None) == 429
 
 
+def is_credit_exhausted(exc: BaseException) -> bool:
+    """``True`` when ``exc`` indicates the API account has run out of
+    credit or has a billing problem that no amount of retrying will fix.
+
+    Provider-agnostic: checks the exception message for credit/billing
+    keywords across Anthropic (400 ``credit balance is too low``),
+    OpenAI (429 ``exceeded your current quota``), and generic shims.
+    """
+    status = getattr(exc, "status_code", None)
+    # Only 400/401/402/403/429 carry billing errors — 5xx never does.
+    if status is not None and status >= 500:
+        return False
+    text = str(exc).lower()
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error", body)
+        if isinstance(err, dict):
+            text += " " + str(err.get("message", "")).lower()
+        elif isinstance(err, str):
+            text += " " + err.lower()
+    return any(phrase in text for phrase in (
+        "credit balance is too low",
+        "exceeded your current quota",
+        "insufficient_quota",
+        "billing hard limit",
+        "account has been deactivated",
+        "billing not active",
+    ))
+
+
 def _message_to_anthropic_wire(m: Message) -> Dict[str, Any]:
     """Our :class:`Message` → Anthropic wire dict.
 
