@@ -1690,9 +1690,7 @@ class TestSuspiciousPromotion:
             "should not promote when LLM has a specific counter-hypothesis"
         )
         assert result.findings == 0
-        # Refutation gate may mechanically confirm the counter-hypothesis
-        # (CWE-362 impossible in single-threaded target) and demote to clean
-        assert result.suspicious + result.clean == 1
+        assert result.suspicious >= 1
 
 
 class TestResolveGateDemoted:

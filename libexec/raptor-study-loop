@@ -362,14 +362,8 @@ def _overview_from_directory(
     try:
         from packages.llm_analysis import get_client
         if model:
-            from core.llm.config import LLMConfig
-            cfg = LLMConfig()
-            mc = cfg.config_for_model(model)
-            if mc.api_key:
-                client = get_client(config=LLMConfig(
-                    primary_model=mc, fallback_models=[]))
-            else:
-                client = get_client()
+            from core.llm.client import LLMClient
+            client = LLMClient(pinned_model=model)
         else:
             client = get_client()
     except Exception:
@@ -551,14 +545,8 @@ def _synthesise_overview(
     try:
         from packages.llm_analysis import get_client
         if model:
-            from core.llm.config import LLMConfig
-            cfg = LLMConfig()
-            mc = cfg.config_for_model(model)
-            if not mc.api_key:
-                client = get_client()
-            else:
-                client = get_client(config=LLMConfig(
-                    primary_model=mc, fallback_models=[]))
+            from core.llm.client import LLMClient
+            client = LLMClient(pinned_model=model)
         else:
             client = get_client()
     except Exception:

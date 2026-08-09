@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
-import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -94,45 +92,16 @@ def _is_single_threaded(
 ) -> bool:
     """Determine if the target is single-threaded.
 
-    Primary signal: domain model ``architecture.threading_model``
-    (produced by the study loop's synthesis pass).
-    Fallback: grep the source tree for pthread/C11 thread APIs.
+    Only the domain model's ``architecture.threading_model`` field
+    (produced by the study loop) is authoritative enough to suppress
+    race-condition findings.  Source-grep heuristics are too fragile:
+    kernel code uses its own primitives, excerpt trees are partial,
+    and framework-spawned threads leave no source footprint.
     """
-    # 1. Domain model — cheap dict lookup, authoritative when present
-    if domain_model:
-        arch = domain_model.get("architecture", {})
-        tm = arch.get("threading_model", "")
-        if tm == "single_threaded":
-            return True
-        if tm == "multi_threaded":
-            return False
-        # "unknown" or missing → fall through to grep
-
-    # 2. Grep — works when there's no domain model or no architecture
-    #    block.  Zero hits on threading APIs → single-threaded.
-    target = getattr(config, "target_path", None)
-    if target is not None:
-        target = Path(target)
-        if target.is_dir():
-            try:
-                from core.config import RaptorConfig
-                safe_env = RaptorConfig.get_safe_env()
-            except Exception:
-                safe_env = None
-            try:
-                result = subprocess.run(
-                    ["grep", "-rl", "-E",
-                     r"pthread_create|pthread_mutex_|thrd_create",
-                     str(target)],
-                    capture_output=True, text=True, timeout=10,
-                    env=safe_env,
-                )
-                if result.returncode != 0 and not result.stdout.strip():
-                    return True
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-    return False
+    if not domain_model:
+        return False
+    arch = domain_model.get("architecture", {})
+    return arch.get("threading_model", "") == "single_threaded"
 
 
 def _signal_reachable_set(
