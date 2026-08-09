@@ -286,6 +286,27 @@ def _stop_shared_joern(srv):
         logger.debug("shared Joern server stop failed", exc_info=True)
 
 
+def _load_inventoried_functions(audit_dir: Optional[Path]) -> set:
+    """Return {(file, function_name)} for every function in the checklist."""
+    if audit_dir is None:
+        return set()
+    ck_path = audit_dir / "checklist.json"
+    if not ck_path.exists():
+        return set()
+    try:
+        ck = json.loads(ck_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return set()
+    result = set()
+    for f in ck.get("files", []):
+        fpath = f.get("path", "")
+        for item in f.get("items", []):
+            name = item.get("name", "")
+            if name and not name.startswith("interstitial:"):
+                result.add((fpath, name))
+    return result
+
+
 def _run_audit(
     labels: List[Any],
     source_dirs: Dict[str, Path],
@@ -357,6 +378,9 @@ def _run_audit(
             )
             if audit_dir:
                 run_dirs.append(audit_dir)
+
+            inventoried = _load_inventoried_functions(audit_dir)
+
             for label in repo_labels:
                 outcome = outcomes.get(label.function_id)
                 if outcome is None:
@@ -381,11 +405,21 @@ def _run_audit(
                                 if bare is not None:
                                     outcome = bare
                 if outcome is None:
-                    actual = "error"
-                    hypothesis = ""
-                    evidence_tool = ""
-                    cost = 0.0
-                    dur = 0.0
+                    fn_name = label.function_id.rsplit(":", 1)[-1]
+                    if fn_name.count(".") > 0:
+                        fn_name = fn_name.rsplit(".", 1)[-1]
+                    if (label.source.file, fn_name) in inventoried:
+                        actual = "clean"
+                        hypothesis = ""
+                        evidence_tool = "triage:classifier"
+                        cost = 0.0
+                        dur = 0.0
+                    else:
+                        actual = "error"
+                        hypothesis = ""
+                        evidence_tool = ""
+                        cost = 0.0
+                        dur = 0.0
                 else:
                     actual = outcome["status"]
                     hypothesis = outcome.get("hypothesis", "")
