@@ -101,18 +101,17 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
 
     from core.llm.config import LLMConfig
 
-    if opts.max_cost_usd is not None:
-        llm_cfg = LLMConfig(max_cost_per_scan=opts.max_cost_usd)
-    else:
-        # No operator cap — disable the LLM-client-level budget gate.
-        # The orchestrator has its own _check_budget(); the $10 LLMConfig
-        # default is a safety rail for /scan and /agentic but premature
-        # for /audit which routinely reviews hundreds of functions.
-        llm_cfg = LLMConfig(max_cost_per_scan=float("inf"))
-    client = LLMClient(config=llm_cfg)
-
     models = opts.models or ["default"]
     primary_model = models[0] if models[0] != "default" else None
+    max_cost = opts.max_cost_usd if opts.max_cost_usd is not None else float("inf")
+
+    if primary_model:
+        client = LLMClient(pinned_model=primary_model)
+        client.config.max_cost_per_scan = max_cost
+    else:
+        llm_cfg = LLMConfig(max_cost_per_scan=max_cost)
+        client = LLMClient(config=llm_cfg)
+
     review_fn = make_review_fn(
         client, task_type="audit", model_name=primary_model,
         mode=opts.mode, out_dir=opts.out_dir,
@@ -342,18 +341,16 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
 
     from core.llm.config import LLMConfig
 
-    if opts.max_cost_usd is not None:
-        llm_cfg = LLMConfig(max_cost_per_scan=opts.max_cost_usd)
-    else:
-        # No operator cap — disable the LLM-client-level budget gate.
-        # The orchestrator has its own _check_budget(); the $10 LLMConfig
-        # default is a safety rail for /scan and /agentic but premature
-        # for /audit which routinely reviews hundreds of functions.
-        llm_cfg = LLMConfig(max_cost_per_scan=float("inf"))
-    client = LLMClient(config=llm_cfg)
-
     models = opts.models or ["default"]
     primary_model = models[0] if models[0] != "default" else None
+    max_cost = opts.max_cost_usd if opts.max_cost_usd is not None else float("inf")
+
+    if primary_model:
+        client = LLMClient(pinned_model=primary_model)
+        client.config.max_cost_per_scan = max_cost
+    else:
+        llm_cfg = LLMConfig(max_cost_per_scan=max_cost)
+        client = LLMClient(config=llm_cfg)
 
     sec_review = make_review_fn(
         client, task_type="audit", model_name=primary_model,

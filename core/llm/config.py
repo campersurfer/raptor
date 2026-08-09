@@ -1206,11 +1206,14 @@ class LLMConfig:
             resolve_model_shorthand,
             unknown_model_message,
         )
+        from core.llm.model_data import _strip_dated_alias
 
         candidates = self._configured_models()
         bare = bare_model_id(model_id)
         for mc in candidates:
             if mc.model_name == model_id or mc.model_name == bare:
+                return mc
+            if _strip_dated_alias(mc.model_name) == bare:
                 return mc
 
         # Shorthand expansion: when the operator passes a bare tier token
@@ -1256,11 +1259,16 @@ class LLMConfig:
                     target, bare_model_id(mc.model_name)
                 ),
             )
+            limits = MODEL_LIMITS.get(bare) or MODEL_LIMITS.get(
+                _strip_dated_alias(bare), {},
+            )
             return ModelConfig(
                 provider=provider,
                 model_name=bare_model_id(model_id),
                 api_key=best.api_key,
                 api_base=best.api_base,
+                max_tokens=limits.get("max_output", best.max_tokens),
+                max_context=limits.get("max_context", best.max_context),
             )
         return ModelConfig(provider=provider, model_name=bare_model_id(model_id))
 
