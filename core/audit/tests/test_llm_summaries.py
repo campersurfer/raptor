@@ -116,13 +116,13 @@ class TestParseSummaryResponse:
         s = _parse_summary_response("[1, 2, 3]", "f", "a.c")
         assert s is None
 
-    def test_truncates_long_lists(self):
+    def test_preserves_long_lists(self):
         import json as _json
         callees = [f"f{i}" for i in range(50)]
         text = _json.dumps({"callees": callees, "preconditions": [{"parameter": "x", "assumption": "y"}]})
         s = _parse_summary_response(text, "f", "a.c")
         assert s is not None
-        assert len(s.callees) == 20
+        assert len(s.callees) == 50
 
     def test_alternative_field_names(self):
         text = '{"preconditions": [{"param": "buf", "condition": "!= NULL"}]}'
