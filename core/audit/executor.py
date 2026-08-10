@@ -69,6 +69,7 @@ def run_executor_sync(
     review_one_fn: Callable | None = None,
     on_tick: Callable[[dict[str, Any]], None] | None = None,
     reviewed_outcomes: dict[str, Any] | None = None,
+    throttle: Any | None = None,
 ) -> ExecutorStats:
     """Serial executor — drop-in replacement for the current ``for gap`` loop.
 
@@ -113,6 +114,7 @@ def run_executor_sync(
                     review_one_fn=review_one_fn,
                     on_tick=on_tick,
                     reviewed_outcomes=reviewed_outcomes,
+                    throttle=throttle,
                 ),
             )
         finally:
@@ -288,13 +290,18 @@ async def _run_async(
     review_one_fn: Callable | None = None,
     on_tick: Callable[[dict[str, Any]], None] | None = None,
     reviewed_outcomes: dict[str, Any] | None = None,
+    throttle: Any | None = None,
 ) -> ExecutorStats:
-    """Async executor with bounded concurrency via semaphore.
+    """Async executor with bounded concurrency via throttle.
 
     Glance-tier tasks are accumulated and submitted in batches of
     ``_GLANCE_BATCH_SIZE`` — each batch is a single LLM call covering
     multiple functions.  Non-glance tasks get individual LLM calls.
-    Both kinds run concurrently, bounded by the semaphore.
+    Both kinds run concurrently, bounded by the throttle.
+
+    When *throttle* is provided externally (shared with other
+    consumers like the study thread), it is used as-is and NOT
+    closed on exit — the caller owns its lifecycle.
     """
     if review_one_fn is None:
         from .orchestrator import review_one_function
@@ -302,8 +309,10 @@ async def _run_async(
 
     from core.llm.throttle import AdaptiveThrottle
 
-    cooldown = read_throttle_cooldown_s()
-    throttle = AdaptiveThrottle(ec.max_workers, cooldown_s=cooldown)
+    owns_throttle = throttle is None
+    if owns_throttle:
+        cooldown = read_throttle_cooldown_s()
+        throttle = AdaptiveThrottle(ec.max_workers, cooldown_s=cooldown)
     try:
         return await _run_async_body(
             graph, review_fn, shared, config, result, ec, throttle,
@@ -327,7 +336,8 @@ async def _run_async(
                 throttle.signal_count, throttle.effective_workers,
                 throttle.max_workers,
             )
-        throttle.close()
+        if owns_throttle:
+            throttle.close()
 
 
 async def _run_async_body(
