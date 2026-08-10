@@ -10,6 +10,7 @@ JSON-in-prompt fallback for providers that lack native structured support.
 
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -1524,7 +1525,7 @@ class OpenAICompatibleProvider(LLMProvider):
                         output_tokens=0,
                         error_message=err_msg,
                     )
-                delay = backoff_factor ** attempt
+                delay = (backoff_factor ** attempt) * (0.5 + random.random())
                 logger.info(
                     f"OpenAICompatibleProvider.turn: transient error attempt "
                     f"{attempt + 1}, retrying in {delay:.1f}s: {exc}"
@@ -2378,7 +2379,7 @@ class AnthropicProvider(LLMProvider):
                         output_tokens=0,
                         error_message=err_msg,
                     )
-                delay = backoff_factor ** attempt
+                delay = (backoff_factor ** attempt) * (0.5 + random.random())
                 logger.info(
                     f"AnthropicProvider.turn: transient error attempt "
                     f"{attempt + 1}, retrying in {delay:.1f}s: {exc}"
