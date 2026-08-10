@@ -506,13 +506,16 @@ class LLMProvider(ABC):
         Usage is tracked by self.generate() — no double counting.
         """
         schema_json = json.dumps(schema, indent=2)
-        augmented_prompt = (
-            f"{prompt}\n\n"
+        schema_block = (
+            f"\n\n## Output format\n"
             f"Respond with JSON matching this schema:\n"
             f"```json\n{schema_json}\n```\n"
             f"Return ONLY valid JSON, no other text."
         )
-        response = self.generate(augmented_prompt, system_prompt)
+        augmented_system = (
+            (system_prompt or "") + schema_block
+        )
+        response = self.generate(prompt, augmented_system)
         if response.finish_reason in ("max_tokens", "length"):
             raise json.JSONDecodeError(
                 "Response truncated (output token limit reached)",
