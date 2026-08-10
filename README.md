@@ -142,7 +142,7 @@ Environment variables that could inject code into the launcher chain are strippe
 | `/scan` | Static analysis with Semgrep and CodeQL | Stable |
 | `/understand` | Map attack surface, trace data flows, hunt vulnerability variants | Stable |
 | `/binary` | Black-box binary investigation, runtime evidence, graph queries and handoff | Beta |
-| `/audit` | Hypothesis-driven, tool-grounded systematic code review | Stable |
+| `/audit` | Hypothesis-driven, tool-grounded systematic code review | Beta |
 | `/review` | Query audit state: findings, gaps, coverage, operator notes | Stable |
 | `/validate` | Multi-stage exploitability validation pipeline (Stages 0-F) | Stable |
 | `/codeql` | CodeQL-only deep analysis with SMT dataflow pre-screening | Stable |
