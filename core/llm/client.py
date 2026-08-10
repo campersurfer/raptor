@@ -254,6 +254,11 @@ def _is_retryable_error(error: Exception) -> bool:
     Non-retryable: schema validation, auth errors (401/403), bad request (400),
     Instructor failures, Pydantic validation errors.
     """
+    # Credit exhaustion / billing cap — no amount of retrying will fix
+    from core.llm.providers import is_credit_exhausted
+    if is_credit_exhausted(error):
+        return False
+
     # Daily quotas are NOT retryable — won't clear for hours
     if _is_daily_quota_error(error):
         return False

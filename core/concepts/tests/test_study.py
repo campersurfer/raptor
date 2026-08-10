@@ -30,6 +30,8 @@ from core.concepts.study import (
     _prioritise_items,
     _promote_to_project,
     _queue_unresolved,
+    _scope_items_for_reading_list,
+    _CONSECUTIVE_FAIL_LIMIT,
     check_evidence_staleness,
     run_phase2,
     run_phase3,
@@ -611,6 +613,23 @@ class TestRunPhase2:
         assert concepts == []
         assert invariants == []
         assert contracts == []
+
+    def test_circuit_breaker_aborts_after_consecutive_failures(self) -> None:
+        items = [
+            StudyItem(
+                id=f"f{i}", kind="function", name=f"fn{i}",
+                file=f"dir{i}/f.c",
+            )
+            for i in range(10)
+        ]
+        mock_client = MagicMock()
+        mock_client.generate_structured.side_effect = RuntimeError(
+            "budget exceeded",
+        )
+        run_phase2(items, "t/", mock_client)
+        assert mock_client.generate_structured.call_count <= (
+            _CONSECUTIVE_FAIL_LIMIT + 1
+        )
 
     def test_parallel_dispatch(self, monkeypatch) -> None:
         items = [
@@ -1457,3 +1476,140 @@ class TestPromoteToProject:
         assert canonical.is_file()
         tmps = list((project_dir / "concepts").glob("*.tmp"))
         assert len(tmps) == 0
+
+
+# ------------------------------------------------------------------
+# Reading-list-driven study scoping
+# ------------------------------------------------------------------
+
+class TestScopeItemsForReadingList:
+    """Tests for _scope_items_for_reading_list."""
+
+    @staticmethod
+    def _items() -> list[StudyItem]:
+        return [
+            StudyItem(id="s1", kind="struct", name="task_struct",
+                      file="include/linux/sched.h",
+                      calls=[], callers=[], owned_types=["cred"]),
+            StudyItem(id="s2", kind="struct", name="cred",
+                      file="include/linux/cred.h",
+                      calls=[], callers=["task_struct"], owned_types=[]),
+            StudyItem(id="f1", kind="function", name="prepare_creds",
+                      file="kernel/cred.c",
+                      calls=["kmem_cache_alloc"], callers=["commit_creds"],
+                      owned_types=[]),
+            StudyItem(id="f2", kind="function", name="commit_creds",
+                      file="kernel/cred.c",
+                      calls=["prepare_creds"], callers=[], owned_types=[]),
+            StudyItem(id="f3", kind="function", name="kmem_cache_alloc",
+                      file="mm/slab.c",
+                      calls=[], callers=["prepare_creds"], owned_types=[]),
+            StudyItem(id="f4", kind="function", name="do_fork",
+                      file="kernel/fork.c",
+                      calls=[], callers=[], owned_types=[]),
+        ]
+
+    @staticmethod
+    def _rl_item(**kw):
+        from core.concepts.reading_list import ReadingListItem
+        defaults = dict(id="q1", question="?", source_command="/audit")
+        defaults.update(kw)
+        return ReadingListItem(**defaults)
+
+    def test_empty_pending_returns_all(self) -> None:
+        items = self._items()
+        result = _scope_items_for_reading_list(items, [])
+        assert len(result) == len(items)
+
+    def test_source_function_match(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(source_function="prepare_creds")]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "prepare_creds" in names
+        assert "kmem_cache_alloc" in names  # callee
+        assert "commit_creds" in names      # caller
+
+    def test_source_file_match(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(source_file="kernel/cred.c")]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "prepare_creds" in names
+        assert "commit_creds" in names
+        assert "do_fork" not in names
+
+    def test_id_prefix_stripping(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(id="study_unresolved_task_struct")]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "task_struct" in names
+        assert "cred" in names  # owned_type expansion
+
+    def test_audit_prefix_stripping(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(id="audit_do_fork")]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "do_fork" in names
+
+    def test_backtick_extraction(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(
+            question="What is the lifecycle of `task_struct`?",
+        )]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "task_struct" in names
+        assert "cred" in names  # owned_type
+
+    def test_struct_pattern_in_context(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(context="Check struct task_struct fields")]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "task_struct" in names
+
+    def test_compound_id_pattern_in_question(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(
+            question="How does kmem_cache_alloc handle failures?",
+        )]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "kmem_cache_alloc" in names
+        assert "prepare_creds" in names  # caller expansion
+
+    def test_owned_types_expanded(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(source_function="task_struct")]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "task_struct" in names
+        assert "cred" in names  # owned_type of task_struct
+
+    def test_scoped_is_strict_subset(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(source_function="do_fork")]
+        result = _scope_items_for_reading_list(items, pending)
+        result_names = {it.name for it in result}
+        all_names = {it.name for it in items}
+        assert result_names < all_names  # strict subset
+
+    def test_no_matching_names_returns_empty(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(source_function="nonexistent_fn")]
+        result = _scope_items_for_reading_list(items, pending)
+        assert len(result) == 0
+
+    def test_none_context_and_question_handled(self) -> None:
+        items = self._items()
+        pending = [self._rl_item(
+            source_function="do_fork",
+            context=None,
+            question=None,
+        )]
+        result = _scope_items_for_reading_list(items, pending)
+        names = {it.name for it in result}
+        assert "do_fork" in names

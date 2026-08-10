@@ -11,6 +11,7 @@ domain-model.json.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import re
@@ -129,6 +130,12 @@ def _is_under_projects_base(directory: Path) -> bool:
 # ------------------------------------------------------------------
 
 _DOC_MAX_BYTES = 8192
+_BATCH_WALL_TIMEOUT = 300  # seconds — abandon a hung API call
+_CONSECUTIVE_FAIL_LIMIT = 3  # abort run after N consecutive batch failures
+
+
+class _BatchLLMError(Exception):
+    """LLM call failed for a batch — lets callers distinguish from empty-but-ok."""
 _INJECTION_RE = re.compile(
     r"(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|above|prior)"
     r"|you\s+are\s+now"
@@ -1113,7 +1120,7 @@ def _parse_state_machines(
     invariants: list[Invariant] = []
 
     for sm in raw.get("state_machines") or []:
-        sm_id = sm.get("id", "")
+        sm_id = sm.get("id") or ""
         if not sm_id:
             continue
 
@@ -1124,9 +1131,9 @@ def _parse_state_machines(
         for e in sm.get("evidence") or []:
             if isinstance(e, dict):
                 evidence.append(Evidence(
-                    type=e.get("type", "code_path"),
-                    file=e.get("file", ""),
-                    observation=e.get("observation", ""),
+                    type=e.get("type") or "code_path",
+                    file=e.get("file") or "",
+                    observation=e.get("observation") or "",
                     line=e.get("line"),
                     item=e.get("item"),
                 ))
@@ -1137,7 +1144,7 @@ def _parse_state_machines(
         transitions = sm.get("transitions") or []
         concept = Concept(
             id=sm_id,
-            description=sm.get("description", ""),
+            description=sm.get("description") or "",
             evidence=evidence,
             confidence="traced",
             state="proposed",
@@ -1285,35 +1292,35 @@ def _parse_batch_response(
             if not isinstance(e, dict):
                 continue
             evidence.append(Evidence(
-                type=e.get("type", "code_path"),
-                file=e.get("file", ""),
-                observation=e.get("observation", ""),
+                type=e.get("type") or "code_path",
+                file=e.get("file") or "",
+                observation=e.get("observation") or "",
                 line=e.get("line"),
                 item=e.get("item"),
             ))
         if source_root is not None:
             _stamp_evidence_hashes(evidence, source_root)
         concepts.append(Concept(
-            id=c.get("id", ""),
-            description=c.get("description", ""),
+            id=c.get("id") or "",
+            description=c.get("description") or "",
             evidence=evidence,
-            confidence=c.get("confidence", "inferred"),
+            confidence=c.get("confidence") or "inferred",
             state="proposed",
         ))
 
     invariants = []
     for inv in raw.get("invariants") or []:
-        inv_desc = inv.get("description", "")
+        inv_desc = inv.get("description") or ""
         if not inv_desc:
-            stmt = inv.get("statement", "")
+            stmt = inv.get("statement") or ""
             inv_desc = stmt.split(". ")[0] if stmt else ""
         invariants.append(Invariant(
-            id=inv.get("id", ""),
-            concept=inv.get("concept", ""),
-            statement=inv.get("statement", ""),
-            negation=inv.get("negation", ""),
+            id=inv.get("id") or "",
+            concept=inv.get("concept") or "",
+            statement=inv.get("statement") or "",
+            negation=inv.get("negation") or "",
             description=inv_desc,
-            confidence=inv.get("confidence", "inferred"),
+            confidence=inv.get("confidence") or "inferred",
             relevant_cwes=inv.get("relevant_cwes") or [],
         ))
 
@@ -1328,14 +1335,14 @@ def _parse_batch_response(
     contracts = []
     for ct in raw.get("contracts") or []:
         contracts.append(Contract(
-            function=ct.get("function", ""),
-            file=ct.get("file", ""),
-            when=ct.get("when", ""),
-            input_semantics=ct.get("input_semantics", ""),
-            output_semantics=ct.get("output_semantics", ""),
-            ownership_transfer=ct.get("ownership_transfer", ""),
-            implication=ct.get("implication", ""),
-            security_note=ct.get("security_note", ""),
+            function=ct.get("function") or "",
+            file=ct.get("file") or "",
+            when=ct.get("when") or "",
+            input_semantics=ct.get("input_semantics") or "",
+            output_semantics=ct.get("output_semantics") or "",
+            ownership_transfer=ct.get("ownership_transfer") or "",
+            implication=ct.get("implication") or "",
+            security_note=ct.get("security_note") or "",
         ))
     if source_root is not None and focus_items:
         _stamp_contract_hashes(contracts, focus_items, source_root)
@@ -1343,9 +1350,9 @@ def _parse_batch_response(
     bug_patterns = []
     for bp in raw.get("bug_patterns") or []:
         bug_patterns.append(BugPattern(
-            id=bp.get("id", ""),
-            description=bp.get("description", ""),
-            what_to_grep=bp.get("what_to_grep", ""),
+            id=bp.get("id") or "",
+            description=bp.get("description") or "",
+            what_to_grep=bp.get("what_to_grep") or "",
             relevant_cwes=bp.get("relevant_cwes") or [],
         ))
 
@@ -1485,23 +1492,35 @@ def _run_one_batch(
         doc_context=doc_context, correlate=correlate,
     )
 
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = ex.submit(
+        llm_client.generate_structured,
+        prompt, _RESPONSE_SCHEMA,
+        system_prompt=_SYSTEM_PROMPT, task_type="study",
+    )
     try:
-        response = llm_client.generate_structured(
-            prompt,
-            _RESPONSE_SCHEMA,
-            system_prompt=_SYSTEM_PROMPT,
-            task_type="study",
-        )
+        response = future.result(timeout=_BATCH_WALL_TIMEOUT)
         result = (
             response.result if hasattr(response, "result")
             else response[0]
         )
-    except Exception:
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        ex.shutdown(wait=False, cancel_futures=True)
+        logger.warning(
+            "Phase 2 batch %d/%d wall-timeout (%ds)",
+            idx + 1, total, _BATCH_WALL_TIMEOUT,
+        )
+        raise _BatchLLMError(f"batch {idx + 1}/{total} wall-timeout")
+    except Exception as exc:
+        ex.shutdown(wait=False)
         logger.warning(
             "Phase 2 batch %d/%d failed", idx + 1, total,
             exc_info=True,
         )
-        return [], [], [], [], []
+        raise _BatchLLMError(f"batch {idx + 1}/{total}: {exc}") from exc
+    else:
+        ex.shutdown(wait=False)
 
     if not isinstance(result, dict):
         logger.warning("Phase 2 batch %d: non-dict response", idx + 1)
@@ -1626,15 +1645,28 @@ def _run_phase2_serial(
     all_bug_patterns: list[BugPattern] = []
     all_struct_annots: list[dict[str, str]] = []
     total = len(batches)
+    consecutive_failures = 0
 
     for idx, (focus, context) in enumerate(batches):
-        concepts, invariants, contracts, bug_patterns, struct_annots = (
-            _run_one_batch(
-                idx, total, focus, context, target, source_root,
-                llm_client, reading_list, on_batch, doc_context=doc_context,
-                correlate=correlate,
+        try:
+            concepts, invariants, contracts, bug_patterns, struct_annots = (
+                _run_one_batch(
+                    idx, total, focus, context, target, source_root,
+                    llm_client, reading_list, on_batch, doc_context=doc_context,
+                    correlate=correlate,
+                )
             )
-        )
+        except _BatchLLMError:
+            consecutive_failures += 1
+            if consecutive_failures >= _CONSECUTIVE_FAIL_LIMIT:
+                logger.error(
+                    "Phase 2: %d consecutive batch failures — aborting "
+                    "(provider may be down or budget exceeded)",
+                    consecutive_failures,
+                )
+                break
+            continue
+        consecutive_failures = 0
         all_concepts.extend(concepts)
         all_invariants.extend(invariants)
         all_contracts.extend(contracts)
@@ -1659,25 +1691,45 @@ def _run_phase2_parallel(
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
 ]:
+    import threading as _threading
+
     from core.llm.concurrency import run_parallel
 
     total = len(batches)
+    _abort = _threading.Event()
+    _fail_lock = _threading.Lock()
+    _consecutive_failures = [0]
 
     def _do_batch(args: tuple[int, list[StudyItem], list[StudyItem]]) -> tuple:
+        if _abort.is_set():
+            return ([], [], [], [], [])
         idx, focus, ctx = args
-        return _run_one_batch(
+        result = _run_one_batch(
             idx, total, focus, ctx, target, source_root,
             llm_client, reading_list, on_batch,
             doc_context=doc_context, correlate=correlate,
         )
+        with _fail_lock:
+            _consecutive_failures[0] = 0
+        return result
 
     items = [(i, focus, ctx) for i, (focus, ctx) in enumerate(batches)]
 
     def _on_batch_error(item: Any, exc: Exception) -> tuple:
-        logger.warning(
-            "Phase 2 batch %d/%d crashed: %s: %s",
-            item[0] + 1, total, type(exc).__name__, exc,
-        )
+        with _fail_lock:
+            _consecutive_failures[0] += 1
+            if _consecutive_failures[0] >= _CONSECUTIVE_FAIL_LIMIT:
+                logger.error(
+                    "Phase 2: %d consecutive batch failures — aborting "
+                    "(provider may be down or budget exceeded)",
+                    _consecutive_failures[0],
+                )
+                _abort.set()
+        if not isinstance(exc, _BatchLLMError):
+            logger.warning(
+                "Phase 2 batch %d/%d crashed: %s: %s",
+                item[0] + 1, total, type(exc).__name__, exc,
+            )
         return ([], [], [], [], [])
 
     results = run_parallel(
@@ -1775,7 +1827,7 @@ def _dedup_contracts(contracts: list[Contract]) -> list[Contract]:
             seen[key] = ct
         else:
             existing = seen[key]
-            if len(ct.input_semantics) > len(existing.input_semantics):
+            if len(ct.input_semantics or "") > len(existing.input_semantics or ""):
                 seen[key] = ct
     return list(seen.values())
 
@@ -2136,6 +2188,86 @@ def run_phase3(
 
 
 # ------------------------------------------------------------------
+# Reading-list scoping
+# ------------------------------------------------------------------
+
+def _scope_items_for_reading_list(
+    items: list[StudyItem],
+    pending: list,
+) -> list[StudyItem]:
+    """Filter study items to those needed to resolve pending reading-list questions.
+
+    Extracts target identifiers from reading-list entries, finds matching
+    StudyItems, and expands one hop in the call graph so the LLM has
+    enough context to answer the question.
+    """
+    target_names: set[str] = set()
+    target_files: set[str] = set()
+
+    for entry in pending:
+        sf = getattr(entry, "source_function", "") or ""
+        if sf:
+            target_names.add(sf)
+        src_file = getattr(entry, "source_file", "") or ""
+        if src_file:
+            target_files.add(src_file)
+        entry_id = getattr(entry, "id", "") or ""
+        for prefix in ("study_unresolved_", "audit_"):
+            if entry_id.startswith(prefix):
+                entry_id = entry_id[len(prefix):]
+                break
+        if entry_id:
+            target_names.add(entry_id)
+        ctx = getattr(entry, "context", "") or ""
+        question = getattr(entry, "question", "") or ""
+        for text in (ctx, question):
+            for m in re.finditer(r"`([A-Za-z_]\w+)`", text):
+                target_names.add(m.group(1))
+            for m in re.finditer(
+                r"\b(struct\s+\w+|[A-Za-z_]\w{3,}_[A-Za-z_]\w*)\b", text,
+            ):
+                candidate = m.group(1)
+                if candidate.startswith("struct"):
+                    bare = candidate.split(None, 1)[1]
+                    target_names.add(candidate)
+                    target_names.add(bare)
+                else:
+                    candidate = candidate.strip()
+                    if len(candidate) >= 4:
+                        target_names.add(candidate)
+
+    if not target_names and not target_files:
+        return items
+
+    by_name: dict[str, StudyItem] = {}
+    for it in items:
+        by_name.setdefault(it.name, it)
+
+    selected: dict[str, StudyItem] = {}
+    for name in target_names:
+        if name in by_name:
+            selected[name] = by_name[name]
+
+    for it in items:
+        if it.file in target_files:
+            selected[it.name] = it
+
+    expanded: dict[str, StudyItem] = dict(selected)
+    for it in selected.values():
+        for call in it.calls:
+            if call in by_name:
+                expanded[call] = by_name[call]
+        for caller in it.callers:
+            if caller in by_name:
+                expanded[caller] = by_name[caller]
+        for owned in it.owned_types:
+            if owned in by_name:
+                expanded[owned] = by_name[owned]
+
+    return list(expanded.values())
+
+
+# ------------------------------------------------------------------
 # End-to-end
 # ------------------------------------------------------------------
 
@@ -2235,6 +2367,24 @@ def run_study(
     from .reading_list import ReadingList
     rl_path = output_dir / "reading-list.json"
     reading_list = ReadingList.load(rl_path)
+
+    pending = reading_list.pending()
+    if pending:
+        before = len(items)
+        items = _scope_items_for_reading_list(items, pending)
+        logger.info(
+            "Reading-list scoping: %d pending questions, "
+            "%d → %d items (%.0f%% reduction)",
+            len(pending), before, len(items),
+            100 * (1 - len(items) / max(before, 1)),
+        )
+        if on_progress:
+            on_progress(
+                "scope",
+                f"Scoped to {len(items)} items for "
+                f"{len(pending)} reading-list questions "
+                f"(was {before})",
+            )
 
     concepts, invariants, contracts, bug_patterns, struct_annots = run_phase2(
         items, target, llm_client,
