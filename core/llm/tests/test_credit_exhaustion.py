@@ -82,3 +82,4 @@ class TestIsCreditExhausted:
 
     def test_403_unrelated(self):
         exc = _FakeHTTPError(403, "Forbidden — invalid API key")
+        assert not is_credit_exhausted(exc)
