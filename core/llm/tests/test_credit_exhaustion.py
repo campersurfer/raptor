@@ -52,6 +52,15 @@ class TestIsCreditExhausted:
         exc = _FakeHTTPError(403, "billing not active")
         assert is_credit_exhausted(exc)
 
+    def test_anthropic_spend_cap(self):
+        """Anthropic spend-cap error (400, usage limits message)."""
+        exc = _FakeHTTPError(
+            400,
+            "You have reached your specified API usage limits. "
+            "You will regain access on 2026-09-01 at 00:00 UTC.",
+        )
+        assert is_credit_exhausted(exc)
+
     # ── Body-dict extraction ─────────────────────────────────────
 
     def test_body_dict_message_field(self):

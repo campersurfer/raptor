@@ -1500,6 +1500,8 @@ class OpenAICompatibleProvider(LLMProvider):
                         system=system, max_tokens=max_tokens,
                         cache_control=cache_control,
                     )
+                if is_credit_exhausted(exc):
+                    raise  # let callers fail fast
                 if _is_rate_limit(exc):
                     from core.llm.throttle import broadcast_rate_limit
                     broadcast_rate_limit()
@@ -1690,6 +1692,8 @@ class OpenAICompatibleProvider(LLMProvider):
                         cache_control=cache_control,
                     )
                     return
+                if is_credit_exhausted(exc):
+                    raise  # let callers fail fast
                 if _is_rate_limit(exc):
                     from core.llm.throttle import broadcast_rate_limit
                     broadcast_rate_limit()
@@ -2352,6 +2356,8 @@ class AnthropicProvider(LLMProvider):
                 resp = create_fn(**send_kwargs)
                 break
             except (APIConnectionError, APIStatusError, APIError) as exc:
+                if is_credit_exhausted(exc):
+                    raise  # let callers fail fast
                 if _is_rate_limit(exc):
                     from core.llm.throttle import broadcast_rate_limit
                     broadcast_rate_limit()
@@ -2744,6 +2750,7 @@ def is_credit_exhausted(exc: BaseException) -> bool:
         "billing hard limit",
         "account has been deactivated",
         "billing not active",
+        "reached your specified api usage limits",
     ))
 
 
