@@ -352,6 +352,10 @@ class _LockedOutcomes:
         with self._lock:
             return self._data.get(key)
 
+    def keys(self) -> set:
+        with self._lock:
+            return set(self._data.keys())
+
     def __bool__(self) -> bool:
         return True
 
@@ -1639,27 +1643,18 @@ def review_one_function(
     # ── Post-commit tracking ──────────────────────────────────────────
     review_result = getattr(outcome, "review_result", None)
     if review_result and review_result.get("reading_list"):
-        shared.reading_list_functions.add(f"{gap['file']}:{gap['name']}")
-        with shared._reading_list_lock:
+        sq = getattr(shared, "study_queue", None)
+        if sq is not None:
             for rl_item in review_result["reading_list"]:
                 if isinstance(rl_item, dict) and rl_item.get("question"):
-                    shared._reading_list_items.append(
-                        {
-                            "question": rl_item["question"],
-                            "source_file": gap["file"],
-                            "source_function": gap["name"],
-                            "priority": rl_item.get("priority", "normal"),
-                            "resolution": rl_item.get("resolution", "identifier"),
-                            "context": rl_item.get("context", ""),
-                        }
-                    )
-            if (
-                not shared._early_study_fired
-                and len(shared._reading_list_items) >= 5
-                and config.out_dir
-            ):
-                shared._early_study_fired = True
-                _fire_early_study(shared, config)
+                    sq.enqueue(StudyRequest(
+                        question=rl_item["question"],
+                        source_file=gap["file"],
+                        source_function=gap["name"],
+                        priority=rl_item.get("priority", "normal"),
+                        resolution=rl_item.get("resolution", "identifier"),
+                        context=rl_item.get("context", ""),
+                    ))
 
     if live_classifications is not None and outcome.review_result:
         try:
@@ -2389,7 +2384,6 @@ def _run_audit_body(
     _prep = None
     _prep_event = None
     if prep_cache is not None:
-        import threading as _threading
         _prep_lock = prep_cache.setdefault("_lock", _threading.Lock())
         _prep_event = prep_cache.setdefault("_event", _threading.Event())
 
@@ -2914,6 +2908,65 @@ def _run_audit_body(
     # --- Main executor pass ---
     graph = TaskGraph.from_workqueue(workqueue, call_edges)
     reviewed_outcomes = _LockedOutcomes()
+
+    # --- Shared concurrency throttle ---
+    # A single AdaptiveThrottle gates all LLM calls across Thread A
+    # (review executor) and Thread B (study consumer).  429 broadcasts
+    # from any provider reach both consumers via the throttle registry.
+    from core.llm.throttle import AdaptiveThrottle
+    from core.llm.concurrency import read_throttle_cooldown_s
+
+    throttle = AdaptiveThrottle(
+        resolved_workers,
+        cooldown_s=read_throttle_cooldown_s(),
+    )
+
+    # --- Start incremental study consumer (Thread B) ---
+    _C_STUDY_SUFFIXES = frozenset(
+        (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"),
+    )
+    _has_c_files = any(
+        Path(g["file"]).suffix.lower() in _C_STUDY_SUFFIXES
+        for g in workqueue
+    )
+    study_queue: StudyQueue | None = None
+    study_consumer_thread: _threading.Thread | None = None
+    concept_index_ref: list = [ConceptIndex.empty()]
+    if _has_c_files and config.out_dir:
+        study_queue = StudyQueue()
+        shared.study_queue = study_queue
+        study_consumer_thread = _threading.Thread(
+            target=_study_consumer,
+            args=(
+                study_queue,
+                config,
+                shared,
+                review_fn,
+                reviewed_outcomes,
+                result,
+            ),
+            kwargs=dict(
+                checklist=checklist,
+                context_map=context_map,
+                evidence_index=evidence_index,
+                sarif_cache=sarif_cache,
+                entry_points=entry_points,
+                start_time=start_time,
+                on_progress=on_progress,
+                audit_log=audit_log,
+                session_observations=session_observations,
+                discovered_evidence=discovered_evidence,
+                joern_server=joern_server,
+                collector=collector,
+                throttle=throttle,
+                concept_index_ref=concept_index_ref,
+            ),
+            daemon=True,
+            name="study-consumer",
+        )
+        study_consumer_thread.start()
+        logger.info("study-consumer: started")
+
     executor_stats = run_executor_sync(
         graph,
         review_fn,
@@ -2932,10 +2985,21 @@ def _run_audit_body(
         budget_check=lambda: _check_budget(config, start_time, result),
         on_tick=_joern_tick,
         reviewed_outcomes=reviewed_outcomes,
+        throttle=throttle,
+        study_queue=study_queue,
+        concept_index_ref=concept_index_ref,
     )
     joern_future = joern_state["future"]
     if executor_stats.budget_stopped and not result.terminated_by:
         result.terminated_by = "llm_budget_exceeded"
+
+    # --- Drain study consumer ---
+    if study_queue is not None:
+        study_queue.signal_producer_done()
+    if study_consumer_thread is not None:
+        study_consumer_thread.join(timeout=600)
+        if study_consumer_thread.is_alive():
+            logger.warning("study-consumer: did not drain within 600s")
 
     # --- Synthesis queue second pass ---
     #
@@ -2992,14 +3056,14 @@ def _run_audit_body(
             exc_info=True,
         )
 
+    throttle.close()
+
     # --- Sync mutable state back from SharedState ---
     constraints = shared.constraints
     evidence_index = shared.evidence_index
     session_observations = shared.session_observations
     discovered_evidence = shared.discovered_evidence
     reviewed_before_joern = shared.reviewed_before_joern
-    reading_list_functions = shared.reading_list_functions
-    reading_list_items = shared._reading_list_items
 
     if collector is not None:
         collector.flush()
@@ -3483,126 +3547,6 @@ def _run_audit_body(
         audit_log=audit_log,
         start_time=start_time,
     )
-
-    # --- Study loop: enrich domain model, then re-review affected functions ---
-    # Study-prep only handles C/C++ — skip for other languages.
-    _C_STUDY_SUFFIXES = frozenset((".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"))
-    _has_c_files = any(
-        Path(fn.rsplit(":", 1)[0]).suffix.lower() in _C_STUDY_SUFFIXES
-        for fn in reading_list_functions
-    )
-    _early_study_ran = shared._early_study_fired
-    if reading_list_functions and config.out_dir and _has_c_files:
-        study_succeeded = _early_study_ran
-
-        # Flush accumulated reading-list items to disk (single-writer,
-        # no file race — the concurrent review loop only appended to the
-        # in-memory list under a lock).
-        if reading_list_items:
-            try:
-                from core.concepts.audit_bridge import queue_reading_list_item
-
-                for rl_item in reading_list_items:
-                    queue_reading_list_item(
-                        config.out_dir,
-                        question=rl_item["question"],
-                        source_file=rl_item.get("source_file", ""),
-                        source_function=rl_item.get("source_function", ""),
-                        priority=rl_item.get("priority", "normal"),
-                        resolution=rl_item.get("resolution", "identifier"),
-                        context=rl_item.get("context", ""),
-                    )
-                logger.info(
-                    "study-loop: flushed %d reading-list items from %d functions",
-                    len(reading_list_items),
-                    len(reading_list_functions),
-                )
-            except Exception:
-                logger.warning(
-                    "study-loop: failed to flush reading-list items",
-                    exc_info=True,
-                )
-
-        try:
-            rl_path = config.out_dir / "reading-list.json"
-            if rl_path.exists():
-                study_target = str(
-                    config.study_root or config.target_path
-                )
-                study_cmd = [
-                    sys.executable,
-                    str(
-                        Path(__file__).resolve().parents[2]
-                        / "libexec"
-                        / "raptor-study-loop"
-                    ),
-                    study_target,
-                    str(config.out_dir),
-                ]
-                if config.models and config.models[0] != "default":
-                    study_cmd.extend(["--model", config.models[0]])
-                from core.config import RaptorConfig
-
-                study_env = RaptorConfig.get_safe_env()
-                study_env["_RAPTOR_TRUSTED"] = "1"
-                study_result = subprocess.run(
-                    study_cmd,
-                    env=study_env,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if study_result.returncode == 0:
-                    logger.info("study-loop: completed successfully")
-                    try:
-                        from .journal import load_domain_model
-
-                        domain_model = load_domain_model(config.out_dir)
-                        if domain_model:
-                            n_inv = len(domain_model.get("invariants", []))
-                            n_con = len(domain_model.get("concepts", []))
-                            logger.info(
-                                "domain model reloaded: %d concepts, %d invariants",
-                                n_con,
-                                n_inv,
-                            )
-                            study_succeeded = True
-                        if collector is not None:
-                            collector.invalidate_domain_model_cache()
-                    except Exception:
-                        logger.debug("domain model reload failed", exc_info=True)
-                else:
-                    logger.warning(
-                        "study-loop: exited %d: %s",
-                        study_result.returncode,
-                        study_result.stderr[:500]
-                        if study_result.stderr
-                        else "(no stderr)",
-                    )
-        except subprocess.TimeoutExpired:
-            logger.warning("study-loop: timed out after 300s")
-        except Exception:
-            logger.debug("study-loop dispatch failed", exc_info=True)
-
-        if study_succeeded:
-            result = _re_review_study_enriched(
-                result,
-                config,
-                review_fn,
-                checklist,
-                context_map,
-                evidence_index,
-                sarif_cache,
-                entry_points,
-                reading_list_functions,
-                start_time,
-                on_progress,
-                audit_log=audit_log,
-                session_observations=session_observations,
-                discovered_evidence=discovered_evidence,
-                joern_server=joern_server,
-                max_workers=resolved_workers,
-            )
 
     if result.findings > 0:
         logger.debug("entering _persist_findings")
@@ -5393,75 +5337,695 @@ def _check_budget(
     return False
 
 
-def _fire_early_study(shared, config) -> None:
-    """Flush reading-list items and start study-prep in a daemon thread."""
-    items = list(shared._reading_list_items)
-    if not items:
-        return
+@dataclass
+class StudyRequest:
+    """A single reading-list item produced by a review."""
+    question: str
+    source_file: str
+    source_function: str
+    priority: str = "normal"
+    resolution: str = "identifier"
+    context: str = ""
 
-    def _run():
+
+class StudyQueue:
+    """Thread-safe producer-consumer queue for study requests.
+
+    Supports concept-level tracking for the suppression gate:
+    pending_concepts() returns concepts currently awaiting study;
+    mark_studied() moves them to the studied set and wakes the
+    executor via an asyncio.Event bridge.
+    """
+
+    def __init__(self) -> None:
+        self._queue: list[StudyRequest] = []
+        self._lock = _threading.Lock()
+        self._not_empty = _threading.Condition(_threading.Lock())
+        self._producer_done = False
+        self._pending_concepts: set[str] = set()
+        self._studied_concepts: set[str] = set()
+        self._consumer_done = False
+        self._loop: Any = None
+        self._study_event: Any = None
+
+    def enqueue(self, item: StudyRequest) -> None:
+        concept = _extract_concept_from_question(item.question)
+        with self._not_empty:
+            self._queue.append(item)
+            if concept:
+                self._pending_concepts.add(concept.lower())
+            self._not_empty.notify()
+
+    def dequeue_batch(
+        self, max_items: int = 15, timeout: float = 30.0,
+    ) -> list[StudyRequest]:
+        with self._not_empty:
+            if not self._queue and not self._producer_done:
+                self._not_empty.wait(timeout=timeout)
+            batch = self._queue[:max_items]
+            del self._queue[:max_items]
+            return batch
+
+    def signal_producer_done(self) -> None:
+        with self._not_empty:
+            self._producer_done = True
+            self._not_empty.notify_all()
+
+    def is_done(self) -> bool:
+        with self._not_empty:
+            return self._producer_done and not self._queue
+
+    def pending_concepts(self) -> frozenset:
+        with self._not_empty:
+            return frozenset(self._pending_concepts)
+
+    def mark_studied(self, concepts: set) -> None:
+        with self._not_empty:
+            self._pending_concepts -= concepts
+            self._studied_concepts |= concepts
+        self._notify_executor()
+
+    def signal_consumer_done(self) -> None:
+        with self._not_empty:
+            self._consumer_done = True
+            self._pending_concepts.clear()
+        self._notify_executor()
+
+    @property
+    def consumer_done(self) -> bool:
+        return self._consumer_done
+
+    def set_event_loop(self, loop: Any, event: Any) -> None:
+        self._study_event = event
+        self._loop = loop
+
+    def _notify_executor(self) -> None:
+        loop = self._loop
+        event = self._study_event
+        if loop is None or event is None:
+            return
+        if not loop.is_running():
+            return
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass
+
+
+class ConceptIndex:
+    """Maps concept names to the functions that reference them.
+
+    Built from checklist source bodies intersected with known
+    type/struct/macro names.  Immutable after construction.
+    """
+
+    def __init__(
+        self,
+        concept_to_fns: dict[str, set[str]],
+        fn_to_concepts: dict[str, set[str]],
+    ) -> None:
+        self._concept_to_fns = concept_to_fns
+        self._fn_to_concepts = fn_to_concepts
+
+    def concepts_for(self, file: str, name: str) -> frozenset:
+        key = f"{file}:{name}"
+        return frozenset(self._fn_to_concepts.get(key, ()))
+
+    def functions_for(self, concept: str) -> frozenset:
+        return frozenset(self._concept_to_fns.get(concept.lower(), ()))
+
+    @classmethod
+    def empty(cls) -> ConceptIndex:
+        return cls({}, {})
+
+    @classmethod
+    def build(
+        cls,
+        checklist: dict,
+        known_types: set[str] | None = None,
+        *,
+        cardinality_cap_pct: float = 0.05,
+        cardinality_cap_abs: int = 20,
+    ) -> ConceptIndex:
+        import re as _re
+
+        items = checklist.get("items", [])
+        if not items:
+            return cls.empty()
+
+        types_lower = {t.lower() for t in known_types} if known_types else set()
+        if not types_lower:
+            return cls.empty()
+
+        cap = min(
+            int(len(items) * cardinality_cap_pct),
+            cardinality_cap_abs,
+        )
+        cap = max(cap, 1)
+
+        concept_to_fns: dict[str, set[str]] = {}
+        fn_to_concepts: dict[str, set[str]] = {}
+
+        ident_re = _re.compile(r'\b[A-Za-z_]\w{2,}\b')
+
+        for item in items:
+            source = item.get("source", "")
+            if not source:
+                continue
+            fn_key = f"{item['file']}:{item['name']}"
+            tokens = {t.lower() for t in ident_re.findall(source)}
+            matched = tokens & types_lower
+            for concept in matched:
+                concept_to_fns.setdefault(concept, set()).add(fn_key)
+                fn_to_concepts.setdefault(fn_key, set()).add(concept)
+
+        to_drop = [
+            c for c, fns in concept_to_fns.items()
+            if len(fns) > cap
+        ]
+        for c in to_drop:
+            for fn_key in concept_to_fns.pop(c):
+                s = fn_to_concepts.get(fn_key)
+                if s:
+                    s.discard(c)
+
+        return cls(concept_to_fns, fn_to_concepts)
+
+
+_STUDY_MAX_RE_REVIEWS = 50
+_STUDY_RE_REVIEW_PER_CYCLE = 10
+_STUDY_MAX_STALE_BATCHES = 3
+
+
+def _dedup_batch(
+    batch: list[StudyRequest],
+    seen_concepts: set,
+    domain_model: dict | None,
+) -> list[StudyRequest]:
+    """Remove items whose concept is already studied or in-flight."""
+    known = set(seen_concepts)
+    if domain_model:
+        for concept in domain_model.get("concepts", []):
+            known.add(concept.get("name", "").lower())
+        for inv in domain_model.get("invariants", []):
+            known.add(inv.get("subject", "").lower())
+
+    fresh: list[StudyRequest] = []
+    for item in batch:
+        concept = _extract_concept_from_question(item.question)
+        if concept and concept.lower() not in known:
+            known.add(concept.lower())
+            fresh.append(item)
+        elif not concept:
+            fresh.append(item)
+    return fresh
+
+
+def _extract_concept_from_question(question: str) -> str | None:
+    """Pull the key identifier from a reading-list question.
+
+    Handles patterns like "what is sk_buff?", "how does skb_put work?",
+    "Does process_heartbeat validate payload_len against out_cap?".
+    """
+    import re as _re
+    m = _re.search(
+        r"(?:what is|how does|does)\s+[`'\"]?(\w+)[`'\"]?",
+        question,
+        _re.IGNORECASE,
+    )
+    return m.group(1) if m else None
+
+
+def _study_consumer(
+    study_queue: StudyQueue,
+    config: OrchestratorConfig,
+    shared: SharedState,
+    review_fn: Callable,
+    reviewed_outcomes: _LockedOutcomes,
+    result: OrchestratorResult,
+    *,
+    checklist: dict,
+    context_map: dict | None,
+    evidence_index: dict,
+    sarif_cache: SarifCache | None,
+    entry_points: set,
+    start_time: float,
+    on_progress: Callable | None,
+    audit_log: list | None = None,
+    session_observations: list | None = None,
+    discovered_evidence: dict | None = None,
+    joern_server: Any = None,
+    collector: Any = None,
+    throttle: Any = None,
+    concept_index_ref: list | None = None,
+) -> None:
+    """Thread B: consume study requests, study in-process, re-review."""
+    study_list_built = False
+    study_list_path: Path | None = None
+    re_review_count = 0
+    stale_batches = 0
+    seen_concepts: set[str] = set()
+
+    try:
+        _study_consumer_loop(
+            study_queue, config, shared, review_fn, reviewed_outcomes,
+            result,
+            checklist=checklist,
+            context_map=context_map,
+            evidence_index=evidence_index,
+            sarif_cache=sarif_cache,
+            entry_points=entry_points,
+            start_time=start_time,
+            on_progress=on_progress,
+            audit_log=audit_log,
+            session_observations=session_observations,
+            discovered_evidence=discovered_evidence,
+            joern_server=joern_server,
+            collector=collector,
+            throttle=throttle,
+            concept_index_ref=concept_index_ref,
+            state={
+                "study_list_built": study_list_built,
+                "study_list_path": study_list_path,
+                "re_review_count": re_review_count,
+                "stale_batches": stale_batches,
+                "seen_concepts": seen_concepts,
+            },
+        )
+    finally:
+        study_queue.signal_consumer_done()
+
+
+def _study_consumer_loop(
+    study_queue: StudyQueue,
+    config: OrchestratorConfig,
+    shared: SharedState,
+    review_fn: Callable,
+    reviewed_outcomes: _LockedOutcomes,
+    result: OrchestratorResult,
+    *,
+    checklist: dict,
+    context_map: dict | None,
+    evidence_index: dict,
+    sarif_cache: SarifCache | None,
+    entry_points: set,
+    start_time: float,
+    on_progress: Callable | None,
+    audit_log: list | None = None,
+    session_observations: list | None = None,
+    discovered_evidence: dict | None = None,
+    joern_server: Any = None,
+    collector: Any = None,
+    throttle: Any = None,
+    concept_index_ref: list | None = None,
+    state: dict | None = None,
+) -> None:
+    """Inner loop for _study_consumer (separated for try/finally)."""
+    st = state or {}
+    study_list_built = st.get("study_list_built", False)
+    study_list_path = st.get("study_list_path")
+    re_review_count = st.get("re_review_count", 0)
+    stale_batches = st.get("stale_batches", 0)
+    seen_concepts = st.get("seen_concepts", set())
+
+    while not study_queue.is_done():
+        batch = study_queue.dequeue_batch(max_items=15, timeout=30.0)
+        if not batch:
+            continue
+
+        dm = shared.domain_model
+        fresh = _dedup_batch(batch, seen_concepts, dm)
+        if not fresh:
+            continue
+
+        if not config.out_dir:
+            continue
+
+        # Flush to reading-list.json (Thread B is sole writer)
         try:
             from core.concepts.audit_bridge import queue_reading_list_item
 
-            for rl_item in items:
+            for req in fresh:
                 queue_reading_list_item(
                     config.out_dir,
-                    question=rl_item["question"],
-                    source_file=rl_item.get("source_file", ""),
-                    source_function=rl_item.get("source_function", ""),
-                    priority=rl_item.get("priority", "normal"),
-                    resolution=rl_item.get("resolution", "identifier"),
-                    context=rl_item.get("context", ""),
+                    question=req.question,
+                    source_file=req.source_file,
+                    source_function=req.source_function,
+                    priority=req.priority,
+                    resolution=req.resolution,
+                    context=req.context,
                 )
         except Exception:
-            logger.debug("early study: flush failed", exc_info=True)
-            return
-
-        rl_path = config.out_dir / "reading-list.json"
-        if not rl_path.exists():
-            return
-
-        study_target = str(config.study_root or config.target_path)
-        study_cmd = [
-            sys.executable,
-            str(
-                Path(__file__).resolve().parents[1]
-                / "libexec"
-                / "raptor-study-loop"
-            ),
-            study_target,
-            str(config.out_dir),
-        ]
-        if config.models and config.models[0] != "default":
-            study_cmd.extend(["--model", config.models[0]])
-
-        from core.config import RaptorConfig
-
-        study_env = RaptorConfig.get_safe_env()
-        study_env["_RAPTOR_TRUSTED"] = "1"
-        try:
-            study_result = subprocess.run(
-                study_cmd,
-                env=study_env,
-                capture_output=True,
-                text=True,
-                timeout=300,
+            logger.warning(
+                "study-consumer: flush to reading-list failed",
+                exc_info=True,
             )
-            if study_result.returncode == 0:
-                logger.info("early study-loop: completed successfully")
+            continue
+
+        # Study-prep: run once, cache study-list + parsed data
+        if not study_list_built:
+            study_target = str(config.study_root or config.target_path)
+            prep_cmd = [
+                sys.executable,
+                str(
+                    Path(__file__).resolve().parents[2]
+                    / "libexec"
+                    / "raptor-study-prep"
+                ),
+                study_target,
+                str(config.out_dir),
+            ]
+            rl_path = config.out_dir / "reading-list.json"
+            if rl_path.is_file():
+                prep_cmd.extend(["--reading-list", str(rl_path)])
+            if config.models and config.models[0] != "default":
+                prep_cmd.extend(["--model", config.models[0]])
+
+            from core.config import RaptorConfig
+
+            study_env = RaptorConfig.get_safe_env()
+            study_env["_RAPTOR_TRUSTED"] = "1"
+            try:
+                prep_result = subprocess.run(
+                    prep_cmd,
+                    env=study_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if prep_result.returncode != 0:
+                    logger.warning(
+                        "study-consumer: prep failed (exit %d): %s",
+                        prep_result.returncode,
+                        (prep_result.stderr or "").strip()[:200],
+                    )
+                    continue
+            except subprocess.TimeoutExpired:
+                logger.warning("study-consumer: prep timed out")
+                continue
+            except Exception:
+                logger.warning("study-consumer: prep error", exc_info=True)
+                continue
+
+            study_list_path = config.out_dir / "study-list.json"
+            if not study_list_path.is_file():
+                logger.warning(
+                    "study-consumer: no study-list.json after prep",
+                )
+                continue
+            study_list_built = True
+
+            # Build ConceptIndex from study-prep type data
+            if concept_index_ref is not None:
+                _build_concept_index_from_prep(
+                    concept_index_ref, checklist, config.out_dir,
+                )
+
+        # Study-run: in-process, scoped to this batch's reading-list.
+        n_before = len(dm.get("concepts", [])) if dm else 0
+        try:
+            from core.concepts.study import run_study
+            from core.llm.client import LLMClient
+
+            study_model = (
+                config.models[0]
+                if config.models and config.models[0] != "default"
+                else None
+            )
+            study_client = LLMClient(pinned_model=study_model)
+            if throttle is not None:
+                with throttle.acquire_sync():
+                    run_study(
+                        study_list_path,
+                        config.out_dir,
+                        study_client,
+                    )
             else:
-                logger.debug(
-                    "early study-loop: non-zero exit (%d)",
-                    study_result.returncode,
+                run_study(
+                    study_list_path,
+                    config.out_dir,
+                    study_client,
                 )
         except Exception:
-            logger.debug("early study-loop failed", exc_info=True)
+            logger.warning(
+                "study-consumer: study-run failed", exc_info=True,
+            )
+            continue
 
-    t = _threading.Thread(target=_run, daemon=True, name="early-study")
-    t.start()
+        # Reload domain model
+        try:
+            from .journal import load_domain_model
+
+            new_dm = load_domain_model(config.out_dir)
+            if new_dm:
+                shared.domain_model = new_dm
+                if collector is not None:
+                    collector.invalidate_domain_model_cache()
+        except Exception:
+            logger.debug("study-consumer: domain model reload failed",
+                         exc_info=True)
+
+        n_after = len(shared.domain_model.get("concepts", [])
+                       ) if shared.domain_model else 0
+
+        # Mark studied concepts so the suppression gate can release
+        batch_concepts = set()
+        for req in fresh:
+            c = _extract_concept_from_question(req.question)
+            if c:
+                batch_concepts.add(c.lower())
+        if batch_concepts:
+            study_queue.mark_studied(batch_concepts)
+
+        # Starvation guard
+        if n_after == n_before:
+            stale_batches += 1
+            if stale_batches >= _STUDY_MAX_STALE_BATCHES:
+                logger.info(
+                    "study-consumer: %d stale batches, stopping",
+                    stale_batches,
+                )
+                break
+        else:
+            stale_batches = 0
+
+        seen_concepts.update(
+            c.get("name", "").lower()
+            for c in (shared.domain_model or {}).get("concepts", [])
+        )
+
+        # Compute new concepts for broader re-review
+        new_concept_names: set[str] = set()
+        if n_after > n_before and shared.domain_model:
+            all_concepts = {
+                c.get("name", "").lower()
+                for c in shared.domain_model.get("concepts", [])
+            }
+            new_concept_names = all_concepts - seen_concepts
+            seen_concepts.update(all_concepts)
+
+        if re_review_count >= _STUDY_MAX_RE_REVIEWS:
+            logger.info(
+                "study-consumer: re-review cap (%d) reached",
+                _STUDY_MAX_RE_REVIEWS,
+            )
+            continue
+
+        # Collect re-review candidates: originating functions +
+        # broader concept-scoped functions from ConceptIndex
+        source_keys = {
+            f"{r.source_file}:{r.source_function}" for r in fresh
+        }
+
+        ci = (concept_index_ref[0]
+              if concept_index_ref and concept_index_ref[0]
+              else None)
+        if ci and new_concept_names:
+            for concept in new_concept_names:
+                source_keys |= set(ci.functions_for(concept))
+
+        already_reviewed = source_keys & reviewed_outcomes.keys()
+        if not already_reviewed:
+            continue
+
+        cycle_cap = min(
+            _STUDY_RE_REVIEW_PER_CYCLE,
+            _STUDY_MAX_RE_REVIEWS - re_review_count,
+        )
+        budget = min(len(already_reviewed), cycle_cap)
+
+        # Prioritise: suspicious first, then the rest
+        suspicious = sorted(
+            k for k in already_reviewed
+            if _is_suspicious_outcome(k, reviewed_outcomes)
+        )
+        rest = sorted(already_reviewed - set(suspicious))
+        to_review = (suspicious + rest)[:budget]
+
+        reading_list_fns = set(to_review)
+        logger.info(
+            "re-reviewing %d functions with enriched domain "
+            "knowledge (workers=%d)",
+            len(to_review),
+            min(4, budget),
+        )
+        result = _re_review_study_enriched(
+            result,
+            config,
+            review_fn,
+            checklist,
+            context_map,
+            evidence_index,
+            sarif_cache,
+            entry_points,
+            reading_list_fns,
+            start_time,
+            on_progress,
+            audit_log=audit_log,
+            session_observations=session_observations,
+            discovered_evidence=discovered_evidence,
+            joern_server=joern_server,
+            max_workers=min(4, budget),
+            throttle=throttle,
+        )
+        re_review_count += len(to_review)
+
+        # Resolve batch items in reading-list
+        try:
+            from core.concepts.reading_list import ReadingList
+
+            rl = ReadingList.load(config.out_dir / "reading-list.json")
+            for req in fresh:
+                for item in rl.pending():
+                    if item.get("question") == req.question:
+                        rl.resolve(
+                            item["id"],
+                            concept_id=_extract_concept_from_question(
+                                req.question,
+                            ),
+                        )
+                        break
+            rl.save(config.out_dir / "reading-list.json")
+        except Exception:
+            logger.debug(
+                "study-consumer: reading-list resolve failed",
+                exc_info=True,
+            )
+
     logger.info(
-        "early study-loop: fired with %d reading-list items", len(items),
+        "study-consumer: done (re-reviews=%d, stale_batches=%d)",
+        re_review_count,
+        stale_batches,
     )
+
+
+def _is_suspicious_outcome(key: str, outcomes: _LockedOutcomes) -> bool:
+    """Check if a reviewed function has a suspicious verdict."""
+    try:
+        outcome = outcomes.get(key)
+        if outcome and hasattr(outcome, "status"):
+            return outcome.status == "suspicious"
+    except Exception:
+        pass
+    return False
+
+
+def _build_concept_index_from_prep(
+    concept_index_ref: list,
+    checklist: dict,
+    out_dir: Path,
+) -> None:
+    """Build ConceptIndex after study-prep, using its type data."""
+    try:
+        import json
+
+        study_list_path = out_dir / "study-list.json"
+        if not study_list_path.is_file():
+            return
+        with open(study_list_path) as f:
+            study_list = json.load(f)
+        type_names: set[str] = set()
+        if isinstance(study_list, dict):
+            idents = study_list.get("identifiers", "")
+            if isinstance(idents, str) and idents:
+                for name in idents.split(","):
+                    name = name.strip()
+                    if len(name) > 2:
+                        type_names.add(name)
+            for item in study_list.get("items", []):
+                if isinstance(item, dict):
+                    name = item.get("name", "")
+                    if name and len(name) > 2:
+                        type_names.add(name)
+        elif isinstance(study_list, list):
+            for item in study_list:
+                if isinstance(item, dict):
+                    name = item.get("name", "")
+                    if name and len(name) > 2:
+                        type_names.add(name)
+        if not type_names:
+            return
+
+        target_path = checklist.get("target_path", "")
+        enriched = _flatten_checklist_with_source(checklist, target_path)
+        if not enriched:
+            return
+        idx = ConceptIndex.build({"items": enriched}, type_names)
+        concept_index_ref[0] = idx
+        logger.info(
+            "study-consumer: built ConceptIndex "
+            "(%d concepts, %d functions)",
+            len(idx._concept_to_fns),
+            len(idx._fn_to_concepts),
+        )
+    except Exception:
+        logger.debug(
+            "study-consumer: ConceptIndex build failed",
+            exc_info=True,
+        )
+
+
+def _flatten_checklist_with_source(
+    checklist: dict,
+    target_path: str,
+) -> list[dict]:
+    """Flatten files[].items[] and read source bodies from disk."""
+    from pathlib import Path as _Path
+
+    base = _Path(target_path) if target_path else None
+    result: list[dict] = []
+    src_cache: dict[str, list[str]] = {}
+
+    for fi in checklist.get("files", []):
+        rel_path = fi.get("path", "")
+        if not rel_path:
+            continue
+        for item in fi.get("items", []):
+            name = item.get("name", "")
+            if not name:
+                continue
+            source = ""
+            if base is not None:
+                ls = item.get("line_start")
+                le = item.get("line_end")
+                if ls and le:
+                    if rel_path not in src_cache:
+                        src_file = base / rel_path
+                        try:
+                            src_cache[rel_path] = (
+                                src_file.read_text(errors="replace")
+                                .splitlines()
+                            )
+                        except OSError:
+                            src_cache[rel_path] = []
+                    lines = src_cache[rel_path]
+                    source = "\n".join(lines[ls - 1:le])
+            result.append({
+                "file": rel_path,
+                "name": name,
+                "source": source,
+            })
+    return result
 
 
 def _tally_outcome(
@@ -10853,6 +11417,7 @@ def _re_review_study_enriched(
     discovered_evidence: Optional[Dict[str, Any]] = None,
     joern_server=None,
     max_workers: int = 1,
+    throttle: Any = None,
 ) -> OrchestratorResult:
     """Re-review functions that queued reading-list items.
 
@@ -10864,6 +11429,7 @@ def _re_review_study_enriched(
 
     When max_workers > 1, LLM calls are dispatched in parallel via
     ThreadPoolExecutor.  Post-processing runs in the main thread.
+    When *throttle* is provided, each LLM call acquires a slot first.
     """
     candidates = []
     for key in reading_list_functions:
@@ -10926,7 +11492,11 @@ def _re_review_study_enriched(
     def _do_review(item):
         idx, _gap, _prior, ctx = item
         try:
-            outcome = review_fn(ctx, config)
+            if throttle is not None:
+                with throttle.acquire_sync():
+                    outcome = review_fn(ctx, config)
+            else:
+                outcome = review_fn(ctx, config)
             return (idx, outcome, None)
         except Exception as exc:
             return (idx, None, exc)

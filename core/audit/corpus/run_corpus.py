@@ -1042,10 +1042,21 @@ def _print_cross_model_summary(
 def _write_results(
     results: List[Dict[str, Any]],
     output: Path,
+    *,
+    meta: Dict[str, Any] | None = None,
 ) -> None:
-    """Write results to a JSON file."""
+    """Write results to a JSON file.
+
+    When *meta* is provided, wraps results in ``{"meta": ..., "results": ...}``
+    so wall time and cost are persisted alongside per-function verdicts.
+    Consumers that expect a bare list should check for a dict wrapper.
+    """
+    if meta:
+        data: Any = {"meta": meta, "results": results}
+    else:
+        data = results
     with open(output, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(data, f, indent=2)
         f.write("\n")
 
 
@@ -1823,7 +1834,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     if args.splice and args.splice.is_file():
-        base = json.loads(args.splice.read_text())
+        raw = json.loads(args.splice.read_text())
+        base = raw["results"] if isinstance(raw, dict) and "results" in raw else raw
         partial_ids = {r["function_id"] for r in results}
         spliced = [r for r in base if r["function_id"] not in partial_ids]
         spliced.extend(results)
@@ -1832,7 +1844,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"\nSpliced {len(partial_ids)} partial results into "
               f"{args.splice} ({len(results)} total)")
 
-    _write_results(results, args.output)
+    total_llm_s = sum(r.get("duration_s", 0.0) for r in results)
+    meta = {
+        "wall_s": round(wall_s, 1),
+        "llm_s": round(total_llm_s, 1),
+        "cost_usd": round(sum(r.get("cost_usd", 0.0) for r in results), 4),
+        "model": ", ".join(m or "default" for m in models),
+        "count": len(results),
+    }
+    _write_results(results, args.output, meta=meta)
     print(f"\nResults written to {args.output}")
 
     try:
@@ -1851,7 +1871,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         _save_debug(results, run_dirs, args.output)
 
     print()
-    model_label = ", ".join(m or "default" for m in models)
+    model_label = meta["model"]
     print(_format_summary(results, wall_s, model_label))
 
     return 0

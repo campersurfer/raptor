@@ -2164,11 +2164,18 @@ def main() -> None:
                     help="Worker threads for file extraction (default: cpu_count).")
     ap.add_argument("--model", default=None,
                     help="LLM model override for concept seeding.")
+    ap.add_argument("--force", action="store_true",
+                    help="Re-run even if study-list.json already exists.")
     parsed, _extras = ap.parse_known_args(sys.argv[1:])
 
     target = Path(parsed.target).resolve()
     output_dir = Path(parsed.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    study_list_cache = output_dir / "study-list.json"
+    if study_list_cache.is_file() and not getattr(parsed, "force", False):
+        print("study-prep: reusing cached study-list.json", file=sys.stderr)
+        return 0
 
     if parsed.root:
         source_root = Path(parsed.root).resolve()

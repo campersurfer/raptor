@@ -326,6 +326,10 @@ class TaskGraph:
     def completed_count(self) -> int:
         return len(self._completed)
 
+    def has_dependents(self, key: str) -> bool:
+        """True when other tasks depend on *key*'s taint summary."""
+        return bool(self._dependents.get(key))
+
     def repass_tasks(self) -> list[ReviewTask]:
         """Callers whose dependency edges were relaxed (cycle-breaking or
         bottleneck relaxation) — re-review with full callee context."""

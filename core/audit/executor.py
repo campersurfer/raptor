@@ -70,6 +70,8 @@ def run_executor_sync(
     on_tick: Callable[[dict[str, Any]], None] | None = None,
     reviewed_outcomes: dict[str, Any] | None = None,
     throttle: Any | None = None,
+    study_queue: Any | None = None,
+    concept_index_ref: list | None = None,
 ) -> ExecutorStats:
     """Serial executor — drop-in replacement for the current ``for gap`` loop.
 
@@ -115,6 +117,8 @@ def run_executor_sync(
                     on_tick=on_tick,
                     reviewed_outcomes=reviewed_outcomes,
                     throttle=throttle,
+                    study_queue=study_queue,
+                    concept_index_ref=concept_index_ref,
                 ),
             )
         finally:
@@ -291,6 +295,8 @@ async def _run_async(
     on_tick: Callable[[dict[str, Any]], None] | None = None,
     reviewed_outcomes: dict[str, Any] | None = None,
     throttle: Any | None = None,
+    study_queue: Any | None = None,
+    concept_index_ref: list | None = None,
 ) -> ExecutorStats:
     """Async executor with bounded concurrency via throttle.
 
@@ -328,6 +334,8 @@ async def _run_async(
             review_one_fn=review_one_fn,
             on_tick=on_tick,
             reviewed_outcomes=reviewed_outcomes,
+            study_queue=study_queue,
+            concept_index_ref=concept_index_ref,
         )
     finally:
         if throttle.signal_count:
@@ -361,6 +369,8 @@ async def _run_async_body(
     review_one_fn: Callable | None = None,
     on_tick: Callable[[dict[str, Any]], None] | None = None,
     reviewed_outcomes: dict[str, Any] | None = None,
+    study_queue: Any | None = None,
+    concept_index_ref: list | None = None,
 ) -> ExecutorStats:
     """Inner body of the async executor, separated so _run_async can
     wrap it in try/finally for throttle cleanup."""
@@ -378,6 +388,15 @@ async def _run_async_body(
     batch_review_fn = _get_batch_review_fn(shared, config)
     glance_pending: list[Any] = []
 
+    # Suppression gate state
+    hold_set: dict[str, set[str]] = {}
+    held_tasks: dict[str, Any] = {}
+    study_event: asyncio.Event | None = None
+    if study_queue is not None:
+        study_event = asyncio.Event()
+        loop = asyncio.get_event_loop()
+        study_queue.set_event_loop(loop, study_event)
+
     def _should_stop() -> bool:
         nonlocal stopping
         if stopping:
@@ -392,9 +411,54 @@ async def _run_async_body(
             return True
         return False
 
+    def _check_suppression(task: Any) -> bool:
+        """Return True if task should be held (suppressed)."""
+        if study_queue is None or concept_index_ref is None:
+            return False
+        ci = concept_index_ref[0] if concept_index_ref else None
+        if ci is None:
+            return False
+        if graph.has_dependents(task.key):
+            return False
+        concepts = ci.concepts_for(
+            task.gap.get("file", ""), task.gap.get("name", ""),
+        )
+        if not concepts:
+            return False
+        pending = study_queue.pending_concepts()
+        blocked_by = concepts & pending
+        if blocked_by:
+            hold_set[task.key] = blocked_by
+            held_tasks[task.key] = task
+            return True
+        return False
+
+    def _release_held() -> list[Any]:
+        """Release tasks whose blocking concepts are now studied."""
+        if not hold_set:
+            return []
+        if study_queue is not None and study_queue.consumer_done:
+            released = list(held_tasks.values())
+            hold_set.clear()
+            held_tasks.clear()
+            return released
+        pending = (
+            study_queue.pending_concepts()
+            if study_queue is not None
+            else frozenset()
+        )
+        released = []
+        for key in list(hold_set):
+            if not (hold_set[key] & pending):
+                hold_set.pop(key)
+                released.append(held_tasks.pop(key))
+        return released
+
     def _dispatch_ready(tasks: list[Any]) -> None:
         """Route ready tasks: glance-tier into batch queue, others individual."""
         for task in tasks:
+            if _check_suppression(task):
+                continue
             if (
                 batch_review_fn
                 and _is_glance(task, shared)
@@ -519,14 +583,32 @@ async def _run_async_body(
     initial = graph.pop_ready(ec.max_workers)
     _dispatch_ready(initial)
 
-    while inflight or glance_pending:
+    while inflight or glance_pending or hold_set:
         if glance_pending and not _should_stop():
             batch = list(glance_pending)
             glance_pending.clear()
             child = asyncio.create_task(_run_batch(batch))
             inflight.add(child)
-        if not inflight:
-            break
+
+        # Release held tasks whose blocking concepts are now studied
+        released = _release_held()
+        if released:
+            _dispatch_ready(released)
+
+        if not inflight and not glance_pending:
+            if not hold_set:
+                break
+            # All work is held — wait for study to complete
+            if study_event is not None:
+                study_event.clear()
+                try:
+                    await asyncio.wait_for(study_event.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            else:
+                break
+
         done, _pending = await asyncio.wait(
             inflight, return_when=asyncio.FIRST_COMPLETED,
         )

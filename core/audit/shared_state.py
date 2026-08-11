@@ -183,15 +183,9 @@ class SharedState:
     # Synthesis hits discovered mid-loop; drained into a second executor pass.
     synthesis_queue: list[dict[str, Any]] = field(default_factory=list)
 
-    # Functions that queued reading-list items during review; tracked so the
-    # JIT study enrichment pass can re-review only affected functions.
-    reading_list_functions: set[str] = field(default_factory=set)
-
-    # Accumulated reading-list items from review outcomes; flushed once
-    # post-loop to avoid file-level races across concurrent workers.
-    _reading_list_items: list[dict[str, Any]] = field(default_factory=list)
-    _reading_list_lock: threading.Lock = field(default_factory=threading.Lock)
-    _early_study_fired: bool = False
+    # Incremental study consumer queue; set at runtime when C/C++ files
+    # are present.  Typed as Any to avoid circular import.
+    study_queue: Any = None
 
     # Live-discovered sinks, sanitizers, and entry points accumulated
     # from LLM review outcomes during the loop.
