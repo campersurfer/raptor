@@ -2322,5 +2322,149 @@ class TestE2EObserveMode(unittest.TestCase):
             )
 
 
+class TestE2ELandlockIoctlDev(unittest.TestCase):
+    """ABI v5+: IOCTL_DEV blocks device ioctl in sandboxed processes."""
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+        from core.sandbox.landlock import _get_landlock_abi
+        if _get_landlock_abi() < 5:
+            self.skipTest("Landlock ABI < 5 — IOCTL_DEV not available")
+
+    def test_ioctl_on_dev_null_blocked(self):
+        import shutil
+        if not shutil.which("gcc"):
+            self.skipTest("gcc not installed")
+        with TemporaryDirectory() as d:
+            src = Path(d) / "ioctldev.c"
+            src.write_text(
+                "#include <stdio.h>\n"
+                "#include <fcntl.h>\n"
+                "#include <unistd.h>\n"
+                "#include <errno.h>\n"
+                "#include <sys/ioctl.h>\n"
+                "int main(void){\n"
+                "  int fd=open(\"/dev/null\",O_RDWR);\n"
+                "  if(fd<0){printf(\"open_err=%d\\n\",errno);return 1;}\n"
+                "  int r=ioctl(fd,TCGETS,0);\n"
+                "  printf(\"rc=%d errno=%d\\n\",r,errno);\n"
+                "  close(fd);\n"
+                "  return 0;\n"
+                "}\n"
+            )
+            bin_path = Path(d) / "ioctldev"
+            compile_result = sandbox_run(
+                ["gcc", "-O0", str(src), "-o", str(bin_path)],
+                block_network=True, target=d, output=d,
+                capture_output=True, text=True, timeout=15,
+            )
+            if compile_result.returncode != 0:
+                self.skipTest(f"gcc failed: {compile_result.stderr[:200]}")
+            result = sandbox_run(
+                [str(bin_path)],
+                block_network=True, target=d, output=d,
+                capture_output=True, text=True, timeout=5,
+            )
+            # EACCES (13) from Landlock, not ENOTTY (25) which is the
+            # normal /dev/null response without Landlock IOCTL_DEV.
+            self.assertIn("errno=13", result.stdout,
+                          f"ioctl on /dev/null should be blocked by "
+                          f"Landlock IOCTL_DEV (EACCES); got: {result.stdout!r}")
+
+
+class TestE2ELandlockSignalScope(unittest.TestCase):
+    """ABI v6+: signal scoping blocks cross-domain signal delivery.
+
+    Can't test via the sandbox wrapper's PID namespace (parent PID is
+    invisible → ESRCH, not EPERM). Instead, compile a C program that
+    forks, applies Landlock scoping in the child only, and has the
+    child try to signal the (unscoped) parent. The child gets EPERM
+    from Landlock, not ESRCH from PID namespace.
+    """
+
+    def setUp(self):
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+        from core.sandbox.landlock import _get_landlock_abi
+        if _get_landlock_abi() < 6:
+            self.skipTest("Landlock ABI < 6 — signal scoping not available")
+        import shutil
+        if not shutil.which("gcc"):
+            self.skipTest("gcc not installed")
+
+    _SIGNAL_SCOPE_SRC = (
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <unistd.h>\n"
+        "#include <signal.h>\n"
+        "#include <errno.h>\n"
+        "#include <sys/prctl.h>\n"
+        "#include <sys/syscall.h>\n"
+        "#include <sys/wait.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "struct landlock_ruleset_attr {\n"
+        "  unsigned long long handled_access_fs;\n"
+        "  unsigned long long handled_access_net;\n"
+        "  unsigned long long scoped;\n"
+        "};\n"
+        "\n"
+        "#define LANDLOCK_SCOPE_SIGNAL (1ULL << 1)\n"
+        "\n"
+        "int main(void) {\n"
+        "  pid_t parent = getpid();\n"
+        "  pid_t child = fork();\n"
+        "  if (child < 0) { perror(\"fork\"); return 1; }\n"
+        "  if (child > 0) {\n"
+        "    int status; waitpid(child, &status, 0);\n"
+        "    if (WIFEXITED(status)) return WEXITSTATUS(status);\n"
+        "    return 1;\n"
+        "  }\n"
+        "  /* child: apply Landlock with signal scoping */\n"
+        "  struct landlock_ruleset_attr attr = {0, 0, LANDLOCK_SCOPE_SIGNAL};\n"
+        "  int fd = syscall(444, &attr, sizeof(attr), 0);\n"
+        "  if (fd < 0) { printf(\"create_err=%d\\n\", errno); return 2; }\n"
+        "  prctl(38, 1, 0, 0, 0);\n"
+        "  long r = syscall(446, fd, 0);\n"
+        "  close(fd);\n"
+        "  if (r < 0) { printf(\"restrict_err=%d\\n\", errno); return 2; }\n"
+        "  /* self-signal: must succeed (same domain) */\n"
+        "  if (kill(getpid(), 0) != 0) {\n"
+        "    printf(\"self_errno=%d\\n\", errno); return 3;\n"
+        "  }\n"
+        "  /* cross-domain signal to parent: must fail with EPERM */\n"
+        "  int ret = kill(parent, 0);\n"
+        "  printf(\"cross_rc=%d cross_errno=%d\\n\", ret, errno);\n"
+        "  return (ret == -1 && errno == 1) ? 0 : 4;\n"
+        "}\n"
+    )
+
+    def test_cross_domain_signal_blocked(self):
+        """Child in a scoped Landlock domain cannot signal the parent."""
+        with TemporaryDirectory() as d:
+            src = Path(d) / "sigscope.c"
+            src.write_text(self._SIGNAL_SCOPE_SRC)
+            bin_path = Path(d) / "sigscope"
+            cr = subprocess.run(
+                ["gcc", "-O0", str(src), "-o", str(bin_path)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if cr.returncode != 0:
+                self.skipTest(f"gcc failed: {cr.stderr[:200]}")
+            result = subprocess.run(
+                [str(bin_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"signal scoping test failed (rc={result.returncode}); "
+                f"stdout: {result.stdout!r} stderr: {result.stderr!r}",
+            )
+            self.assertIn("cross_errno=1", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
