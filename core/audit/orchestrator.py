@@ -233,6 +233,8 @@ class ReviewOutcome:
     error_class: str = ""
     verification_tier: str = "speculative"
     tools_dispatched: Optional[set] = field(default=None, repr=False)
+    semantic_confidence: str = ""
+    provenance_all_trusted: bool = False
     caller_attributed: bool = False
     attributed_caller: str = ""
     _propagated: bool = field(default=False, repr=False)
@@ -1147,6 +1149,16 @@ def review_one_function(
             exc_info=True,
         )
 
+    # ── Intra-function sibling analysis ─────────────────────────────
+    try:
+        from .intra_function import analyse_intra_function, format_intra_function_context
+        _ifsa = analyse_intra_function(ctx.get("source", ""))
+        _ifsa_ctx = format_intra_function_context(_ifsa)
+        if _ifsa_ctx:
+            ctx["intra_function_analysis"] = _ifsa_ctx
+    except Exception:
+        pass
+
     _fuse_all_evidence(ctx)
 
     # ── LLM review ────────────────────────────────────────────────────
@@ -1372,6 +1384,14 @@ def review_one_function(
         except ImportError:
             pass
 
+    # ── Provenance annotation ────────────────────────────────────────
+    if provenance_map and gap_key_mech in provenance_map:
+        prov_entries = provenance_map[gap_key_mech]
+        if prov_entries and all(
+            e.get("trust", "") == "trusted" for e in prov_entries
+        ):
+            outcome.provenance_all_trusted = True
+
     # ── Reachability gate ─────────────────────────────────────────────
     if outcome.status == "finding":
         outcome = _apply_reachability_gate(
@@ -1409,6 +1429,20 @@ def review_one_function(
                 outcome,
                 f"[gate violation: {'; '.join(gate_violations)}]",
             )
+
+    # ── Semantic confidence classification ──────────────────────────
+    if outcome.status in ("finding", "suspicious") and not outcome.semantic_confidence:
+        try:
+            from .semantic_confidence import classify_semantic_confidence
+            _sc = classify_semantic_confidence(
+                outcome.hypothesis or "",
+                ctx.get("source", ""),
+                line_start=gap.get("line_start", 0),
+            )
+            if _sc == "high":
+                outcome.semantic_confidence = "high"
+        except Exception:
+            pass
 
     # ── Refutation gates ──────────────────────────────────────────────
     # Cheap mechanical checks that kill false-positive hypotheses.
@@ -10448,12 +10482,22 @@ def _resolve_gate_demoted(
         if _has_mechanical_corroboration(
             outcome, config, sarif_cache, checklist, domain_model=domain_model
         ):
-            logger.debug(
-                "gate-demoted %s:%s has mechanical corroboration — stays suspicious",
-                outcome.file,
-                outcome.function,
-            )
-            continue
+            ev = outcome.evidence_tool or ""
+            if outcome.provenance_all_trusted and "smt" not in ev:
+                logger.info(
+                    "gate-demoted %s:%s has corroboration but all inputs "
+                    "trusted — provenance overrides detection-only evidence",
+                    outcome.file,
+                    outcome.function,
+                )
+            else:
+                logger.debug(
+                    "gate-demoted %s:%s has mechanical corroboration "
+                    "— stays suspicious",
+                    outcome.file,
+                    outcome.function,
+                )
+                continue
 
         # Determine if the vulnerability class is tool-covered
         class_covered = False
@@ -10477,6 +10521,15 @@ def _resolve_gate_demoted(
                 )
 
         if class_covered:
+            if outcome.semantic_confidence == "high":
+                logger.info(
+                    "gate-resolved %s:%s → stays suspicious "
+                    "(semantic_confidence=high rescues from clean demotion)",
+                    outcome.file,
+                    outcome.function,
+                )
+                continue
+
             resolved = ReviewOutcome(
                 file=outcome.file,
                 function=outcome.function,

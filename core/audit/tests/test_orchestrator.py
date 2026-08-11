@@ -1814,6 +1814,137 @@ class TestResolveGateDemoted:
         _resolve_gate_demoted(result, config, sarif_cache=None, checklist={})
         assert result.outcomes[0].status == "finding"
 
+    def test_semantic_confidence_high_rescues_from_clean(self, tmp_path: Path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "auth.c").write_text(
+            "int check_uid(int uid) {\n"
+            "    if (uid = 0)\n"
+            "        return 1;\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "auth.c",
+                "items": [{"name": "check_uid", "line_start": 1, "line_end": 5}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="auth.c", function="check_uid", status="suspicious",
+            body="[gate violation: G2: finding emitted without tool-grounded evidence]",
+            hypothesis="line 2 uses `=` instead of `==` in a conditional",
+            line=1,
+        )
+        outcome.semantic_confidence = "high"
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"prefilter": True},
+        )
+        assert result.outcomes[0].status == "suspicious"
+        assert result.suspicious == 1
+
+    def test_semantic_confidence_low_still_resolved_to_clean(self, tmp_path: Path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "a.c",
+                "items": [{"name": "f", "line_start": 1, "line_end": 1}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="[gate violation: G2: finding emitted without tool-grounded evidence]",
+            hypothesis="integer overflow in addition",
+            line=1,
+        )
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"prefilter": True, "smt": True},
+        )
+        assert result.outcomes[0].status == "clean"
+
+
+    def test_provenance_all_trusted_overrides_corroboration(self, tmp_path: Path):
+        """When all inputs are trusted, detection-only corroboration is overridden."""
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "safe.c").write_text(
+            "void process(char *input) {\n"
+            "  char buf[64];\n"
+            "  strcpy(buf, input);\n"
+            "}\n"
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "safe.c",
+                "items": [{"name": "process", "line_start": 1, "line_end": 4}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="safe.c", function="process", status="suspicious",
+            body="[gate violation: G2: finding emitted without tool-grounded evidence]",
+            hypothesis="buffer overflow in strcpy",
+            line=1,
+        )
+        outcome.provenance_all_trusted = True
+        outcome.evidence_tool = "joern"
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"prefilter": True},
+        )
+        # Prefilter would normally corroborate (strcpy), but provenance
+        # override lets it fall through to class-covered → clean.
+        assert result.outcomes[0].status == "clean"
+
+    def test_provenance_smt_evidence_not_overridden(self, tmp_path: Path):
+        """SMT evidence is never overridden by provenance."""
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "risky.c").write_text(
+            "void process(char *input) {\n"
+            "  char buf[64];\n"
+            "  strcpy(buf, input);\n"
+            "}\n"
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "risky.c",
+                "items": [{"name": "process", "line_start": 1, "line_end": 4}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="risky.c", function="process", status="suspicious",
+            body="[gate violation: G2: finding emitted without tool-grounded evidence]",
+            hypothesis="buffer overflow in strcpy",
+            line=1,
+        )
+        outcome.provenance_all_trusted = True
+        outcome.evidence_tool = "smt"
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+        )
+        # SMT evidence is immune to provenance override — stays suspicious
+        assert result.outcomes[0].status == "suspicious"
+
 
 class TestRefutationGateWirePoint:
     """Refutation gates demote findings/suspicious via the orchestrator wire point."""
