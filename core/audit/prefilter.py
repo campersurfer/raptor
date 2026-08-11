@@ -743,10 +743,50 @@ def _check_c_patterns(
                 severity="warning",
             ))
 
+    _check_c_assign_in_cond(result, source, line_start)
     _check_c_missing_bounds(result, source, line_start)
     _check_c_use_after_free(result, source, line_start)
     _check_c_toctou(result, source, line_start)
     _check_c_post_loop_oob(result, source, line_start)
+
+
+_ASSIGN_IN_COND_RE = re.compile(
+    r"\bif\s*\(\s*"
+    r"(?!\s*\()"
+    r"(\w+)\s*=\s*"
+    r"(0|1|NULL|nil|None|false|true|-1)\s*\)",
+    re.I,
+)
+
+_ASSIGN_IN_COND_INTENTIONAL_RE = re.compile(
+    r"\bif\s*\(\s*\("
+    r"|\bif\s*\(\s*\w+\s*=\s*\w+\s*\("
+)
+
+
+def _check_c_assign_in_cond(
+    result: PrefilterResult,
+    source: str,
+    line_start: int,
+) -> None:
+    """Detect assignment-in-conditional with a constant (CWE-480/481)."""
+    for i, line in enumerate(source.splitlines(), start=line_start):
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("*"):
+            continue
+        if _ASSIGN_IN_COND_INTENTIONAL_RE.search(stripped):
+            continue
+        m = _ASSIGN_IN_COND_RE.search(stripped)
+        if m:
+            result.hits.append(PrefilterHit(
+                rule_id="assign-in-conditional",
+                message=(
+                    f"assignment `{m.group(1)} = {m.group(2)}` inside "
+                    f"if-condition — likely meant `==` (CWE-480)"
+                ),
+                line=i,
+                severity="error",
+            ))
 
 
 def _check_c_missing_bounds(

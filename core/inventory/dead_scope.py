@@ -413,6 +413,10 @@ def _detect_c(content: str) -> List[DeadRange]:
         if close is None:
             continue
 
+        if re.search(r"\binline\b|__inline\b|__inline__\b|__forceinline\b",
+                     between):
+            continue
+
         count = len(re.findall(r"\b" + re.escape(name) + r"\b", stripped))
         if count <= 1:
             start_line = stripped.count("\n", 0, m.start()) + 1

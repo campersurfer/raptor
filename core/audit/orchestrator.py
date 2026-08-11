@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import subprocess
 import sys
@@ -232,6 +233,8 @@ class ReviewOutcome:
     error_class: str = ""
     verification_tier: str = "speculative"
     tools_dispatched: Optional[set] = field(default=None, repr=False)
+    caller_attributed: bool = False
+    attributed_caller: str = ""
     _propagated: bool = field(default=False, repr=False)
 
     _CONFIRMED_EVIDENCE = frozenset({
@@ -1377,6 +1380,14 @@ def review_one_function(
             entry_points,
             config,
         )
+
+    # ── Speculative race gate ────────────────────────────────────────
+    if outcome.status in ("finding", "suspicious"):
+        outcome = _apply_speculative_race_demotion(outcome)
+
+    # ── Caller attribution annotation ──────────────────────────────
+    if outcome.status in ("finding", "suspicious"):
+        outcome = _apply_caller_attribution(outcome, ctx.get("callers", []))
 
     # ── Finding gates ─────────────────────────────────────────────────
     if outcome.status == "finding":
@@ -5863,12 +5874,6 @@ def _study_consumer_loop(
         to_review = (suspicious + rest)[:budget]
 
         reading_list_fns = set(to_review)
-        logger.info(
-            "re-reviewing %d functions with enriched domain "
-            "knowledge (workers=%d)",
-            len(to_review),
-            min(4, budget),
-        )
         result = _re_review_study_enriched(
             result,
             config,
@@ -6494,7 +6499,20 @@ def _apply_reachability_gate(
 
     if config.binary_verdicts:
         verdict = config.binary_verdicts.get(outcome.function, "")
-        if verdict == "absent" and not is_entry:
+        _is_header_inline = (
+            outcome.file.endswith(".h")
+            and "static" in (ctx.get("source", "") or "")[:200]
+        )
+        _has_tool_evidence = bool(
+            outcome.evidence_tool
+            and outcome.evidence_tool != "reachability:dead_code"
+        )
+        if (
+            verdict == "absent"
+            and not is_entry
+            and not _is_header_inline
+            and not _has_tool_evidence
+        ):
             logger.info(
                 "reachability gate: %s demoted to dormant (binary: absent)",
                 key,
@@ -6541,6 +6559,97 @@ def _apply_reachability_gate(
             review_result=outcome.review_result,
             line=outcome.line,
         )
+
+    return outcome
+
+
+_RACE_KW = ("race condition", "toctou", "time-of-check", "time of check",
+            "concurrent", "concurrently", "data race", "deadlock", "livelock")
+
+_RACE_EVIDENCE_PREFIX = ("smt:", "coccinelle:", "semgrep:", "codeql:", "joern:",
+                         "sarif:", "prefilter:lock", "prefilter:race")
+
+_PROTECTION_RE = re.compile(
+    r"\b(?:protected\s+by|under\s+lock|held\s+(?:by\s+)?lock|rcu_read_lock"
+    r"|single[_-]threaded|init[_-]only|seriali[sz]ed\s+by"
+    r"|mutex[_\s]held|spin_lock|sequential[_\s]init)\b",
+    re.I,
+)
+
+_NEGATION_BEFORE_RE = re.compile(
+    r"\b(?:not|no|without|lacks?|missing|absent|never)\b",
+    re.I,
+)
+
+
+def _apply_speculative_race_demotion(outcome: ReviewOutcome) -> ReviewOutcome:
+    """Demote evidence-free race hypotheses.
+
+    finding → suspicious when race keywords present but no tool evidence.
+    suspicious → clean when the body names a concrete protection mechanism
+    (negation-aware: "not protected by" does NOT count).
+    """
+    hyp = (outcome.hypothesis or "").lower()
+    if not any(kw in hyp for kw in _RACE_KW):
+        return outcome
+
+    ev = outcome.evidence_tool or ""
+    if ev and any(ev.startswith(p) for p in _RACE_EVIDENCE_PREFIX):
+        return outcome
+
+    key = f"{outcome.file}:{outcome.function}"
+
+    if outcome.status == "finding":
+        logger.info(
+            "speculative race gate: %s demoted finding → suspicious "
+            "(race hypothesis without tool evidence)",
+            key,
+        )
+        outcome.status = "suspicious"
+
+    if outcome.status == "suspicious":
+        body = (outcome.body or "").lower()
+        m = _PROTECTION_RE.search(body)
+        if m:
+            before = body[max(0, m.start() - 30):m.start()]
+            if not _NEGATION_BEFORE_RE.search(before):
+                logger.info(
+                    "speculative race gate: %s demoted suspicious → clean "
+                    "(protection mechanism: %s)",
+                    key,
+                    m.group(0),
+                )
+                outcome.status = "clean"
+
+    return outcome
+
+
+def _apply_caller_attribution(
+    outcome: ReviewOutcome,
+    callers: list,
+) -> ReviewOutcome:
+    """Tag findings that describe a bug in a caller, not the reviewed function."""
+    if outcome.status not in ("finding", "suspicious"):
+        return outcome
+    if not callers:
+        return outcome
+
+    text = f"{outcome.hypothesis or ''} {outcome.body or ''}".lower()
+    if not text.strip():
+        return outcome
+
+    for c in callers:
+        name = c.get("name", "")
+        if not name or len(name) < 3:
+            continue
+        if name.lower() in text:
+            outcome.caller_attributed = True
+            outcome.attributed_caller = name
+            logger.info(
+                "caller attribution: %s:%s references caller %s",
+                outcome.file, outcome.function, name,
+            )
+            break
 
     return outcome
 

@@ -542,6 +542,8 @@ def _run_audit_on_target(
     from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
 
     def on_progress(idx, total, outcome):
+        if idx < 0 or not outcome.file:
+            return
         key = f"{outcome.file}:{outcome.function}"
         status = outcome.status
         marker = " *" if key in labeled_ids else ""

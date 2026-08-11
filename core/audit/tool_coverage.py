@@ -125,6 +125,10 @@ _MECHANISM_CWE_MAP: dict[str, list[str]] = {
     "prompt injection":    ["CWE-1336"],
     "indirect prompt injection": ["CWE-1336"],
     "llm injection":       ["CWE-1336"],
+    "wrong operator":      ["CWE-480"],
+    "assignment in conditional": ["CWE-480"],
+    "use of incorrect operator": ["CWE-480"],
+    "assignment instead of comparison": ["CWE-481"],
 }
 
 _CWE_PATTERN = re.compile(r"CWE-(\d+)", re.IGNORECASE)

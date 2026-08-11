@@ -317,14 +317,32 @@ def test_c_static_variable_not_detected():
     assert detect_dead_scopes("c", src) == []
 
 
-def test_c_static_inline_no_callers_detected():
+def test_c_static_inline_not_detected():
+    # static inline functions are designed for cross-TU inclusion from
+    # headers — callers live in other files, so single-reference in this
+    # file does NOT mean dead.
     src = (
-        "static inline int dead_inline(int x) {\n"
+        "static inline int helper_inline(int x) {\n"
         "    return x * 2;\n"
         "}\n"
     )
-    ranges = detect_dead_scopes("c", src)
-    assert (1, 3) in ranges
+    assert detect_dead_scopes("c", src) == []
+
+
+def test_c_static_inline_variants_not_detected():
+    for kw in ("inline", "__inline", "__inline__", "__forceinline"):
+        src = f"static {kw} int f(int x) {{\n    return x;\n}}\n"
+        assert detect_dead_scopes("c", src) == [], f"static {kw} should not be dead"
+
+
+def test_c_static_inline_with_caller_still_live():
+    src = (
+        "static inline int nla_total_size_64bit(int payload) {\n"
+        "    return NLA_ALIGN(nla_attr_size(payload))\n"
+        "        + NLA_ALIGN(nla_attr_size(0));\n"
+        "}\n"
+    )
+    assert detect_dead_scopes("c", src) == []
 
 
 def test_c_constructor_attribute_skipped():
