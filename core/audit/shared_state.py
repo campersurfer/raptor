@@ -80,6 +80,9 @@ class SharedState:
     sibling_ns_findings: list[Any] = field(default_factory=list)
     sibling_postcond_violations: list[Any] = field(default_factory=list)
 
+    # Capability displacement findings (dispatch-table analysis).
+    capability_displacements: list[Any] = field(default_factory=list)
+
     # Sibling peer groups for semantic-consistency and paired-operation checks.
     peer_groups: list[Any] = field(default_factory=list)
 
@@ -233,6 +236,7 @@ class SharedState:
         call_edges: list[dict[str, Any]],
         iris_bypass_by_func: dict[str, list[dict[str, Any]]] | None = None,
         domain_model: dict[str, Any] | None = None,
+        capability_displacements: list[Any] | None = None,
         # Mutable fields initialised at the start of the loop; callers pass
         # the seed values so that the state object owns them from day one.
         taint_summary_results: dict[str, Any] | None = None,
@@ -305,6 +309,7 @@ class SharedState:
             checklist_index=cl_index,
             iris_bypass_by_func=iris_bypass_by_func if iris_bypass_by_func is not None else {},
             domain_model=domain_model,
+            capability_displacements=capability_displacements if capability_displacements is not None else [],
             taint_summary_results=taint_summary_results if taint_summary_results is not None else {},
             constraints=constraints,
             expansion_budget=expansion_budget,

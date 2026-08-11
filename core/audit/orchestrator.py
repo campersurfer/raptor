@@ -1022,6 +1022,21 @@ def review_one_function(
 
     func_name = gap.get("name", "")
     func_file = gap.get("file", "")
+
+    if shared.capability_displacements:
+        func_displacements = [
+            d for d in shared.capability_displacements
+            if func_file == d.file
+        ]
+        if func_displacements:
+            try:
+                from .dispatch_table import format_displacement_context
+                _dc = format_displacement_context(func_displacements)
+                if _dc:
+                    ctx["capability_displacement"] = _dc
+            except Exception:
+                pass
+
     sib_viols = [
         v
         for v in sibling_postcond_violations
@@ -2274,6 +2289,18 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             len(sibling_ns_findings),
         )
 
+    try:
+        from .dispatch_table import check_capability_displacement
+        capability_displacements = check_capability_displacement(detector_gaps)
+        if capability_displacements:
+            logger.info(
+                "dispatch-table analysis: %d capability displacement(s)",
+                len(capability_displacements),
+            )
+    except Exception:
+        capability_displacements = []
+        logger.debug("dispatch-table analysis skipped", exc_info=True)
+
     from .postcondition_verify import (
         check_sibling_ordering,
         check_sibling_sanitizer_strength,
@@ -2384,6 +2411,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "sibling_ns_findings": sibling_ns_findings,
         "peer_groups": peer_groups,
         "sibling_postcond_violations": sibling_postcond_violations,
+        "capability_displacements": capability_displacements,
         "semantic_findings": semantic_findings,
         "mechanical_findings": mechanical_findings,
         "guard_clean_keys": guard_clean_keys,
@@ -2494,6 +2522,7 @@ def _run_audit_body(
     sibling_ns_findings = _prep["sibling_ns_findings"]
     peer_groups = _prep["peer_groups"]
     sibling_postcond_violations = _prep["sibling_postcond_violations"]
+    capability_displacements = _prep.get("capability_displacements", [])
     semantic_findings = _prep["semantic_findings"]
     mechanical_findings = _prep["mechanical_findings"]
     guard_clean_keys = _prep.get("guard_clean_keys", set())
@@ -2843,6 +2872,7 @@ def _run_audit_body(
         conventions=conventions,
         sibling_ns_findings=sibling_ns_findings,
         sibling_postcond_violations=sibling_postcond_violations,
+        capability_displacements=capability_displacements,
         peer_groups=peer_groups,
         semantic_findings=semantic_findings,
         mechanical_findings=mechanical_findings,
