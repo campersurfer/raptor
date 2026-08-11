@@ -83,6 +83,9 @@ class SharedState:
     # Capability displacement findings (dispatch-table analysis).
     capability_displacements: list[Any] = field(default_factory=list)
 
+    # Struct-field co-accessor index: field_name → [AccessorRecord, ...].
+    struct_accessor_index: dict[str, list[Any]] = field(default_factory=dict)
+
     # Sibling peer groups for semantic-consistency and paired-operation checks.
     peer_groups: list[Any] = field(default_factory=list)
 
@@ -237,6 +240,7 @@ class SharedState:
         iris_bypass_by_func: dict[str, list[dict[str, Any]]] | None = None,
         domain_model: dict[str, Any] | None = None,
         capability_displacements: list[Any] | None = None,
+        struct_accessor_index: dict[str, list[Any]] | None = None,
         # Mutable fields initialised at the start of the loop; callers pass
         # the seed values so that the state object owns them from day one.
         taint_summary_results: dict[str, Any] | None = None,
@@ -310,6 +314,7 @@ class SharedState:
             iris_bypass_by_func=iris_bypass_by_func if iris_bypass_by_func is not None else {},
             domain_model=domain_model,
             capability_displacements=capability_displacements if capability_displacements is not None else [],
+            struct_accessor_index=struct_accessor_index if struct_accessor_index is not None else {},
             taint_summary_results=taint_summary_results if taint_summary_results is not None else {},
             constraints=constraints,
             expansion_budget=expansion_budget,

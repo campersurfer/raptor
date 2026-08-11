@@ -1037,6 +1037,21 @@ def review_one_function(
             except Exception:
                 pass
 
+    if shared.struct_accessor_index:
+        try:
+            from .struct_accessor_index import (
+                get_co_accessors,
+                format_co_accessor_context,
+            )
+            co_groups = get_co_accessors(
+                shared.struct_accessor_index, func_name, func_file,
+            )
+            _cac = format_co_accessor_context(co_groups)
+            if _cac:
+                ctx["co_accessor_analysis"] = _cac
+        except Exception:
+            pass
+
     sib_viols = [
         v
         for v in sibling_postcond_violations
@@ -2301,6 +2316,18 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         capability_displacements = []
         logger.debug("dispatch-table analysis skipped", exc_info=True)
 
+    try:
+        from .struct_accessor_index import build_index_from_source
+        struct_accessor_index = build_index_from_source(detector_gaps)
+        if struct_accessor_index:
+            logger.info(
+                "struct-accessor index: %d fields tracked across functions",
+                len(struct_accessor_index),
+            )
+    except Exception:
+        struct_accessor_index = {}
+        logger.debug("struct-accessor index skipped", exc_info=True)
+
     from .postcondition_verify import (
         check_sibling_ordering,
         check_sibling_sanitizer_strength,
@@ -2412,6 +2439,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "peer_groups": peer_groups,
         "sibling_postcond_violations": sibling_postcond_violations,
         "capability_displacements": capability_displacements,
+        "struct_accessor_index": struct_accessor_index,
         "semantic_findings": semantic_findings,
         "mechanical_findings": mechanical_findings,
         "guard_clean_keys": guard_clean_keys,
@@ -2523,6 +2551,7 @@ def _run_audit_body(
     peer_groups = _prep["peer_groups"]
     sibling_postcond_violations = _prep["sibling_postcond_violations"]
     capability_displacements = _prep.get("capability_displacements", [])
+    struct_accessor_index = _prep.get("struct_accessor_index", {})
     semantic_findings = _prep["semantic_findings"]
     mechanical_findings = _prep["mechanical_findings"]
     guard_clean_keys = _prep.get("guard_clean_keys", set())
@@ -2873,6 +2902,7 @@ def _run_audit_body(
         sibling_ns_findings=sibling_ns_findings,
         sibling_postcond_violations=sibling_postcond_violations,
         capability_displacements=capability_displacements,
+        struct_accessor_index=struct_accessor_index,
         peer_groups=peer_groups,
         semantic_findings=semantic_findings,
         mechanical_findings=mechanical_findings,
