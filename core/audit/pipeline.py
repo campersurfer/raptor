@@ -298,7 +298,9 @@ def _merge_outcomes(sec_outcomes, bf_outcomes):
             if use_max:
                 winner = copy(bf if br > sr else sec)
             else:
-                winner = copy(sec if sr <= br else bf)
+                winner = copy(sec if sr >= br else bf)
+                if winner.status == "finding":
+                    winner.status = "suspicious"
 
             if br > sr and winner.evidence_tool and sec.evidence_tool:
                 winner.evidence_tool = (

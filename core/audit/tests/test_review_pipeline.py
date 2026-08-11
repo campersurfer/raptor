@@ -1152,12 +1152,12 @@ class TestEnsembleMerge:
         assert merged[0].status == "finding"
         assert merged[0].cost_usd == 0.02
 
-    def test_suspicious_without_agreement_demoted(self):
+    def test_suspicious_without_agreement_kept(self):
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome("a.c", "f", "suspicious")]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "clean"
+        assert merged[0].status == "suspicious"
 
     def test_suspicious_with_detection_evidence_kept(self):
         from core.audit.pipeline import _merge_outcomes
@@ -1195,8 +1195,8 @@ class TestEnsembleMerge:
 
     # ── Bug-class-aware disagree demotion ────────────────────────
 
-    def test_disagree_no_evidence_demotes_to_lower(self):
-        """Disagreement without evidence resolves to lower status."""
+    def test_disagree_no_evidence_caps_at_suspicious(self):
+        """Disagreement without evidence keeps higher, capped at suspicious."""
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome(
@@ -1204,10 +1204,10 @@ class TestEnsembleMerge:
             hypothesis="race condition in refcount update",
         )]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "clean"
+        assert merged[0].status == "suspicious"
 
-    def test_disagree_finding_no_evidence_demotes_to_lower(self):
-        """Finding disagreement without evidence resolves to lower status."""
+    def test_disagree_finding_no_evidence_caps_at_suspicious(self):
+        """Finding disagreement without evidence caps at suspicious."""
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome(
@@ -1215,7 +1215,7 @@ class TestEnsembleMerge:
             hypothesis="privilege escalation via uid check",
         )]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "clean"
+        assert merged[0].status == "suspicious"
 
     def test_disagree_with_evidence_keeps_max(self):
         """Disagreement WITH evidence keeps higher status."""
@@ -2366,7 +2366,7 @@ class TestPreLoopSmtScreen:
             sweep_validate_findings: bool = True
         return _Cfg()
 
-    def test_auth_bypass_locked_in_and_removed_from_workqueue(self, tmp_path):
+    def test_auth_bypass_injects_evidence_and_keeps_in_workqueue(self, tmp_path):
         from core.audit.orchestrator import _pre_loop_smt_screen, OrchestratorResult
 
         src = tmp_path / "auth.c"
@@ -2386,10 +2386,9 @@ int check_access(struct task *t) {
         config = self._make_config(tmp_path)
 
         kept = _pre_loop_smt_screen(workqueue, config, result)
-        assert len(kept) == 0
-        assert result.findings == 1
-        assert result.outcomes[0].status == "finding"
-        assert "auth-bypass" in result.outcomes[0].evidence_tool
+        assert len(kept) == 1
+        assert result.findings == 0
+        assert "_smt_pre_evidence" in kept[0]
 
     def test_clean_function_stays_in_workqueue(self, tmp_path):
         from core.audit.orchestrator import _pre_loop_smt_screen, OrchestratorResult
@@ -2456,6 +2455,8 @@ int add(int a, int b) {
         config = self._make_config(tmp_path)
 
         kept = _pre_loop_smt_screen(workqueue, config, result)
-        assert len(kept) == 1
-        assert kept[0]["name"] == "add"
-        assert result.findings == 1
+        assert len(kept) == 2
+        assert kept[0]["name"] == "process"
+        assert "_smt_pre_evidence" in kept[0]
+        assert kept[1]["name"] == "add"
+        assert result.findings == 0

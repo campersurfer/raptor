@@ -66,6 +66,21 @@ def _load_cached(path: str) -> dict[str, Any] | None:
         return None
 
 
+_per_run_warned: set[str] = set()
+
+
+def _warn_per_run_once(path: str) -> None:
+    if path in _per_run_warned:
+        return
+    _per_run_warned.add(path)
+    logger.warning(
+        "domain-model.json found at per-run location %s — cross-run "
+        "staleness is disabled. Move to <project>/concepts/domain-"
+        "model.json for cross-run hash comparison.",
+        path,
+    )
+
+
 def _find_domain_model(out_dir: Path) -> dict[str, Any] | None:
     """Search for domain-model.json — amendment §3 canonical order.
 
@@ -92,12 +107,7 @@ def _find_domain_model(out_dir: Path) -> dict[str, Any] | None:
     if project_root.is_file():
         return _load_cached(str(project_root.resolve()))
     if per_run.is_file():
-        logger.warning(
-            "domain-model.json found at per-run location %s — cross-run "
-            "staleness is disabled. Move to <project>/concepts/domain-"
-            "model.json for cross-run hash comparison.",
-            per_run,
-        )
+        _warn_per_run_once(str(per_run))
         return _load_cached(str(per_run.resolve()))
     return None
 

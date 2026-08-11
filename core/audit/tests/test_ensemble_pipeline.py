@@ -267,7 +267,7 @@ class TestPipelinedMerge:
         assert not _needs_second_pass(o)
 
     def test_merge_demotes_without_evidence(self):
-        """Single-mode finding with no evidence is demoted to clean."""
+        """Disagree without evidence: higher result capped at suspicious."""
         sec = _MockOutcome(status="clean", file="a.c", function="foo")
         bf = _MockOutcome(
             status="finding", file="a.c", function="foo",
@@ -275,7 +275,7 @@ class TestPipelinedMerge:
         )
         merged = _merge_outcomes([sec], [bf])
         assert len(merged) == 1
-        assert merged[0].status == "clean"
+        assert merged[0].status == "suspicious"
 
     def test_merge_keeps_finding_with_evidence(self):
         sec = _MockOutcome(status="clean", file="a.c", function="foo")
@@ -312,7 +312,7 @@ class TestPipelinedMerge:
         assert merged[0].status == "suspicious"
 
     def test_merge_demotes_llm_claimed_evidence(self):
-        """llm-claimed evidence is not mechanical — still demotes."""
+        """llm-claimed evidence is not mechanical — caps at suspicious."""
         sec = _MockOutcome(
             status="suspicious", file="a.c", function="foo",
             hypothesis="lock issue",
@@ -320,7 +320,7 @@ class TestPipelinedMerge:
         )
         bf = _MockOutcome(status="clean", file="a.c", function="foo")
         merged = _merge_outcomes([sec], [bf])
-        assert merged[0].status == "clean"
+        assert merged[0].status == "suspicious"
 
 
 # ── Fix B: counter-hypothesis veto ─────────────────────────────────

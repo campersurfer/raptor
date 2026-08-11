@@ -423,8 +423,7 @@ def test_sink_unreachable_small_fn_skipped(tmp_path):
 void log_status(struct ctx *c) {
     int x = c->count;
     int y = c->limit;
-    int z = x + y;
-    c->total = z;
+    c->total = x;
     c->logged = 1;
 }"""
     result = run_prefilter(

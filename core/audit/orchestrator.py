@@ -1077,6 +1077,8 @@ def review_one_function(
             ctx["codeql_no_alerts"] = True
     if gap.get("_race_protected"):
         ctx["race_protected"] = gap["_race_protection_detail"]
+    if gap.get("_smt_pre_evidence"):
+        ctx["smt_pre_evidence"] = gap["_smt_pre_evidence"]
 
     if config.enable_session_context and session_observations:
         with shared._observations_lock:
@@ -9816,34 +9818,13 @@ def _pre_loop_smt_screen(
                 pass
 
         if tool_hit:
-            outcome = ReviewOutcome(
-                file=file_path,
-                function=func_name,
-                status="finding",
-                body=f"[pre-loop SMT screen: {tool_hit}]",
-                evidence_tool=tool_hit,
-                line=line_start,
-            )
-            result.outcomes.append(outcome)
-            result.findings += 1
-            result.reviewed += 1
-            result.sweep_promoted += 1
+            gap["_smt_pre_evidence"] = tool_hit
             screened += 1
-            if getattr(config, "out_dir", None):
-                append_audit_log(config.out_dir, {
-                    "action": "orchestrator_review",
-                    "key": f"{file_path}:{func_name}:{line_start}",
-                    "status": "finding",
-                    "evidence_tool": tool_hit,
-                    "model": "",
-                    "cost_usd": 0.0,
-                    "duration_s": 0.0,
-                    "hypothesis": f"pre-loop SMT screen: {tool_hit}",
-                })
             logger.info(
-                "pre-loop SMT screen: %s:%s → finding via %s",
+                "pre-loop SMT screen: %s:%s → evidence injected: %s",
                 file_path, func_name, tool_hit,
             )
+            kept.append(gap)
             continue
 
         if is_c and _extract_sg is not None and _check_pf is not None:
@@ -9899,7 +9880,7 @@ def _pre_loop_smt_screen(
 
     if screened:
         logger.info(
-            "pre-loop SMT screen: %d locked-in findings, %d remain for LLM",
+            "pre-loop SMT screen: %d evidence injections, %d remain for LLM",
             screened, len(kept),
         )
 

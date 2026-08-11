@@ -33,6 +33,39 @@ LABELS_DIR = CORPUS_DIR / "labels"
 FIXTURES_DIR = Path("out/audit-corpus-fixtures")
 
 
+def _corpus_project_context(run_tag: str):
+    """Context manager: create a temporary project, restore the previous one on exit."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _ctx():
+        from core.project.project import ProjectManager
+
+        mgr = ProjectManager()
+        prev_active = mgr.get_active()
+        project_name = f"corpus-{run_tag}"
+
+        try:
+            mgr.create(
+                project_name,
+                target="/tmp",
+                description=f"Corpus measurement run {run_tag}",
+            )
+        except ValueError:
+            pass
+        mgr.set_active(project_name)
+
+        try:
+            yield project_name
+        finally:
+            if prev_active:
+                mgr.set_active(prev_active)
+            else:
+                mgr.set_active(None)
+
+    return _ctx()
+
+
 def _is_hex_sha(ref: str) -> bool:
     return len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref)
 
@@ -577,6 +610,7 @@ def _run_audit_on_target(
             study_root=study_root,
             mode=review_mode,
             max_workers=max_workers,
+            validate=False,
         )
         run_audit_pipeline(pipeline_opts)
         rc = 0
@@ -1395,7 +1429,10 @@ def _run_ensemble_audit(
                         use_max = False
 
                 if not use_max:
-                    winner = dict(sec_r if sec_rank <= bf_rank else bf_r)
+                    higher = sec_r if sec_rank >= bf_rank else bf_r
+                    winner = dict(higher)
+                    if winner["actual"] == "finding":
+                        winner["actual"] = "suspicious"
                     winner["ensemble_source"] = "disagree_demoted"
                     winner["security_actual"] = sec_r["actual"]
                     winner["bug_first_actual"] = bf_r["actual"]
@@ -1781,57 +1818,59 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     models = args.model if args.model else [""]
 
+    run_tag = str(int(time.time()))
     excerpt_dirs = None
-    if args.probe:
-        t0 = time.monotonic()
-        results = []
-        for mdl in models:
-            label_text = mdl or "default"
-            print(f"\nProbe mode (model: {label_text})...",
-                  flush=True)
-            run_results = _run_probe(
-                labels, source_dirs,
-                model=mdl,
-                max_tokens=args.max_tokens,
-                domain_model_dir=args.domain_model,
-            )
-            results.extend(run_results)
-        wall_s = time.monotonic() - t0
-        run_dirs = []
-
-        if len(models) > 1:
-            _print_cross_model_summary(results, models)
-    else:
-        model = models[0]
-        mode = args.mode
-        print(f"Running audit (model: {model or 'default'}, "
-              f"mode: {mode})...", flush=True)
-
-        audit_dirs = source_dirs
-        if args.scope == "excerpt":
-            excerpt_dirs = _build_excerpt_tree(labels, source_dirs)
-            audit_dirs = excerpt_dirs
-
-        t0 = time.monotonic()
-        try:
-            if mode == "ensemble":
-                results, run_dirs = _run_ensemble_audit(
-                    labels, audit_dirs,
-                    model=model, out_dir=args.out,
-                    full_source_dirs=source_dirs if excerpt_dirs else None,
+    with _corpus_project_context(run_tag):
+        if args.probe:
+            t0 = time.monotonic()
+            results = []
+            for mdl in models:
+                label_text = mdl or "default"
+                print(f"\nProbe mode (model: {label_text})...",
+                      flush=True)
+                run_results = _run_probe(
+                    labels, source_dirs,
+                    model=mdl,
+                    max_tokens=args.max_tokens,
+                    domain_model_dir=args.domain_model,
                 )
-            else:
-                results, run_dirs = _run_audit(
-                    labels, audit_dirs,
-                    model=model, out_dir=args.out,
-                    full_source_dirs=source_dirs if excerpt_dirs else None,
-                    mode=mode,
-                )
-        finally:
-            if excerpt_dirs:
-                for d in excerpt_dirs.values():
-                    shutil.rmtree(str(d), ignore_errors=True)
-        wall_s = time.monotonic() - t0
+                results.extend(run_results)
+            wall_s = time.monotonic() - t0
+            run_dirs = []
+
+            if len(models) > 1:
+                _print_cross_model_summary(results, models)
+        else:
+            model = models[0]
+            mode = args.mode
+            print(f"Running audit (model: {model or 'default'}, "
+                  f"mode: {mode})...", flush=True)
+
+            audit_dirs = source_dirs
+            if args.scope == "excerpt":
+                excerpt_dirs = _build_excerpt_tree(labels, source_dirs)
+                audit_dirs = excerpt_dirs
+
+            t0 = time.monotonic()
+            try:
+                if mode == "ensemble":
+                    results, run_dirs = _run_ensemble_audit(
+                        labels, audit_dirs,
+                        model=model, out_dir=args.out,
+                        full_source_dirs=source_dirs if excerpt_dirs else None,
+                    )
+                else:
+                    results, run_dirs = _run_audit(
+                        labels, audit_dirs,
+                        model=model, out_dir=args.out,
+                        full_source_dirs=source_dirs if excerpt_dirs else None,
+                        mode=mode,
+                    )
+            finally:
+                if excerpt_dirs:
+                    for d in excerpt_dirs.values():
+                        shutil.rmtree(str(d), ignore_errors=True)
+            wall_s = time.monotonic() - t0
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 

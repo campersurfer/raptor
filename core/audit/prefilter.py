@@ -484,6 +484,23 @@ _LIFECYCLE_OPS = frozenset({
     "release", "destroy", "put_", "refcount", "kref",
 })
 
+_INTEGER_ARITH_RE = re.compile(
+    r"[\w)]\s*\+\s*[\w(]"
+    r"|"
+    r"[\w)]\s+-\s+[\w(]"
+    r"|"
+    r"[\w)]\s+\*\s+[\w(]"
+    r"|"
+    r"[\w)]\s*<<\s*[\w(]"
+    r"|"
+    r"[\w)]\s*>>\s*[\w(]",
+)
+
+
+def _has_integer_arithmetic(source: str) -> bool:
+    """Detect arithmetic that could overflow (addition, multiplication, shifts)."""
+    return bool(_INTEGER_ARITH_RE.search(source))
+
 
 def _is_sink_unreachable_clean(
     result: PrefilterResult,
@@ -532,6 +549,9 @@ def _is_sink_unreachable_clean(
         return False
 
     if re.search(r"==\s*(0x[0-9a-fA-F]+|[4-5]\d{2})\b", source):
+        return False
+
+    if _has_integer_arithmetic(source):
         return False
 
     return True
