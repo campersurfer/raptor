@@ -393,7 +393,7 @@ jobs:
           uv pip install -r requirements-dev.txt
 
       - name: Restore venv permissions
-        run: chmod +x $VENV_PATH/bin/*
+        run: find $VENV_PATH/bin -maxdepth 1 -type f -exec chmod +x {} +
 
       - name: Cache Python bytecode
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # was v6.1.0
@@ -520,7 +520,7 @@ jobs:
           uv pip install -r requirements-dev.txt
 
       - name: Restore venv permissions
-        run: chmod +x $VENV_PATH/bin/*
+        run: find $VENV_PATH/bin -maxdepth 1 -type f -exec chmod +x {} +
 
       - name: Run SCA tests (group ${{ matrix.group }} of 4)
         env:
@@ -611,7 +611,7 @@ jobs:
           uv pip install -r requirements-dev.txt
 
       - name: Restore venv permissions
-        run: chmod +x $VENV_PATH/bin/*
+        run: find $VENV_PATH/bin -maxdepth 1 -type f -exec chmod +x {} +
 
       - name: Run sandbox tests
         run: |
@@ -759,7 +759,7 @@ jobs:
           uv pip install -r requirements-dev.txt
 
       - name: Restore venv permissions
-        run: chmod +x $VENV_PATH/bin/*
+        run: find $VENV_PATH/bin -maxdepth 1 -type f -exec chmod +x {} +
 
       - name: Run exploit_feasibility integration tests
         env:
