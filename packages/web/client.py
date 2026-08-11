@@ -10,6 +10,7 @@ Handles HTTP requests with safety features:
 - Authentication handling
 """
 
+import contextlib
 import ipaddress
 import socket
 import time
@@ -78,28 +79,29 @@ class WebClient:
         """Check whether URL stays within the configured base origin."""
         return self._origin(url) == self._origin(self.base_url)
 
-    def _validate_resolved_ip(self, url: str) -> None:
-        """Resolve URL hostname and reject non-global IPs (SSRF/DNS-rebinding defence).
+    def _resolve_and_validate(self, url: str):
+        """Resolve URL hostname, reject non-global IPs, return pinned addrs.
 
-        Called before every outgoing request so that a hostname which
-        initially resolved to a public IP but later rebinds to
-        169.254.169.254, 127.0.0.1, 10.x.x.x, etc. is caught.
+        Returns (hostname, port, addr_list) where addr_list is the
+        validated getaddrinfo result, or None if validation is disabled
+        or the URL uses a literal IP.  The caller pins socket.getaddrinfo
+        to addr_list for the actual request, eliminating the DNS-rebinding
+        TOCTOU (resolve-then-connect with a second resolution).
         """
         if not self.block_private_ips:
-            return
+            return None
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
-            return
+            return None
         try:
-            ipaddress.ip_address(hostname)
             ip_obj = ipaddress.ip_address(hostname)
             if not ip_obj.is_global:
                 raise ValueError(
                     f"Blocked request to non-global IP {hostname} — "
                     f"set block_private_ips=False to scan internal targets"
                 )
-            return
+            return None
         except ValueError as exc:
             if "non-global" in str(exc):
                 raise
@@ -121,6 +123,34 @@ class WebClient:
                     f"blocked to prevent SSRF (set block_private_ips=False "
                     f"to scan internal targets)"
                 )
+        return (hostname, port, addrs)
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _pinned_dns(pinned):
+        """Pin socket.getaddrinfo to pre-validated results for one request.
+
+        Eliminates the DNS-rebinding TOCTOU: requests/urllib3 internally
+        calls getaddrinfo, which would re-resolve the hostname. By
+        returning our already-validated addresses, the connection goes
+        to the IP we checked — not a rebinded one.
+        """
+        if pinned is None:
+            yield
+            return
+        hostname, port, addrs = pinned
+        _original = socket.getaddrinfo
+
+        def _patched(host, p, *args, **kwargs):
+            if host == hostname:
+                return addrs
+            return _original(host, p, *args, **kwargs)
+
+        socket.getaddrinfo = _patched
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = _original
 
     def _build_url(self, path: str) -> str:
         """Build a request URL and reject paths that leave the target origin."""
@@ -173,16 +203,17 @@ class WebClient:
         request_kwargs = dict(kwargs)
 
         for _ in range(_MAX_REDIRECTS + 1):
-            self._validate_resolved_ip(current_url)
-            response = self.session.request(
-                current_method,
-                current_url,
-                timeout=self.timeout,
-                allow_redirects=False,
-                verify=self.verify_ssl,
-                stream=True,  # so we can size-cap before reading
-                **request_kwargs,
-            )
+            pinned = self._resolve_and_validate(current_url)
+            with self._pinned_dns(pinned):
+                response = self.session.request(
+                    current_method,
+                    current_url,
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                    verify=self.verify_ssl,
+                    stream=True,  # so we can size-cap before reading
+                    **request_kwargs,
+                )
             response.history = history[:]
 
             # Bound the buffered response body. requests' default is
