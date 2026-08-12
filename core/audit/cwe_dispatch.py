@@ -121,7 +121,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     # Use-after-free / double-free
     "CWE-416": {
         "smt": "check-early-release",
-        "cocci": None,
+        "cocci": "use_after_free.cocci",
         "joern": True,
         "codeql": "cpp/use-after-free",
         "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree",
@@ -129,7 +129,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     },
     "CWE-415": {
         "smt": "check-early-release",
-        "cocci": None,
+        "cocci": "double_free.cocci",
         "joern": True,
         "codeql": "cpp/use-after-free",
         "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree"],

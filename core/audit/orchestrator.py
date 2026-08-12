@@ -2215,6 +2215,30 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         gaps = gaps[: config.budget]
 
     entry_points = extract_context_map_set(context_map, "entry_points")
+
+    try:
+        from .ops_struct import collect_ops_entry_points
+
+        _ops_srcs: Dict[str, str] = {}
+        for gap in gaps:
+            fp = gap.get("file", "")
+            if fp and fp not in _ops_srcs:
+                try:
+                    sp = config.target_path / fp
+                    if sp.is_file():
+                        _ops_srcs[fp] = sp.read_text(errors="replace")
+                except Exception:
+                    pass
+        _ops_eps = collect_ops_entry_points(_ops_srcs)
+        if _ops_eps:
+            entry_points = entry_points | _ops_eps
+            logger.info(
+                "ops-struct reachability: %d indirect entry points added",
+                len(_ops_eps),
+            )
+    except Exception:
+        logger.debug("ops-struct entry point extraction failed", exc_info=True)
+
     sinks_set = extract_context_map_set(context_map, "sinks")
     trust_boundary_set = extract_context_map_set(
         context_map,
@@ -4856,6 +4880,67 @@ def _run_mechanical_detectors(
                     _add(fp, func_name, detector, line_start, desc)
     except Exception:
         logger.debug("mechanical: callback_lifetime failed", exc_info=True)
+
+    # --- Standing Coccinelle templates ---
+    try:
+        from packages.coccinelle.runner import (
+            is_available as _cocci_avail,
+            run_rule as _run_cocci_rule,
+        )
+
+        raptor_dir = Path(os.environ["RAPTOR_DIR"])
+        rules_dir = raptor_dir / "engine" / "coccinelle" / "rules"
+        if _cocci_avail() and rules_dir.is_dir() and config.target_path:
+            from .cwe_dispatch import CWE_TO_TOOL_DISPATCH
+
+            standing_rules: set[str] = set()
+            for entry in CWE_TO_TOOL_DISPATCH.values():
+                cocci_name = entry.get("cocci")
+                if cocci_name:
+                    rule_path = rules_dir / cocci_name
+                    if rule_path.is_file():
+                        standing_rules.add(str(rule_path))
+            if standing_rules:
+                c_files = [
+                    config.target_path / fp
+                    for fp in source_texts
+                    if any(fp.endswith(ext) for ext in _C_EXTS)
+                ]
+                for c_file in c_files:
+                    if not c_file.is_file():
+                        continue
+                    for rule_path_str in sorted(standing_rules):
+                        sr = _run_cocci_rule(
+                            c_file, Path(rule_path_str),
+                            no_includes=True, timeout=60,
+                        )
+                        for match in sr.matches:
+                            f_file = match.file or str(c_file)
+                            f_line = match.line or 0
+                            f_rule = sr.rule or Path(rule_path_str).stem
+                            try:
+                                rel = str(
+                                    Path(f_file).relative_to(config.target_path)
+                                )
+                            except ValueError:
+                                rel = ""
+                            func_name = ""
+                            for gap in gaps:
+                                if gap.get("file") != rel:
+                                    continue
+                                gs = gap.get("line_start", 0)
+                                ge = gap.get("line_end", gs + 9999)
+                                if gs <= f_line <= (ge or gs + 9999):
+                                    func_name = gap.get("name", "")
+                                    break
+                            if func_name:
+                                desc = match.message or str(match)
+                                _add(
+                                    rel, func_name,
+                                    f"cocci:{f_rule}", f_line, desc,
+                                )
+    except Exception:
+        logger.debug("mechanical: standing_cocci failed", exc_info=True)
 
     # inject-mode detectors moved to lazy evaluation — see _InjectModeResolver
 
