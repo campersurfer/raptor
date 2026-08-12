@@ -2913,6 +2913,25 @@ def _run_audit_body(
     except Exception:
         logger.debug("domain model load failed", exc_info=True)
 
+    try:
+        n_inv_matches = _run_invariant_prescreening(
+            domain_model, config, gaps, mechanical_findings,
+        )
+        if n_inv_matches:
+            logger.info(
+                "invariant prescreening: %d match(es) injected", n_inv_matches,
+            )
+            if config.out_dir:
+                try:
+                    mech_path = config.out_dir / "mechanical-findings.json"
+                    mech_path.write_text(
+                        json.dumps(mechanical_findings, indent=2),
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        logger.debug("invariant prescreening failed", exc_info=True)
+
     feedback_state = _load_exploit_feedback_raw(
         config.out_dir, load_feedback_state, FeedbackState
     )
@@ -4326,6 +4345,103 @@ def _composite_tool_runner(joern_runner, codeql_runner):
         )
 
     return _composite
+
+
+def _run_invariant_prescreening(
+    domain_model: dict[str, Any] | None,
+    config: "OrchestratorConfig",
+    gaps: list[dict[str, Any]],
+    mechanical_findings: Dict[str, List[Dict[str, Any]]],
+) -> int:
+    """Run compiled invariant rules from the domain model as pre-screening.
+
+    Finds invariants with ``mechanical_rule`` set, locates the rule files
+    in ``checkers/`` directories, runs them against the target, and injects
+    matches into *mechanical_findings* keyed by ``file:function``.
+
+    Returns the number of matches injected.
+    """
+    if not domain_model:
+        return 0
+    invariants = domain_model.get("invariants", [])
+    compiled = [
+        inv for inv in invariants
+        if isinstance(inv, dict) and inv.get("mechanical_rule")
+    ]
+    if not compiled:
+        return 0
+
+    checkers_dirs = []
+    if config.out_dir:
+        checkers_dirs.append(config.out_dir / "checkers")
+        checkers_dirs.append(config.out_dir.parent / "concepts" / "checkers")
+        checkers_dirs.append(config.out_dir.parent / "checkers")
+
+    file_func_index: dict[str, list[tuple[str, int, int]]] = {}
+    for g in gaps:
+        fp = g.get("file", "")
+        fn = g.get("name", "")
+        ls = g.get("line_start", 0)
+        le = g.get("line_end", 0)
+        if fp and fn and isinstance(ls, int) and isinstance(le, int):
+            file_func_index.setdefault(fp, []).append((fn, ls, le))
+
+    def _match_function(file: str, line: int) -> str | None:
+        entries = file_func_index.get(file)
+        if not entries:
+            return None
+        for fn, ls, le in entries:
+            if ls <= line <= le:
+                return fn
+        return None
+
+    from packages.checker_synthesis.models import SynthesisedRule
+    from packages.checker_synthesis.synthesise import _run_engine
+
+    total = 0
+    for inv in compiled:
+        rule_id = inv["mechanical_rule"]
+        engine = "coccinelle" if ".coccinelle." in rule_id else "semgrep"
+        ext = ".cocci" if engine == "coccinelle" else ".yml"
+        filename = f"{rule_id}{ext}"
+
+        rule_path = None
+        for d in checkers_dirs:
+            candidate = d / filename
+            if candidate.is_file():
+                rule_path = candidate
+                break
+        if rule_path is None:
+            continue
+
+        try:
+            body = rule_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        rule = SynthesisedRule(engine=engine, rule_id=rule_id, body=body)
+        matches, errors = _run_engine(rule, rule_path, config.target_path)
+        if errors:
+            logger.debug(
+                "invariant prescreening %s: %s", rule_id, "; ".join(errors[:2]),
+            )
+
+        inv_stmt = inv.get("statement", rule_id)
+        for m in matches:
+            func = _match_function(m.file, m.line)
+            if not func:
+                continue
+            key = f"{m.file}:{func}"
+            mechanical_findings.setdefault(key, []).append({
+                "file": m.file,
+                "function": func,
+                "detector": "invariant_rule",
+                "line": m.line,
+                "description": f"invariant violation ({rule_id}): {inv_stmt}",
+            })
+            total += 1
+
+    return total
 
 
 class _InjectModeResolver:

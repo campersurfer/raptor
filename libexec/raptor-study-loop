@@ -993,6 +993,7 @@ def main() -> int:
     libexec_dir = Path(__file__).resolve().parent
     prep_bin = str(libexec_dir / "raptor-study-prep")
     run_bin = str(libexec_dir / "raptor-study-run")
+    compile_bin = str(libexec_dir / "raptor-compile-invariants")
 
     identifiers = parsed.identifier or ""
     concepts = parsed.concept or ""
@@ -1099,6 +1100,34 @@ def main() -> int:
                 print(f"study-loop: study-run failed (exit {rc})",
                       file=sys.stderr)
                 exit_code = rc
+
+    # --- Phase 3b: compile invariants into mechanical rules ---
+    dm_path_check = output_dir / "domain-model.json"
+    if exit_code == 0 and dm_path_check.is_file():
+        try:
+            dm_check = json.loads(dm_path_check.read_text(encoding="utf-8"))
+            has_invariants = any(
+                inv.get("statement") and inv.get("negation")
+                and not inv.get("mechanical_rule")
+                for inv in dm_check.get("invariants", [])
+            )
+        except (OSError, json.JSONDecodeError):
+            has_invariants = False
+
+        if has_invariants:
+            compile_cmd = [sys.executable, compile_bin, str(output_dir)]
+            if parsed.model:
+                compile_cmd.extend(["--model", parsed.model])
+            compile_cmd.extend(["--target", str(target)])
+            if parsed.verbose:
+                compile_cmd.append("-v")
+
+            print("study-loop: compiling invariants into rules...",
+                  file=sys.stderr)
+            rc = _run(compile_cmd, verbose=parsed.verbose)
+            if rc != 0:
+                print(f"study-loop: compile-invariants failed (exit {rc})",
+                      file=sys.stderr)
 
     # --- Attach key files, overview, and struct definitions to domain model ---
     dm_path = output_dir / "domain-model.json"
