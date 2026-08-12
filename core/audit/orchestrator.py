@@ -4324,6 +4324,7 @@ class _InjectModeResolver:
 
         self._check_lock_domain = None
         self._check_uninit_leak = None
+        self._check_callback_cross = None
         self._vocab = None
 
         try:
@@ -4348,9 +4349,17 @@ class _InjectModeResolver:
         except Exception:
             logger.debug("inject resolver: uninit_detector unavailable", exc_info=True)
 
+        if joern_server is not None:
+            try:
+                from .callback_lifetime import check_callback_lifetime_cross
+                self._check_callback_cross = check_callback_lifetime_cross
+            except Exception:
+                logger.debug("inject resolver: callback_lifetime unavailable", exc_info=True)
+
         self._available = (
             self._check_lock_domain is not None
             or self._check_uninit_leak is not None
+            or self._check_callback_cross is not None
         )
 
     @property
@@ -4415,6 +4424,34 @@ class _InjectModeResolver:
             except Exception:
                 logger.debug(
                     "uninit_leak inject failed for %s:%s",
+                    file, function, exc_info=True,
+                )
+
+        if self._check_callback_cross is not None and is_c:
+            try:
+                clr = self._check_callback_cross(
+                    self._joern_server, file, function,
+                )
+                if clr.violation_found:
+                    for v in clr.violations:
+                        findings.append({
+                            "file": file,
+                            "function": function,
+                            "detector": "callback_lifetime_cross",
+                            "line": v.register_line or line_start,
+                            "description": v.reasoning,
+                        })
+                    if not clr.violations:
+                        findings.append({
+                            "file": file,
+                            "function": function,
+                            "detector": "callback_lifetime_cross",
+                            "line": line_start,
+                            "description": clr.reasoning,
+                        })
+            except Exception:
+                logger.debug(
+                    "callback_lifetime_cross inject failed for %s:%s",
                     file, function, exc_info=True,
                 )
 
@@ -4792,6 +4829,33 @@ def _run_mechanical_detectors(
             )
     except Exception:
         logger.debug("mechanical: type_confusion failed", exc_info=True)
+
+    try:
+        from .callback_lifetime import check_callback_lifetime_local
+
+        for fp, src in source_texts.items():
+            if not any(fp.endswith(ext) for ext in _C_EXTS):
+                continue
+            for gap in gaps:
+                if gap.get("file") != fp:
+                    continue
+                func_name = gap.get("name", "")
+                line_start = gap.get("line_start", 0)
+                line_end = gap.get("line_end")
+                func_src = _read_raw_source(
+                    config.target_path, fp, line_start, line_end,
+                )
+                if not func_src:
+                    continue
+                clr = check_callback_lifetime_local(func_src)
+                if clr.violation_found:
+                    desc = clr.reasoning
+                    detector = "callback_lifetime_local"
+                    if clr.rcu_kfree_mismatch:
+                        detector = "rcu_kfree_mismatch"
+                    _add(fp, func_name, detector, line_start, desc)
+    except Exception:
+        logger.debug("mechanical: callback_lifetime failed", exc_info=True)
 
     # inject-mode detectors moved to lazy evaluation — see _InjectModeResolver
 
@@ -9874,6 +9938,15 @@ def _pre_loop_smt_screen(
             except Exception:
                 pass
 
+        if not tool_hit and is_c:
+            try:
+                from .callback_lifetime import check_callback_lifetime_local
+                clr = check_callback_lifetime_local(source)
+                if clr.violation_found:
+                    tool_hit = "smt:check-callback-lifetime"
+            except Exception:
+                pass
+
         # check-lock-domain: too noisy for hard-classify (FP on
         # aead_check_key).  Runs in inject-mode via _run_mechanical_detectors
         # instead — results go to the LLM as context, not as verdicts.
@@ -10084,6 +10157,18 @@ def _promote_smt_clean(
             except Exception:
                 logger.debug(
                     "early_release_smt failed for %s:%s",
+                    outcome.file, outcome.function, exc_info=True,
+                )
+
+        if not tool_hit and is_c:
+            try:
+                from .callback_lifetime import check_callback_lifetime_local
+                clr = check_callback_lifetime_local(source)
+                if clr.violation_found:
+                    tool_hit = "smt:check-callback-lifetime"
+            except Exception:
+                logger.debug(
+                    "callback_lifetime failed for %s:%s",
                     outcome.file, outcome.function, exc_info=True,
                 )
 

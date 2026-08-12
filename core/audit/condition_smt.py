@@ -47,6 +47,7 @@ class DomainVocabulary:
     lock_releases: frozenset = field(default_factory=frozenset)
     refcount_gets: frozenset = field(default_factory=frozenset)
     refcount_puts: frozenset = field(default_factory=frozenset)
+    security_fields: frozenset = field(default_factory=frozenset)
 
     @classmethod
     def from_domain_model(
@@ -55,8 +56,6 @@ class DomainVocabulary:
         if not domain_model:
             return cls()
         pairs = domain_model.get("paired_operations", [])
-        if not pairs:
-            return cls()
 
         alloc: set[str] = set()
         dealloc: set[str] = set()
@@ -77,7 +76,7 @@ class DomainVocabulary:
             "semaphore": (lock_acq, lock_rel),
         }
 
-        for pair in pairs:
+        for pair in (pairs or []):
             acquire = pair.get("acquire", "")
             release = pair.get("release", "")
             kind = pair.get("kind", "").lower()
@@ -92,6 +91,17 @@ class DomainVocabulary:
                 buckets[0].add(acq_name)
                 buckets[1].add(rel_name)
 
+        sec_fields: set[str] = set()
+        for name in domain_model.get("security_fields", []):
+            if isinstance(name, str):
+                sec_fields.add(name)
+        for attr in domain_model.get("security_attributes", []):
+            if isinstance(attr, str):
+                sec_fields.add(attr)
+        for attr in domain_model.get("sensitive_fields", []):
+            if isinstance(attr, str):
+                sec_fields.add(attr)
+
         return cls(
             allocators=frozenset(alloc),
             deallocators=frozenset(dealloc),
@@ -99,6 +109,7 @@ class DomainVocabulary:
             lock_releases=frozenset(lock_rel),
             refcount_gets=frozenset(ref_get),
             refcount_puts=frozenset(ref_put),
+            security_fields=frozenset(sec_fields),
         )
 
     @property
@@ -2929,6 +2940,60 @@ class EarlyReleaseResult:
         return d
 
 
+_GUARD_EXIT_RE = re.compile(
+    r"^\s*(?:return\b|goto\s+\w+\s*;)"
+)
+
+
+def _find_scope_unlock(
+    lines: List[str],
+    acquire_line: int,
+    unlock_re: "re.Pattern[str]",
+    search_limit: int = 80,
+) -> Optional[int]:
+    """Find the scope-ending unlock, skipping guard-exit unlocks.
+
+    A guard-exit unlock is one that (a) is at a deeper brace depth than
+    the acquire AND (b) is immediately followed by ``return`` or ``goto``.
+    The function leaves the current path inside a conditional, so this
+    unlock is not the scope boundary for the happy path.
+
+    An unlock at the same brace depth as the acquire, or one not
+    followed by return/goto, is accepted as a scope boundary.
+
+    Returns the line index of the scope-ending unlock, or None.
+    """
+    acquire_depth = 0
+    for k in range(acquire_line + 1):
+        acquire_depth += lines[k].count("{") - lines[k].count("}")
+
+    end = min(len(lines), acquire_line + search_limit)
+    depth = acquire_depth
+
+    for j in range(acquire_line + 1, end):
+        depth += lines[j].count("{") - lines[j].count("}")
+
+        if not unlock_re.search(lines[j]):
+            continue
+
+        if depth > acquire_depth:
+            is_guard = False
+            for look in range(j + 1, min(len(lines), j + 3)):
+                stripped = lines[look].lstrip()
+                if not stripped or stripped.startswith("//") or stripped.startswith("/*"):
+                    continue
+                if _GUARD_EXIT_RE.match(stripped):
+                    is_guard = True
+                break
+
+            if is_guard:
+                continue
+
+        return j
+
+    return None
+
+
 def check_early_release(
     source: str,
     vocab: DomainVocabulary = _EMPTY_VOCAB,
@@ -2954,12 +3019,34 @@ def check_early_release(
     return _check_early_release_c(lines, vocab)
 
 
+_GO_READ_RE = re.compile(
+    r"(\w+)\s*(?::=|=)\s*"
+    r"(?:\w+\.(\w+)(?:\s*\(.*\))?|\w+\[.+\])"
+)
+
+_GO_MULTI_RETURN_RE = re.compile(
+    r"(\w+)\s*,\s*\w+\s*(?::=|=)\s*\w+\.(\w+)\s*\("
+)
+
+
 def _check_early_release_go(lines: List[str]) -> EarlyReleaseResult:
     """Go-specific early lock release detection."""
     lock_re = re.compile(r"(\w+)\.(RLock|Lock)\s*\(\s*\)")
     unlock_re_tpl = r"{name}\.(?:RUnlock|Unlock)\s*\(\s*\)"
-    field_read_re = re.compile(r"(\w+)\s*(?::=|=)\s*\w+\.(\w+)")
     defer_re = re.compile(r"defer\s+(\w+)\.(RUnlock|Unlock)\s*\(\s*\)")
+
+    func_end = len(lines)
+    brace_depth = 0
+    in_func = False
+    for j, ln in enumerate(lines):
+        if "func " in ln and "{" in ln:
+            in_func = True
+            brace_depth = 0
+        if in_func:
+            brace_depth += ln.count("{") - ln.count("}")
+            if brace_depth <= 0 and j > 0:
+                func_end = j
+                break
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
@@ -2974,29 +3061,34 @@ def _check_early_release_go(lines: List[str]) -> EarlyReleaseResult:
         lock_type = lm.group(2)
         unlock_re = re.compile(unlock_re_tpl.format(name=re.escape(lock_name)))
 
-        if defer_re.search(line) or any(
+        has_defer = defer_re.search(line) or any(
             defer_re.search(lines[j])
             for j in range(max(0, i - 1), min(len(lines), i + 3))
-        ):
+        )
+
+        unlock_line = _find_scope_unlock(lines, i, unlock_re, search_limit=50)
+
+        if has_defer and unlock_line is None:
+            unlock_line = func_end
+
+        if unlock_line is None:
             continue
 
         reads_under_lock: List[Tuple[int, str]] = []
-        unlock_line = None
+        for j in range(i + 1, unlock_line):
+            for rx in (_GO_MULTI_RETURN_RE, _GO_READ_RE):
+                fm = rx.search(lines[j])
+                if fm:
+                    reads_under_lock.append((j, fm.group(1)))
+                    break
 
-        for j in range(i + 1, min(len(lines), i + 50)):
-            if unlock_re.search(lines[j]):
-                unlock_line = j
-                break
-            fm = field_read_re.search(lines[j])
-            if fm:
-                reads_under_lock.append((j, fm.group(1)))
-
-        if unlock_line is None or not reads_under_lock:
+        if not reads_under_lock:
             continue
 
+        search_end = min(len(lines), unlock_line + 30)
         for read_line, var_name in reads_under_lock:
             var_use_re = re.compile(r"\b" + re.escape(var_name) + r"\b")
-            for k in range(unlock_line + 1, min(len(lines), unlock_line + 20)):
+            for k in range(unlock_line + 1, search_end):
                 if var_use_re.search(lines[k]):
                     return EarlyReleaseResult(
                         early_release_found=True,
@@ -3062,17 +3154,17 @@ def _check_early_release_c(
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
         )
-        unlock_line = None
+        unlock_line = _find_scope_unlock(lines, acq_line, unlock_re)
+
+        if unlock_line is None:
+            continue
 
         reads_under_lock: List[Tuple[int, str]] = []
 
-        for j in range(acq_line + 1, min(len(lines), acq_line + 80)):
+        for j in range(acq_line + 1, unlock_line):
             stripped = lines[j].lstrip()
             if stripped.startswith("//") or stripped.startswith("/*"):
                 continue
-            if unlock_re.search(lines[j]):
-                unlock_line = j
-                break
             fm = field_read_re.search(lines[j])
             if fm:
                 var_name = fm.group(1)
@@ -3090,7 +3182,7 @@ def _check_early_release_c(
             if fm:
                 reads_under_lock.append((j, fm.group(1)))
 
-        if unlock_line is None or not reads_under_lock:
+        if not reads_under_lock:
             continue
 
         # Only flag when the variable is dereferenced as a pointer
@@ -3292,6 +3384,86 @@ def _check_lock_domain_go(lines: List[str]) -> LockDomainResult:
     return LockDomainResult(reasoning="no cross-lock-domain accesses found")
 
 
+_SECURITY_FIELDS = frozenset({
+    "cred", "uid", "euid", "suid", "fsuid",
+    "gid", "egid", "sgid", "fsgid",
+    "cap_effective", "cap_permitted", "cap_inheritable",
+    "mm", "dumpable",
+    "security", "seccomp",
+    "flags", "personality",
+    "loginuid", "sessionid",
+})
+
+
+def _check_correlated_field_access(
+    lines: List[str],
+    lock_scopes: List[Tuple[int, int, str, str]],
+    vocab: DomainVocabulary = _EMPTY_VOCAB,
+) -> Optional[LockDomainResult]:
+    """Detect security-relevant fields read under different locks.
+
+    Fires when two or more security-relevant fields are each accessed
+    under a different lock type — even when no single field appears
+    under two locks. The concern is atomicity: reading cred under
+    rcu_read_lock and mm under task_lock means the two reads are not
+    atomic with respect to setuid().
+    """
+    if not lock_scopes:
+        return None
+
+    sec_fields = _SECURITY_FIELDS | vocab.security_fields
+    if not sec_fields:
+        return None
+
+    field_re = re.compile(r"(\w+)->(\w+)")
+    security_accesses: Dict[str, List[Tuple[int, str]]] = {}
+
+    for scope_start, scope_end, lock_func, _ in lock_scopes:
+        for j in range(scope_start + 1, scope_end):
+            stripped = lines[j].lstrip()
+            if stripped.startswith("//") or stripped.startswith("/*"):
+                continue
+            for fm in field_re.finditer(lines[j]):
+                fld = fm.group(2)
+                if fld in sec_fields:
+                    security_accesses.setdefault(fld, []).append(
+                        (j, lock_func)
+                    )
+
+    if len(security_accesses) < 2:
+        return None
+
+    by_lock: Dict[str, List[Tuple[str, int]]] = {}
+    for fld, accesses in security_accesses.items():
+        for line_no, lock_func in accesses:
+            by_lock.setdefault(lock_func, []).append((fld, line_no))
+
+    if len(by_lock) < 2:
+        return None
+
+    lock_items = list(by_lock.items())
+    lock1, fields1 = lock_items[0]
+    lock2, fields2 = lock_items[1]
+    f1, l1 = fields1[0]
+    f2, l2 = fields2[0]
+
+    return LockDomainResult(
+        mismatch_found=True,
+        field=f"{f1} + {f2}",
+        lock1=lock1,
+        lock1_line=l1 + 1,
+        lock2=lock2,
+        lock2_line=l2 + 1,
+        access1_line=l1 + 1,
+        access2_line=l2 + 1,
+        reasoning=(
+            f"security-relevant fields '{f1}' and '{f2}' read "
+            f"under different locks ({lock1} and {lock2}) — "
+            f"TOCTOU: concurrent modification between reads"
+        ),
+    )
+
+
 def _check_lock_domain_c(
     lines: List[str],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
@@ -3342,6 +3514,10 @@ def _check_lock_domain_c(
                             f"implies cross-function unlocked writers"
                         ),
                     )
+
+    correlated = _check_correlated_field_access(lines, lock_scopes, vocab)
+    if correlated is not None:
+        return correlated
 
     if len(lock_scopes) < 2:
         return LockDomainResult(
