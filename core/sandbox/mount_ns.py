@@ -310,6 +310,16 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
     # at its original absolute path, so the child sees it exactly where
     # the caller expects. Same two-step bind+remount-ro, and same
     # shadow-skip rule.
+    #
+    # ``_bound_dirs``: directories already bind-mounted into the
+    # namespace — step 4's system dirs plus any directories this loop
+    # binds. When a file path falls under a bound directory, its
+    # mount point already exists (populated by the parent bind) so we
+    # skip the O_CREAT | O_EXCL creation step and go straight to the
+    # overlay bind. This is a precise predicate: we only skip
+    # creation when *we* know the parent was bound, not for arbitrary
+    # pre-existing paths.
+    _bound_dirs: set = set(_SHADOW_PATHS)
     if extra_ro_paths:
         for path in extra_ro_paths:
             if not path or _shadows_per_ns(path):
@@ -333,6 +343,14 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                 if os.path.isdir(path):
                     _step = b"makedirs"
                     os.makedirs(inside, exist_ok=True)
+                    _bound_dirs.add(path)
+                elif any(path.startswith(d + "/") for d in _bound_dirs):
+                    # Mount point already exists — a parent directory
+                    # (e.g. /etc from step 4, or an earlier
+                    # extra_ro_paths entry) was bind-mounted into the
+                    # namespace, which populated this path.  Skip
+                    # creation and proceed to the overlay bind.
+                    pass
                 else:
                     # File bind-mount: create an empty regular file to
                     # serve as the mount point.
