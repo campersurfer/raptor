@@ -96,6 +96,24 @@ def _validate_rule_body(body: str) -> Optional[str]:
     return None
 
 
+_INVALID_WHEN_RE = re.compile(
+    r"^\s*when\s*!=\s*(?:if|assert|while|for|switch)\s*\(.*$",
+    re.MULTILINE,
+)
+
+
+def _fixup_cocci_body(body: str) -> str:
+    """Strip known-invalid ``when`` clauses that LLMs persistently generate.
+
+    ``when != if (...)`` and similar compound-statement negations are
+    invalid SmPL — Coccinelle ``when`` can only negate expressions.
+    Rather than rejecting the whole rule (which the LLM regenerates
+    identically on retry), strip the offending lines so the remaining
+    rule gets a chance at dual control.
+    """
+    return _INVALID_WHEN_RE.sub("", body)
+
+
 def _validate_cocci_body(body: str) -> Optional[str]:
     """Catch known-invalid Coccinelle syntax before invoking spatch.
     Returns an error string on rejection, or None if OK."""
@@ -278,9 +296,7 @@ def _propose_rule(
     if body_err:
         return None, body_err
     if engine == "coccinelle":
-        cocci_err = _validate_cocci_body(body)
-        if cocci_err:
-            return None, cocci_err
+        body = _fixup_cocci_body(body)
     return SynthesisedRule(
         engine=engine,
         rule_id=_make_rule_id(seed, attempt),

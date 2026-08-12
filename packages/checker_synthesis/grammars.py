@@ -193,10 +193,12 @@ cocci.print_main("msg", p)
 
 ### Common patterns for security checkers
 
-Missing NULL check after allocation:
+Missing NULL check after allocation.  Match the allocation site
+only — do NOT add a second `* E` line to match the use/dereference
+(a bare `* E` matches E as a statement, not `*E` the dereference):
 
 ```
-@ rule @
+@ malloc_check @
 expression E;
 position pos;
 @@
@@ -218,19 +220,46 @@ position pos;
 * kfree@pos(E)
 ```
 
-Format string (user-controlled format argument):
+Format string (user-controlled format argument).  Note:
+`expression E` matches string literals too, so `printf@pos(E)`
+fires on `printf("hello")`.  The test_negative fixture must
+differ structurally — e.g. use `printf("%s", var)` (two args)
+vs the violation `printf(var)` (one arg).  Alternatively, use a
+`constant` metavariable in a separate rule with `depends on`:
 
 ```
-@ rule @
+@ safe @
+constant C;
+@@
+printf(C, ...)
+
+@ format_string_violation depends on !safe @
 expression E;
 position pos;
 @@
 (
-* snprintf@pos(..., E)
+* printf@pos(E)
+|
+* printf@pos(E, ...)
+)
+```
+
+The simple (no depends-on) form for when fixtures differ in
+argument count:
+
+```
+@ format_string_violation @
+expression E;
+position pos;
+@@
+(
+* printf@pos(E)
+|
+* fprintf@pos(..., E)
 |
 * sprintf@pos(..., E)
 |
-* printf@pos(E)
+* snprintf@pos(..., E)
 )
 ```
 
@@ -452,8 +481,75 @@ Taint mode fields:
 When to use taint mode vs pattern mode:
 - Taint mode: when the bug is a DATA FLOW from untrusted input to
   a dangerous sink (SQL injection, XSS, command injection, SSRF).
+  The source and sink are typically in DIFFERENT functions or scopes.
 - Pattern mode: when the bug is a STRUCTURAL pattern (weak hash,
-  hardcoded secret, missing check, use of deprecated API).
+  hardcoded secret, missing check, use of deprecated API, double
+  free, format string argument).
+
+**Do NOT use taint mode for local/single-function patterns.**  If the
+violation is "X without nearby Y" or "X followed by X" within one
+function, use `patterns:` with ellipsis and `pattern-not` /
+`pattern-not-inside`.  Taint mode has higher overhead, needs proper
+source→sink propagation through assignments, and fails silently on
+minimal code snippets.
+
+Missing null check (pattern mode — correct).  Match the
+ALLOCATION site and exclude when a guard is present.  Do NOT
+try to also match the dereference — expressions like `*$PTR`
+or `$PTR[$IDX]` are sub-expressions, not statements, and won't
+match in statement position:
+
+```yaml
+rules:
+- id: malloc-no-null-check
+  languages: [c]
+  severity: HIGH
+  message: malloc result used without null check
+  patterns:
+    - pattern: $PTR = malloc(...);
+    - pattern-not-inside: |
+        $PTR = malloc(...);
+        ...
+        if ($PTR != NULL) { ... }
+    - pattern-not-inside: |
+        $PTR = malloc(...);
+        ...
+        if ($PTR) { ... }
+    - pattern-not-inside: |
+        $PTR = malloc(...);
+        ...
+        if (!$PTR) { ... }
+```
+
+Format string (pattern mode — correct):
+
+```yaml
+rules:
+- id: printf-format-string
+  languages: [c]
+  severity: HIGH
+  message: non-literal format string
+  patterns:
+    - pattern-either:
+      - pattern: printf($FMT, ...)
+      - pattern: printf($FMT)
+    - pattern-not: printf("...", ...)
+    - pattern-not: printf("...")
+```
+
+Double free (pattern mode — correct):
+
+```yaml
+rules:
+- id: double-free
+  languages: [c]
+  severity: HIGH
+  message: pointer freed twice without reassignment
+  pattern: |
+    free($PTR);
+    ...
+    free($PTR);
+```
 
 Each source/sink/sanitizer entry accepts `exact` (bool) and
 `by-side-effect` (bool). Sources default to `exact: false`
@@ -538,6 +634,36 @@ rules:
 
 ### Syntax pitfalls (AVOID these)
 
+- **C/C++ multi-line patterns: ALWAYS include semicolons.**
+  `$PTR = malloc(...)` (no semicolon) in a multi-line `pattern-not-inside`
+  causes Semgrep to mis-parse the statement boundary, making the
+  exclusion match everything and suppressing all results. Always write
+  `$PTR = malloc(...);` with the trailing semicolon.
+- **In multi-line patterns, each line must be a full STATEMENT, not
+  a sub-expression.** `$PTR[$IDX]` or `*$PTR` alone are expressions,
+  not statements — they silently fail to match in statement position.
+  This is the #1 cause of "rule did not match positive test fixture."
+  ```yaml
+  # WRONG — *$PTR is a sub-expression, not a statement:
+  pattern: |
+    $PTR = malloc(...);
+    ...
+    *$PTR
+  # ALSO WRONG — missing semicolons in pattern-not-inside:
+  patterns:
+    - pattern: $PTR = malloc(...)
+    - pattern-not-inside: |
+        $PTR = malloc(...)
+        ...
+        if ($PTR != NULL) { ... }
+  # RIGHT — match the call site, exclude the guard, semicolons present:
+  patterns:
+    - pattern: $PTR = malloc(...);
+    - pattern-not-inside: |
+        $PTR = malloc(...);
+        ...
+        if ($PTR != NULL) { ... }
+  ```
 - `pattern` and `patterns` are mutually exclusive at the same level.
   Use `patterns:` with a list when combining, or `pattern:` alone.
 - **`pattern-not` / `pattern-not-inside` at the top level are
