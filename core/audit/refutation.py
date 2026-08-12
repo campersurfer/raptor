@@ -170,7 +170,9 @@ def _signal_reachable_set(
     for fentry in files:
         path = fentry.get("path", "")
         for item in fentry.get("items", []):
-            func_to_file[item["name"]] = path
+            name = item.get("name", "")
+            if name:
+                func_to_file[name] = path
         calls = _get_calls(fentry)
         for c in calls:
             caller = c.get("caller", "")

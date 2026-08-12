@@ -1022,7 +1022,7 @@ class LLMClient:
         ts = data.get("timestamp")
         if not isinstance(ts, (int, float)):
             return False
-        return (time.monotonic() - ts) > ttl
+        return (time.time() - ts) > ttl
 
     def _get_cached_response(self, cache_key: str) -> Optional[str]:
         """Retrieve cached response if available."""
@@ -1061,7 +1061,7 @@ class LLMClient:
                     "model": response.model,
                     "provider": response.provider,
                     "tokens_used": response.tokens_used,
-                    "timestamp": time.monotonic(),
+                    "timestamp": time.time(),
                 }, mode=0o600)
             # Reset failure counter on a successful write — recovery
             # from a transient EBUSY shouldn't carry the strike count
