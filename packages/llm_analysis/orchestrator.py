@@ -937,13 +937,11 @@ def orchestrate(
             # path was running with weaker defences than the
             # primary path even though the same Claude model was
             # behind it.
-            _external_failures = list(analysis_results)
             analysis_results = dispatch_task(
                 AnalysisTask(profile=profile, allow_unreachable=allow_unreachable),
         findings, dispatch_fn, role_resolution,
                 results_by_id, cost_tracker, max_parallel,
             )
-            analysis_results = _external_failures + analysis_results
 
     # Index results for downstream tasks
     # Multi-model: multiple results per finding — pick best as primary,

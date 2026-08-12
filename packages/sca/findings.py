@@ -350,9 +350,20 @@ class _Sortable:
         self.v = value
 
     def __lt__(self, other: "_Sortable") -> bool:
+        self_ok = other_ok = True
         try:
             return version_compare(self.eco, self.v, other.v) < 0
         except VersionError:
+            try:
+                version_compare(self.eco, self.v, self.v)
+            except VersionError:
+                self_ok = False
+            try:
+                version_compare(other.eco, other.v, other.v)
+            except VersionError:
+                other_ok = False
+            if self_ok != other_ok:
+                return other_ok
             return self.v < other.v
 
 

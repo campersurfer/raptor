@@ -322,12 +322,14 @@ def _build_ollama_config() -> Optional['ModelConfig']:
         return None
     preferred = ['mistral', 'qwen', 'codellama', 'llama', 'gemma', 'deepseek-coder', 'deepseek']
     selected_model = ollama_models[0]
+    found = False
     for pref in preferred:
         for model in ollama_models:
             if pref in model.lower():
                 selected_model = model
+                found = True
                 break
-        if selected_model != ollama_models[0]:
+        if found:
             break
     ollama_base = _validate_ollama_url(RaptorConfig.OLLAMA_HOST)
     # Look up the actual limits when known. Pre-fix the log claimed
