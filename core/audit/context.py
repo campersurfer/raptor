@@ -3035,17 +3035,10 @@ def _load_project_context(
 
 # ── Model-aware observation budget ────────────────────────────────────
 
-_MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
-    "claude-mythos-5": 1_000_000,
-    "claude-opus-5": 1_000_000,
-    "claude-opus-4-8": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
-    "claude-sonnet-5": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
-    "claude-haiku-4-5": 200_000,
-    "gpt-4o": 128_000,
-}
+# Default context window used when model_data lookup fails (unknown model
+# or import error).  Conservative — 200K is the smallest current-gen
+# Anthropic window (Haiku 4.5).
+_DEFAULT_CONTEXT_WINDOW = 200_000
 
 
 def _running_avg_tokens(
@@ -3066,12 +3059,11 @@ def _observation_budget_for_model(
     observations: Optional[List[Dict[str, str]]] = None,
 ) -> int:
     """Compute observation budget based on model context window."""
-    window = _MODEL_CONTEXT_WINDOWS.get(model, 200_000)
+    from core.llm.model_data import context_window_for
     try:
-        from core.llm.model_data import context_window_for
         window = context_window_for(model)
-    except Exception:
-        pass
+    except KeyError:
+        window = _DEFAULT_CONTEXT_WINDOW
     available = window - 20_000
     avg_tokens = _running_avg_tokens(observations or [])
     if avg_tokens > 0:
