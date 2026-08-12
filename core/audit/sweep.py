@@ -769,7 +769,7 @@ def _run_smt_verb_inner(
                     tool="smt", file_path=file_path,
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
-                    detail="overflow feasible but no source-level guards on operands",
+                    details={"summary": "overflow feasible but no source-level guards on operands"},
                 )
         elif verb == "check-oob":
             if _lang_has_overflow_safety(file_path):

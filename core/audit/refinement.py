@@ -10,7 +10,9 @@ run a focused tool sweep and feed any discovered flows back to the LLM.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
@@ -314,12 +316,16 @@ def dispatch_suggestion(
                 suggestion, ctx.get("file", ""),
             )
             if rule_path:
-                result = _dispatch_semgrep(
-                    rule_path, outcome, ctx, config,
-                )
-                if result:
-                    results.append(result)
-                    return results
+                try:
+                    result = _dispatch_semgrep(
+                        rule_path, outcome, ctx, config,
+                    )
+                    if result:
+                        results.append(result)
+                        return results
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(rule_path)
 
     except ImportError:
         logger.debug("hypothesis_mapping import failed", exc_info=True)

@@ -222,7 +222,7 @@ def detect_library_version(
     detectors = [
         ("requirements.txt", _parse_requirements_txt),
         ("setup.cfg", _parse_requirements_txt),
-        ("Pipfile", _parse_requirements_txt),
+        ("Pipfile.lock", _parse_pipfile_lock),
         ("package.json", _parse_package_json),
         ("go.mod", _parse_go_mod),
         ("Cargo.toml", _parse_cargo_toml),
@@ -252,6 +252,19 @@ def _parse_requirements_txt(content: str, library: str) -> Optional[str]:
                 if name.strip().lower() == library.lower():
                     return version.strip().split(",")[0].strip()
                 break
+    return None
+
+
+def _parse_pipfile_lock(content: str, library: str) -> Optional[str]:
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None
+    for section in ("default", "develop"):
+        entry = data.get(section, {}).get(library)
+        if entry and isinstance(entry, dict):
+            version = entry.get("version", "")
+            return version.lstrip("=") if version else None
     return None
 
 

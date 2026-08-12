@@ -66,7 +66,10 @@ def detect_sccs(adj: Dict[str, List[str]]) -> List[SCC]:
                 if w == v:
                     break
             frozen = frozenset(members)
-            result.append(SCC(members=frozen, is_cycle=len(frozen) > 1))
+            is_cycle = len(frozen) > 1 or (
+                len(frozen) == 1 and v in adj.get(v, [])
+            )
+            result.append(SCC(members=frozen, is_cycle=is_cycle))
 
     for node in sorted(all_nodes):
         if node not in indices:

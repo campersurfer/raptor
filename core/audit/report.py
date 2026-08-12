@@ -10,9 +10,11 @@ store.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -82,8 +84,17 @@ def write_report(report: Dict[str, Any], out_dir: Path) -> Path:
     """Write the report to audit-report.json."""
     path = out_dir / "audit-report.json"
     serializable = {k: v for k, v in report.items() if k != "summary"}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(serializable, f, indent=2)
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=out_dir, prefix=".audit-report-", suffix=".json",
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(serializable, f, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
     return path
 
 

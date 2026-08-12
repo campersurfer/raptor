@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -66,7 +67,7 @@ def load_exploit_feedback(out_dir: Path, load_feedback_state, FeedbackState):
     for path in candidates:
         if path.is_file():
             state = load_feedback_state(path)
-            if state.outcomes:
+            if state.source_precision or state.checker_precision:
                 return state
     return FeedbackState()
 
@@ -145,7 +146,7 @@ def _build_taint_approx(
         return None
 
     scope_prefixes = (
-        tuple(str((target_path / s).resolve()) for s in scope)
+        tuple(str((target_path / s).resolve()) + os.sep for s in scope)
         if scope else None
     )
 

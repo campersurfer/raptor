@@ -499,7 +499,7 @@ def _resolve_vuln_type(outcome: ReviewOutcome, cwe: str) -> str:
 def _extract_cwe(outcome: ReviewOutcome) -> str:
     """Extract CWE from the review result."""
     if outcome.review_result:
-        return outcome.review_result.get("cwe", "")
+        return outcome.review_result.get("cwe") or outcome.review_result.get("cwe_class", "")
     return ""
 
 
