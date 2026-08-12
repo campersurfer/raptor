@@ -82,8 +82,9 @@ def _validate_seed_path(file_path: str) -> Optional[str]:
 
 
 def _validate_rule_body(body: str) -> Optional[str]:
-    """Reject rule bodies with control chars or oversized lines.
-    Returns an error string on rejection, or None if OK."""
+    """Reject rule bodies with control chars, oversized lines, or
+    known-invalid syntax.  Returns an error string on rejection, or
+    None if OK."""
     if "\x00" in body:
         return "rule body contains null byte"
     for i, line in enumerate(body.split("\n"), 1):
@@ -92,6 +93,18 @@ def _validate_rule_body(body: str) -> Optional[str]:
                 f"rule body line {i} exceeds {_RULE_BODY_MAX_LINE} chars "
                 f"({len(line)})"
             )
+    return None
+
+
+def _validate_cocci_body(body: str) -> Optional[str]:
+    """Catch known-invalid Coccinelle syntax before invoking spatch.
+    Returns an error string on rejection, or None if OK."""
+    if re.search(r"when\s*!=\s*if\s*\(", body):
+        return (
+            "invalid SmPL: 'when != if (...)' — when clauses cannot "
+            "negate compound statements; use 'when != E == NULL' or "
+            "'when != !E' instead"
+        )
     return None
 
 
@@ -264,6 +277,10 @@ def _propose_rule(
     body_err = _validate_rule_body(body)
     if body_err:
         return None, body_err
+    if engine == "coccinelle":
+        cocci_err = _validate_cocci_body(body)
+        if cocci_err:
+            return None, cocci_err
     return SynthesisedRule(
         engine=engine,
         rule_id=_make_rule_id(seed, attempt),

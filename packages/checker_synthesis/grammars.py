@@ -25,13 +25,15 @@ A rule has a metavariable header between @@ delimiters, then a body:
 <pattern body>
 ```
 
-Anonymous rules omit the name:
+Anonymous rules omit the name, but RAPTOR's harness CANNOT inject
+structured output into anonymous rules — they silently produce
+zero matches. **ALWAYS use a named rule.**
 
 ```
+@@              -- WRONG: anonymous, will silently produce 0 matches
+expression E;
 @@
-<metavariable declarations>
-@@
-<pattern body>
+foo(E)
 ```
 
 ### Metavariable types
@@ -246,6 +248,38 @@ position pos;
 - String constants use `"..."` — Coccinelle matches C string literal
   syntax, not SmPL-level regex.
 - Parentheses in disjunctions ( | ) must start in column 0.
+- **ALWAYS use a named rule** (`@ rule_name @`), never an anonymous
+  rule (`@@`). RAPTOR's harness cannot inject structured output
+  reporting into anonymous rules — they silently produce zero matches
+  even when spatch finds patterns. Example:
+  ```
+  @ check_malloc @          -- correct: named rule
+  expression E;
+  position pos;
+  @@
+  * E@pos = malloc(...)
+  ```
+- **`when !=` clauses can only negate EXPRESSIONS and simple
+  statements, not compound statements.** `when != E == NULL` is valid
+  (negates an expression). `when != if (E)` is INVALID and causes a
+  parse error. To exclude null-checked paths, use:
+  ```
+  ... when != E == NULL
+      when != E != NULL
+      when != !E
+  ```
+  Do NOT write `when != if (E)` — that causes "minus: parse error".
+- **`<+...+>` (one-or-more nest) is rarely needed and commonly
+  misused.** Stick to `...` (zero-or-more) for statement sequences
+  and `when` clauses for constraints.
+- **Prefer the simplest rule that works.** A single pattern with one
+  `*` context-mode line and a `when !=` clause is almost always
+  better than nested disjunctions or multi-rule dependencies. If the
+  pattern matches `foo(E, E, ...)` (same metavariable at two argument
+  positions), that enforces syntactic identity — no disjunction needed.
+- In context mode (`*`), the `*` prefix goes on the line you want to
+  REPORT, not on every line in the rule. Multiple `*` lines within a
+  single disjunction alternative cause parse errors.
 """
 
 SEMGREP_GRAMMAR = r"""\
@@ -574,5 +608,23 @@ rules:
   `languages: [javascript]` silently produces zero matches on
   Python files (no error).
 - Rule IDs must be kebab-case with no spaces or special characters.
+- **`focus-metavariable` SILENTLY FAILS if the named metavariable
+  does not appear in the accompanying pattern.** The metavariable
+  must be BOUND — i.e. actually present as `$NAME` in the pattern
+  text. Common mistake:
+  ```yaml
+  pattern-sources:
+    - patterns:
+      - pattern: malloc(...)
+      - focus-metavariable: $ALLOC    # WRONG — $ALLOC not in pattern
+  ```
+  Fix: either add the metavariable to the pattern
+  (`$ALLOC = malloc(...)`) or drop `focus-metavariable` entirely.
+  When a simple `pattern: malloc(...)` suffices as a taint source,
+  no `focus-metavariable` or `patterns:` wrapper is needed.
+- **Prefer the simplest rule that works.** A single `pattern:` is
+  better than `patterns:` wrapping one item. A bare source/sink is
+  better than a `patterns:` + `pattern-either:` + `focus-metavariable`
+  stack. Unnecessary nesting is the #1 cause of silent failures.
 """
 
