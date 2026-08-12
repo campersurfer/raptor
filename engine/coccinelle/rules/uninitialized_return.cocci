@@ -19,6 +19,7 @@ type T;
 
   T err@p_decl;
 <... when != err = ...;
+     when != &err
      when any
 (
 * return@p_ret err;

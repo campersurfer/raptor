@@ -47,7 +47,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     # Integer
     "CWE-190": {
         "smt": "check-overflow",
-        "cocci": None,
+        "cocci": "integer_overflow_alloc.cocci",
         "joern": False,
         "codeql": "cpp/integer-overflow",
         "sinks": [],
@@ -113,7 +113,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     # Format string
     "CWE-134": {
         "smt": None,
-        "cocci": None,
+        "cocci": "format_string.cocci",
         "joern": True,
         "codeql": "cpp/non-constant-format",
         "sinks": ["printf", "fprintf", "sprintf", "syslog"],
@@ -144,7 +144,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     },
     "CWE-367": {
         "smt": "check-toctou",
-        "cocci": None,
+        "cocci": "toctou_stat_open.cocci",
         "joern": False,
         "codeql": None,
         "sinks": [],
@@ -193,7 +193,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     # Resource management
     "CWE-401": {
         "smt": "check-resource-leak",
-        "cocci": None,
+        "cocci": "resource_leak_err.cocci",
         "joern": False,
         "codeql": "cpp/resource-not-released-in-destructor",
         "sinks": [],
@@ -208,9 +208,17 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
     # Integer narrowing
     "CWE-681": {
         "smt": "check-integer-narrowing",
-        "cocci": None,
+        "cocci": "sign_extension_widen.cocci",
         "joern": False,
         "codeql": "cpp/integer-overflow",
+        "sinks": [],
+    },
+    # Uninitialised variable
+    "CWE-457": {
+        "smt": None,
+        "cocci": "uninitialized_return.cocci",
+        "joern": False,
+        "codeql": "cpp/uninitialized-local",
         "sinks": [],
     },
 }
