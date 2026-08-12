@@ -289,8 +289,8 @@ def _merge_outcomes(sec_outcomes, bf_outcomes):
                 sec_ev = sec.evidence_tool or ""
                 bf_ev = bf.evidence_tool or ""
                 has_evidence = (
-                    _has_any_mechanical_evidence(sec_ev)
-                    or _has_any_mechanical_evidence(bf_ev)
+                    _is_verification_evidence(sec_ev)
+                    or _is_verification_evidence(bf_ev)
                 )
                 if not has_evidence:
                     use_max = False
@@ -298,7 +298,7 @@ def _merge_outcomes(sec_outcomes, bf_outcomes):
             if use_max:
                 winner = copy(bf if br > sr else sec)
             else:
-                winner = copy(sec if sr >= br else bf)
+                winner = copy(sec if sr <= br else bf)
                 if winner.status == "finding":
                     winner.status = "suspicious"
 

@@ -1152,19 +1152,21 @@ class TestEnsembleMerge:
         assert merged[0].status == "finding"
         assert merged[0].cost_usd == 0.02
 
-    def test_suspicious_without_agreement_kept(self):
+    def test_suspicious_without_agreement_demoted(self):
+        """Disagree without evidence: conservative merge picks lower."""
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome("a.c", "f", "suspicious")]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
-    def test_suspicious_with_detection_evidence_kept(self):
+    def test_suspicious_with_detection_evidence_demoted(self):
+        """Detection-only evidence is not verification — conservative merge picks lower."""
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome("a.c", "f", "suspicious", evidence="smt:check")]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
     def test_suspicious_with_verification_evidence_kept(self):
         from core.audit.pipeline import _merge_outcomes
@@ -1195,8 +1197,8 @@ class TestEnsembleMerge:
 
     # ── Bug-class-aware disagree demotion ────────────────────────
 
-    def test_disagree_no_evidence_caps_at_suspicious(self):
-        """Disagreement without evidence keeps higher, capped at suspicious."""
+    def test_disagree_no_evidence_picks_lower(self):
+        """Disagreement without evidence: conservative merge picks lower."""
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome(
@@ -1204,10 +1206,10 @@ class TestEnsembleMerge:
             hypothesis="race condition in refcount update",
         )]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
-    def test_disagree_finding_no_evidence_caps_at_suspicious(self):
-        """Finding disagreement without evidence caps at suspicious."""
+    def test_disagree_finding_no_evidence_picks_lower(self):
+        """Finding disagreement without evidence: conservative merge picks lower."""
         from core.audit.pipeline import _merge_outcomes
         sec = [self._make_outcome("a.c", "f", "clean")]
         bf = [self._make_outcome(
@@ -1215,7 +1217,7 @@ class TestEnsembleMerge:
             hypothesis="privilege escalation via uid check",
         )]
         merged = _merge_outcomes(sec, bf)
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
     def test_disagree_with_evidence_keeps_max(self):
         """Disagreement WITH evidence keeps higher status."""

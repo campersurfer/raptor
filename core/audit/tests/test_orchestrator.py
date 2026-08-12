@@ -3866,17 +3866,17 @@ class TestPromoteHypothesisInconsistent:
         _promote_hypothesis_inconsistent(r)
         assert r.outcomes[0].status == "suspicious"
 
-    def test_skips_medium_confidence_hypothesis(self):
-        """Medium-confidence hypotheses don't override clean verdict."""
+    def test_promotes_medium_confidence_hypothesis(self):
+        """Medium-confidence hypotheses also trigger promotion."""
         o = self._outcome(
             hypotheses=[{"mechanism": "oob", "confidence": "medium"}],
         )
         r = self._result([o])
         _promote_hypothesis_inconsistent(r)
-        assert r.outcomes[0].status == "clean"
+        assert r.outcomes[0].status == "suspicious"
 
-    def test_skips_high_confidence_with_counter(self):
-        """High-confidence but countered hypotheses don't promote."""
+    def test_promotes_high_confidence_with_counter(self):
+        """Counter text does not suppress promotion."""
         o = self._outcome(
             hypotheses=[{
                 "mechanism": "oob",
@@ -3886,7 +3886,7 @@ class TestPromoteHypothesisInconsistent:
         )
         r = self._result([o])
         _promote_hypothesis_inconsistent(r)
-        assert r.outcomes[0].status == "clean"
+        assert r.outcomes[0].status == "suspicious"
 
     def test_skips_gate_demoted_outcome(self):
         o = self._outcome(

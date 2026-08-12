@@ -267,7 +267,7 @@ class TestPipelinedMerge:
         assert not _needs_second_pass(o)
 
     def test_merge_demotes_without_evidence(self):
-        """Disagree without evidence: higher result capped at suspicious."""
+        """Disagree without evidence: conservative merge picks lower result."""
         sec = _MockOutcome(status="clean", file="a.c", function="foo")
         bf = _MockOutcome(
             status="finding", file="a.c", function="foo",
@@ -275,7 +275,7 @@ class TestPipelinedMerge:
         )
         merged = _merge_outcomes([sec], [bf])
         assert len(merged) == 1
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
     def test_merge_keeps_finding_with_evidence(self):
         sec = _MockOutcome(status="clean", file="a.c", function="foo")
@@ -300,8 +300,8 @@ class TestPipelinedMerge:
         merged = _merge_outcomes([sec], [bf])
         assert merged[0].cost_usd == pytest.approx(0.08)
 
-    def test_merge_keeps_detection_only_evidence(self):
-        """Detection-role evidence (e.g. smt:check-lock-domain) prevents demotion."""
+    def test_merge_demotes_detection_only_evidence(self):
+        """Detection-role evidence is not verification — conservative merge picks lower."""
         sec = _MockOutcome(
             status="suspicious", file="a.c", function="foo",
             hypothesis="lock issue",
@@ -309,10 +309,10 @@ class TestPipelinedMerge:
         )
         bf = _MockOutcome(status="clean", file="a.c", function="foo")
         merged = _merge_outcomes([sec], [bf])
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
     def test_merge_demotes_llm_claimed_evidence(self):
-        """llm-claimed evidence is not mechanical — caps at suspicious."""
+        """llm-claimed evidence is not verification — conservative merge picks lower."""
         sec = _MockOutcome(
             status="suspicious", file="a.c", function="foo",
             hypothesis="lock issue",
@@ -320,7 +320,7 @@ class TestPipelinedMerge:
         )
         bf = _MockOutcome(status="clean", file="a.c", function="foo")
         merged = _merge_outcomes([sec], [bf])
-        assert merged[0].status == "suspicious"
+        assert merged[0].status == "clean"
 
 
 # ── Fix B: counter-hypothesis veto ─────────────────────────────────
