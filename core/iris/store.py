@@ -242,7 +242,7 @@ def evict_stale(
     kept = []
     evicted = 0
     for spec in specs:
-        if spec.file in current_files or TIER_RANK.get(spec.evidence_tier, 0) >= TIER_RANK.get(keep_above, 0):
+        if (spec.file and spec.file in current_files) or TIER_RANK.get(spec.evidence_tier, 0) >= TIER_RANK.get(keep_above, 0):
             kept.append(spec)
         else:
             evicted += 1

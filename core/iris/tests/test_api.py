@@ -253,7 +253,10 @@ class TestResolveOutDir:
         result = _resolve_out_dir(tmp_path)
         assert result == tmp_path
 
-    def test_none_returns_none_when_no_project(self):
+    def test_none_returns_none_when_no_project(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.run.output._resolve_active_project", lambda: None,
+        )
         result = _resolve_out_dir(None)
         assert result is None
 

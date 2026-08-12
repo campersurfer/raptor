@@ -100,7 +100,7 @@ def identify_candidates(
     for gap in gaps:
         name = gap.get("name", "")
         file = gap.get("file", "")
-        if not file:
+        if not file or not name:
             continue
         key = f"{file}:{name}"
         name_lower = name.lower()
