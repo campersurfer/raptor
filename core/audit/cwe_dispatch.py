@@ -118,6 +118,22 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "codeql": "cpp/non-constant-format",
         "sinks": ["printf", "fprintf", "sprintf", "syslog"],
     },
+    # Use-after-free / double-free
+    "CWE-416": {
+        "smt": "check-early-release",
+        "cocci": None,
+        "joern": True,
+        "codeql": "cpp/use-after-free",
+        "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree",
+                  "kfree_sensitive", "devm_kfree"],
+    },
+    "CWE-415": {
+        "smt": "check-early-release",
+        "cocci": None,
+        "joern": True,
+        "codeql": "cpp/use-after-free",
+        "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree"],
+    },
     # Concurrency
     "CWE-362": {
         "smt": "check-lock-domain",

@@ -1251,6 +1251,40 @@ def review_one_function(
             hit.rule_id,
         )
 
+    # ── Anti-self-refutation gate (promotion: clean → suspicious) ────
+    if outcome.status == "clean":
+        try:
+            from .refutation import rescue_self_refuted
+
+            rv = rescue_self_refuted(outcome)
+            if rv is not None:
+                append_audit_log(config.out_dir, {
+                    "action": "refutation_gate",
+                    "gate": rv.gate,
+                    "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
+                    "file": outcome.file,
+                    "function": outcome.function,
+                    "reason": rv.reason,
+                    "demote_to": rv.demote_to,
+                    "original_status": outcome.status,
+                    "applied": True,
+                })
+                logger.info(
+                    "anti-self-refutation %s:%s — %s → %s",
+                    outcome.file, outcome.function,
+                    rv.reason, rv.demote_to,
+                )
+                outcome.status = rv.demote_to
+                outcome.body = (
+                    f"[{rv.gate}: {rv.reason}]\n\n" + outcome.body
+                )
+        except Exception:
+            logger.debug(
+                "anti-self-refutation error for %s:%s",
+                outcome.file, outcome.function,
+                exc_info=True,
+            )
+
     # ── Clean check ───────────────────────────────────────────────────
     if config.clean_check and outcome.status == "clean":
         try:
@@ -6532,6 +6566,41 @@ def _review_items(
             except Exception:
                 logger.debug(
                     "refutation gate error for %s:%s (batch)",
+                    gap.get("file"), gap.get("name"),
+                    exc_info=True,
+                )
+
+        # ── Anti-self-refutation (batch path) ────────────────────
+        if outcome.status == "clean":
+            try:
+                from .refutation import rescue_self_refuted
+
+                rv = rescue_self_refuted(outcome)
+                if rv is not None:
+                    append_audit_log(config.out_dir, {
+                        "action": "refutation_gate",
+                        "gate": rv.gate,
+                        "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
+                        "file": outcome.file,
+                        "function": outcome.function,
+                        "reason": rv.reason,
+                        "demote_to": rv.demote_to,
+                        "original_status": outcome.status,
+                        "applied": True,
+                        "batch": True,
+                    })
+                    logger.info(
+                        "anti-self-refutation %s:%s — %s → %s (batch)",
+                        outcome.file, outcome.function,
+                        rv.reason, rv.demote_to,
+                    )
+                    outcome.status = rv.demote_to
+                    outcome.body = (
+                        f"[{rv.gate}: {rv.reason}]\n\n" + outcome.body
+                    )
+            except Exception:
+                logger.debug(
+                    "anti-self-refutation error for %s:%s (batch)",
                     gap.get("file"), gap.get("name"),
                     exc_info=True,
                 )
