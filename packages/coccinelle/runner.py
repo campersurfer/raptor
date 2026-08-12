@@ -688,7 +688,7 @@ def _inject_harness(rule_text: str, rule_name: str) -> str:
     # silently emitting partial / wrong data.
     # `re.ASCII` for the same identifier-scope reason as above —
     # rule names are Python identifiers in the harness.
-    rule_names = re.findall(r"@\s*(\w+)\s*@", rule_text, re.ASCII)
+    rule_names = re.findall(r"@[ \t]*(\w+)[ \t]*@", rule_text, re.ASCII)
     if len(set(rule_names)) > 1:
         # Multi-rule file — harness injection isn't safe.
         # Caller handles the no-output case via spatch's
