@@ -263,7 +263,9 @@ def wrap_tool_result(content: str, tool_name: str) -> str:
     """
     nonce = _generate_nonce()
     safe_origin = _xml_attr_escape(tool_name)
-    safe_content = neutralize_tag_forgery(content)
+    safe_content = _strip_autofetch_markup(content)
+    safe_content = _escape_for_envelope(safe_content)
+    safe_content = neutralize_tag_forgery(safe_content)
     return (
         f'<untrusted-{nonce} kind="tool-result" origin="{safe_origin}">\n'
         f'{safe_content}\n'

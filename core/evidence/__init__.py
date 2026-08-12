@@ -422,15 +422,15 @@ def format_evidence_prose(
         )
 
     for alert in record.codeql_alerts:
-        rule_id = alert.get("rule_id", "unknown")
-        message = alert.get("message", "")[:200]
+        rule_id = _safe_name(alert.get("rule_id", "unknown"))
+        message = _safe_text(alert.get("message", ""), 200)
         line = alert.get("line", 0)
         lines.append(
             f"- CodeQL {rule_id} at line {line}: {message}"
         )
 
     for hit in record.semgrep_hits:
-        rule_id = hit.get("rule_id", "unknown")
+        rule_id = _safe_name(hit.get("rule_id", "unknown"))
         line = hit.get("line", 0)
         lines.append(
             f"- Semgrep {rule_id} matched at line {line}"

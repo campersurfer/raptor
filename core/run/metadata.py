@@ -224,8 +224,11 @@ def start_run(output_dir: Path, command: str,
     Also marks any abandoned runs from the same session and command type as
     failed (handles the Esc-then-retry scenario).
     """
+    from core.run.safe_io import safe_run_mkdir
+
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    safe_run_mkdir(output_dir)
 
     session_pid = _get_session_pid()
 
