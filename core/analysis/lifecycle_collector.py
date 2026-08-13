@@ -131,7 +131,7 @@ def collect_field_sites_from_source(
 
         if is_write:
             writes.append(lineno)
-        elif is_access:
+        if is_access:
             reads.append(lineno)
 
     return {"writes": writes, "reads": reads}

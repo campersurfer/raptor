@@ -448,8 +448,13 @@ def _signatures_compatible(
             return False
 
         if params_a and params_b:
-            type_a = params_a[0][1] if len(params_a[0]) > 1 else None
-            type_b = params_b[0][1] if len(params_b[0]) > 1 else None
+            p0a, p0b = params_a[0], params_b[0]
+            type_a = (p0a.get("type") if isinstance(p0a, dict)
+                      else p0a[1] if isinstance(p0a, (list, tuple)) and len(p0a) > 1
+                      else None)
+            type_b = (p0b.get("type") if isinstance(p0b, dict)
+                      else p0b[1] if isinstance(p0b, (list, tuple)) and len(p0b) > 1
+                      else None)
             if type_a and type_b and type_a != type_b:
                 return False
 

@@ -32,7 +32,7 @@ DANGEROUS_LIBC_SINKS: FrozenSet[str] = frozenset({
 _CONDUIT_CALL_RE = re.compile(
     r"\b(?:memcpy|memmove|strcpy|strncpy|strcat|strncat|"
     r"sprintf|snprintf|vsprintf|vsnprintf|"
-    r"gets|system|popen|execve?|execvpe?|execlpe?|"
+    r"f?gets|system|popen|execle?|execve?|execvpe?|execlpe?|"
     r"scanf|sscanf|fscanf|"
     r"sqlite3_exec|mysql_query)\s*\(",
 )
@@ -156,7 +156,7 @@ def is_entry_unreachable(
     if function_name in entry_names:
         return False
 
-    callee_set = {edge.get("callee") for edge in call_edges}
+    callee_set = {edge.get("callee") or edge.get("to") for edge in call_edges}
     if function_name in callee_set:
         return False
 

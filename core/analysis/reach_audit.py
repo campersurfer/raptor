@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Verdicts that mean "not reachable in this deployment" (dead).
 _DEAD_VERDICTS = frozenset({
     "module_aborts", "lexical_dead", "build_excluded",
-    "no_path_from_entry", "not_called",
+    "no_path_from_entry", "not_called", "binary_oracle_absent",
 })
 # Verdicts that mean "reachable / has a live path".
 _LIVE_VERDICTS = frozenset({
