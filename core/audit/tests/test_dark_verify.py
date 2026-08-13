@@ -1933,8 +1933,140 @@ class TestRunDarkVerification:
         assert result.findings == 1
         assert result.suspicious == 0
 
-    def test_non_auth_cwe_non_dark_skipped(self, tmp_path):
-        """A suspicious outcome with a non-auth CWE is not eligible."""
+    def test_cwe190_eligible(self, tmp_path):
+        """CWE-190 (integer overflow) is dark-verify eligible."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig, _run_dark_verification,
+        )
+        src = tmp_path / "calc.py"
+        src.write_text(textwrap.dedent("""\
+            def alloc_size(n, elem_size):
+                return (n * elem_size) & 0xFFFFFFFF
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "calc.py", "alloc_size", status="suspicious",
+            hypothesis="integer overflow in 32-bit size calculation",
+        )
+        outcome.review_result = {"cwe_class": "CWE-190"}
+        result = self._make_result([outcome])
+        result.suspicious = 1
+
+        llm_response = json.dumps({
+            "module_path": "calc",
+            "function": "alloc_size",
+            "args": [2**30, 8],
+            "expected_return": 0,
+            "rationale": "2^30 * 8 = 2^33 wraps to 0 in uint32",
+        })
+
+        _run_dark_verification(result, config, llm_client=lambda s, u: llm_response)
+        assert result.outcomes[0].evidence_tool == "dark_verify:confirmed"
+        assert result.outcomes[0].status == "finding"
+
+    def test_cwe134_eligible(self, tmp_path):
+        """CWE-134 (format string) is dark-verify eligible."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig, _run_dark_verification,
+        )
+        src = tmp_path / "log.py"
+        src.write_text(textwrap.dedent("""\
+            def log_msg(fmt, *args):
+                return fmt % args
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "log.py", "log_msg", status="suspicious",
+            hypothesis="format string vulnerability",
+        )
+        outcome.review_result = {"cwe_class": "CWE-134"}
+        result = self._make_result([outcome])
+        result.suspicious = 1
+
+        llm_response = json.dumps({
+            "module_path": "log",
+            "function": "log_msg",
+            "args": ["%s%s", "a"],
+            "expected_exception": "TypeError",
+            "rationale": "insufficient args for format",
+        })
+
+        _run_dark_verification(result, config, llm_client=lambda s, u: llm_response)
+        assert result.outcomes[0].evidence_tool == "dark_verify:confirmed"
+        assert result.outcomes[0].status == "finding"
+
+    def test_cwe416_eligible(self, tmp_path):
+        """CWE-416 (use-after-free) is dark-verify eligible."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig, _run_dark_verification,
+        )
+        src = tmp_path / "cache.py"
+        src.write_text(textwrap.dedent("""\
+            def fetch_and_free(items, idx):
+                result = items[idx]
+                items.clear()
+                return len(result)
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "cache.py", "fetch_and_free", status="suspicious",
+            hypothesis="dangling reference after clear",
+        )
+        outcome.review_result = {"cwe_class": "CWE-416"}
+        result = self._make_result([outcome])
+        result.suspicious = 1
+
+        llm_response = json.dumps({
+            "module_path": "cache",
+            "function": "fetch_and_free",
+            "args": [["hello", "world"], 0],
+            "expected_return": 5,
+            "rationale": "result ref survives clear",
+        })
+
+        _run_dark_verification(
+            result, config, llm_client=lambda s, u: llm_response,
+        )
+        assert result.outcomes[0].evidence_tool == "dark_verify:confirmed"
+        assert result.outcomes[0].status == "finding"
+
+    def test_cwe457_eligible(self, tmp_path):
+        """CWE-457 (uninitialised variable) is dark-verify eligible."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig, _run_dark_verification,
+        )
+        src = tmp_path / "initmod.py"
+        src.write_text(textwrap.dedent("""\
+            def process(flag):
+                if flag:
+                    value = 42
+                return value
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "initmod.py", "process", status="suspicious",
+            hypothesis="value used before assignment when flag is False",
+        )
+        outcome.review_result = {"cwe_class": "CWE-457"}
+        result = self._make_result([outcome])
+        result.suspicious = 1
+
+        llm_response = json.dumps({
+            "module_path": "initmod",
+            "function": "process",
+            "args": [False],
+            "expected_exception": "UnboundLocalError",
+            "rationale": "value never assigned when flag is falsy",
+        })
+
+        _run_dark_verification(
+            result, config, llm_client=lambda s, u: llm_response,
+        )
+        assert result.outcomes[0].evidence_tool == "dark_verify:confirmed"
+        assert result.outcomes[0].status == "finding"
+
+    def test_non_dark_verify_cwe_skipped(self, tmp_path):
+        """A suspicious outcome with a non-dark-verify CWE is not eligible."""
         from core.audit.orchestrator import (
             OrchestratorConfig, _run_dark_verification,
         )

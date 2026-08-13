@@ -51,6 +51,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "joern": False,
         "codeql": "cpp/integer-overflow",
         "sinks": [],
+        "dark_verify": True,
     },
     "CWE-191": {
         "smt": "check-overflow",
@@ -117,6 +118,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "joern": True,
         "codeql": "cpp/non-constant-format",
         "sinks": ["printf", "fprintf", "sprintf", "syslog"],
+        "dark_verify": True,
     },
     # Use-after-free / double-free
     "CWE-416": {
@@ -126,6 +128,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "codeql": "cpp/use-after-free",
         "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree",
                   "kfree_sensitive", "devm_kfree"],
+        "dark_verify": True,
     },
     "CWE-415": {
         "smt": "check-early-release",
@@ -220,6 +223,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "joern": False,
         "codeql": "cpp/uninitialized-local",
         "sinks": [],
+        "dark_verify": True,
     },
 }
 
