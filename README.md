@@ -46,6 +46,14 @@ It is not polished software. It was built in free time, held together with enthu
 
 RAPTOR stands for Recursive Autonomous Penetration Testing and Observation Robot. We really wanted to call it RAPTOR.
 
+### How it's built
+
+RAPTOR is mostly AI-generated code. The humans set direction, review
+output, and make design decisions; the AI writes the implementation.
+Mechanical verification (tests, static analysis, corpus calibration) keeps
+the quality bar where it needs to be regardless of who — or what — wrote
+the code.
+
 ---
 
 ## Prerequisites

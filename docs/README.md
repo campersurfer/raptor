@@ -70,5 +70,7 @@ overview:
 | [LLM Providers](llm.md) | Provider configuration, Bedrock, multi-model workflows, cost management |
 | [Security](security.md) | RAPTOR's own security model |
 | [Threat Model](threat-model.md) | Per-project threat model feature |
+| [Configuration](configuration.md) | tuning.json, env vars, sandbox calibration |
 | [Dependencies](dependencies.md) | Tool requirements and licensing |
+| [Troubleshooting](troubleshooting.md) | Common failures and fixes by subsystem |
 | [Python CLI](python-cli.md) | Direct `raptor.py` usage for CI and scripting |

@@ -26,7 +26,18 @@ See also: [README](README.md), [security](security.md), [sandbox](sandbox.md).
 
 ## Overview
 
-RAPTOR (Recursive Autonomous Penetration Testing and Observation Robot) is a security testing framework that uses LLMs to autonomously analyse code for vulnerabilities, generate exploits, and create patches. The framework operates in three distinct modes:
+RAPTOR (Recursive Autonomous Penetration Testing and Observation Robot) is a security testing framework that uses LLMs to autonomously analyse code for vulnerabilities, generate exploits, and create patches.
+
+### Authorship
+
+RAPTOR is mostly AI-generated code. The humans set direction, review output,
+and make design decisions; the AI writes the implementation. Mechanical
+verification (tests, static analysis, corpus calibration) keeps the quality
+bar where it needs to be regardless of who — or what — wrote the code.
+
+### Modes
+
+The framework operates in three distinct modes:
 
 1. **Source Code Analysis Mode**: Static analysis of source code using Semgrep (`raptor_agentic.py`)
 2. **Deep CodeQL Analysis Mode**: Advanced static analysis with dataflow validation (`raptor_codeql.py`)
