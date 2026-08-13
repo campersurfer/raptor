@@ -783,7 +783,7 @@ def build_evidence_index(
             if hits is None:
                 continue
             for hit in hits:
-                source = hit.get("_sarif_source", "")
+                source = hit.get("_sarif_source", "semgrep")
                 if source == "codeql":
                     rec.codeql_alerts.append(hit)
                 else:

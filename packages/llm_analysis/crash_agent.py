@@ -617,7 +617,7 @@ class CrashAnalysisAgent:
             try:
                 with open(crash_context.input_file, 'rb') as f:
                     input_data = f.read()
-                    input_info["input_content_hex"] = input_data.hex()
+                    input_info["input_content_hex"] = input_data[:500].hex()
                     # Include ASCII representation for readability
                     input_info["input_content_ascii"] = input_data.decode('ascii', errors='replace')[:500]  # Truncate long inputs
                     if len(input_data) > 500:

@@ -275,12 +275,6 @@ Z3 is pre-installed in the devcontainer. For manual installs: `pip install z3-so
 
 ---
 
-## orjson (optional)
-
-When `orjson` is installed (`pip install orjson`), RAPTOR uses it for all JSON parsing and serialisation. The speedup matters on large inventories and finding sets. Without it, everything works identically via stdlib `json` — the switch is transparent.
-
----
-
 ## Running offline and in air-gapped pipelines
 
 RAPTOR's custom rules under `engine/semgrep/rules/` are fully local and run without network access.

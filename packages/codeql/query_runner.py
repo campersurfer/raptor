@@ -174,6 +174,8 @@ class QueryRunner:
         "cpp": "codeql/cpp-queries:codeql-suites/cpp-security-extended.qls",
         "csharp": "codeql/csharp-queries:codeql-suites/csharp-security-extended.qls",
         "ruby": "codeql/ruby-queries:codeql-suites/ruby-security-extended.qls",
+        "swift": "codeql/swift-queries:codeql-suites/swift-security-extended.qls",
+        "kotlin": "codeql/java-queries:codeql-suites/java-security-extended.qls",
         "rust": "codeql/rust-queries:codeql-suites/rust-security-extended.qls",
     }
 

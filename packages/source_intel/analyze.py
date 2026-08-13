@@ -1294,9 +1294,11 @@ def _classify_call_site_grade(file_path: str, call_line: int) -> str:
 
     for i in range(0, call_idx + 1):
         line = lines[i]
-        # Strip comments (rough — same approach as adapter.py)
+        # Strip comments and string literals (rough)
         stripped = re.sub(r"/\*.*?\*/", "", line, flags=re.DOTALL)
         stripped = re.sub(r"//.*$", "", stripped, flags=re.MULTILINE)
+        stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', stripped)
+        stripped = re.sub(r"'(?:[^'\\]|\\.)*'", "''", stripped)
 
         # Look for `return` / `goto` BEFORE the call line at depth 1
         # (function body), which would mean a normal exit path

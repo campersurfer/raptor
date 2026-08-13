@@ -1764,9 +1764,14 @@ def _parse_since(spec: str):
             n = float(spec[:-1])
         except ValueError:
             return None
+        if n < 0:
+            return None
         return time.time() - n * multipliers[spec[-1]]
     try:
-        return time.time() - float(spec)
+        n = float(spec)
+        if n < 0:
+            return None
+        return time.time() - n
     except ValueError:
         return None
 

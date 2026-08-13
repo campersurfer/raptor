@@ -104,7 +104,7 @@ def collect_field_sites_from_source(
     source: str,
     file_path: str,
     field_name: str,
-    struct_type: str = "",
+    struct_type: str = "",  # noqa: ARG001
 ) -> Dict[str, List[int]]:
     """Scan source text for write and read sites of a field.
 
