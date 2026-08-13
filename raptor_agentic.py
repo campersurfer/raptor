@@ -2215,6 +2215,7 @@ Examples:
 
     # ---- Collect CodeQL results ----
     if codeql_proc:
+        codeql_stdout, codeql_stderr = "", ""
         try:
             codeql_stdout, codeql_stderr = codeql_proc.communicate(
                 timeout=(args.phase_timeout or None)
@@ -2851,7 +2852,7 @@ Examples:
         },
         "phases": {
             "scanning": {
-                "completed": True,
+                "completed": not skip_scan,
                 "total_findings": scan_metrics.get('total_findings', 0),
                 "files_scanned": scan_metrics.get('total_files_scanned', 0),
                 "threat_model_candidates": threat_model_findings_count,

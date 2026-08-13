@@ -2020,6 +2020,7 @@ def _merge_results(
         if not _is_tp and _is_exp:
             _is_exp = False
         finding["exploitable"] = _is_exp
+        finding["is_exploitable"] = _is_exp
         finding["exploitability_score"] = cc.get("exploitability_score", 0)
 
         if finding["exploitable"]:

@@ -1053,7 +1053,7 @@ def run_reachability_prepass(
             checklist, target, inventory=inventory,
             allow_unreachable=allow_unreachable,
         )
-        enrich_with_frida_traces(
+        enriched_frida = enrich_with_frida_traces(
             checklist, target,
             search_dirs=[agentic_out_dir, agentic_out_dir.parent],
             inventory=inventory,
@@ -1061,7 +1061,7 @@ def run_reachability_prepass(
         enriched_caller_ctx = enrich_with_caller_context(
             checklist, target, inventory=inventory,
         )
-        if marked or enriched_caller_ctx:
+        if marked or enriched_caller_ctx or enriched_frida:
             save_json(checklist_path, checklist)
     except Exception:                               # noqa: BLE001
         logger.warning(
