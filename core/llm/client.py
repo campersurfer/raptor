@@ -1200,7 +1200,7 @@ class LLMClient:
                 "model": response.model,
                 "provider": response.provider,
                 "tokens_used": response.tokens_used,
-                "timestamp": time.monotonic(),
+                "timestamp": time.time(),
             }, mode=0o600)
         except Exception as e:
             # _stats_lock — see _save_to_cache above for the rationale.

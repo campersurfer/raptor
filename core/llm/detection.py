@@ -144,14 +144,15 @@ def _get_available_ollama_models() -> List[str]:
         response = requests.get(f"{ollama_url}/api/tags", timeout=2)  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
         if response.status_code == 200:
             data = response.json()
-            _cached_ollama_models = [model['name'] for model in data.get('models', [])]
+            _cached_ollama_models = [
+                model.get('name') for model in data.get('models', [])
+                if isinstance(model, dict) and model.get('name')
+            ]
             _ollama_checked = True
             return _cached_ollama_models
     except Exception as e:
         ollama_display = RaptorConfig.OLLAMA_HOST if _host_is_local(RaptorConfig.OLLAMA_HOST) else '[REMOTE-OLLAMA]'
         logger.debug("Could not connect to Ollama at %s: %s", ollama_display, e)
-    _cached_ollama_models = []
-    _ollama_checked = True
     return []
 
 

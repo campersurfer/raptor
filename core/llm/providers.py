@@ -1168,6 +1168,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         self.instructor_client = None
         self._instructor_consec_failures = 0
+        self._instructor_lock = threading.Lock()
         self._instructor_backed = None  # stashed client during backoff
         if INSTRUCTOR_AVAILABLE:
             self.instructor_client = instructor.from_openai(self.client)
@@ -1354,7 +1355,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     cache_read_tokens=cache_read_tokens,
                 )
 
-                self._instructor_consec_failures = 0
+                with self._instructor_lock:
+                    self._instructor_consec_failures = 0
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
@@ -1362,20 +1364,22 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
             except Exception as e:
-                self._instructor_consec_failures += 1
+                with self._instructor_lock:
+                    self._instructor_consec_failures += 1
+                    consec = self._instructor_consec_failures
                 from core.security.log_sanitisation import escape_nonprintable as _esc
                 logger.warning(
                     "Instructor structured generation failed for %s/%s (%d/%d). "
                     "Exception (%s): %s",
                     self.config.provider, self.config.model_name,
-                    self._instructor_consec_failures, _INSTRUCTOR_MAX_CONSEC_FAILURES,
+                    consec, _INSTRUCTOR_MAX_CONSEC_FAILURES,
                     type(e).__name__, _esc(str(e))[:512],
                 )
-                if self._instructor_consec_failures >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
+                if consec >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
                     logger.warning(
                         "Instructor disabled for %s/%s after %d consecutive failures",
                         self.config.provider, self.config.model_name,
-                        self._instructor_consec_failures,
+                        consec,
                     )
                     self._instructor_backed = self.instructor_client
                     self.instructor_client = None
@@ -1994,6 +1998,7 @@ class AnthropicProvider(LLMProvider):
 
         self.instructor_client = None
         self._instructor_consec_failures = 0
+        self._instructor_lock = threading.Lock()
         self._instructor_backed = None  # stashed client during backoff
         if INSTRUCTOR_AVAILABLE:
             self.instructor_client = instructor.from_anthropic(self.client)
@@ -2171,7 +2176,8 @@ class AnthropicProvider(LLMProvider):
                     cache_write_tokens=cache_write_tokens,
                 )
 
-                self._instructor_consec_failures = 0
+                with self._instructor_lock:
+                    self._instructor_consec_failures = 0
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
@@ -2179,20 +2185,22 @@ class AnthropicProvider(LLMProvider):
                 )
 
             except Exception as e:
-                self._instructor_consec_failures += 1
+                with self._instructor_lock:
+                    self._instructor_consec_failures += 1
+                    consec = self._instructor_consec_failures
                 from core.security.log_sanitisation import escape_nonprintable as _esc
                 logger.warning(
                     "Instructor structured generation failed for %s/%s (%d/%d). "
                     "Exception (%s): %s",
                     self.config.provider, self.config.model_name,
-                    self._instructor_consec_failures, _INSTRUCTOR_MAX_CONSEC_FAILURES,
+                    consec, _INSTRUCTOR_MAX_CONSEC_FAILURES,
                     type(e).__name__, _esc(str(e))[:512],
                 )
-                if self._instructor_consec_failures >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
+                if consec >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
                     logger.warning(
                         "Instructor disabled for %s/%s after %d consecutive failures",
                         self.config.provider, self.config.model_name,
-                        self._instructor_consec_failures,
+                        consec,
                     )
                     self._instructor_backed = self.instructor_client
                     self.instructor_client = None

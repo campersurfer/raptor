@@ -764,7 +764,7 @@ def _get_default_fallback_models() -> List['ModelConfig']:
     config_providers = set()  # Track which providers the config covers
 
     # --- Config file entries first ---
-    primary = _get_best_thinking_model()
+    primary = _get_default_primary_model()
     primary_key = (primary.provider, primary.model_name) if primary else None
 
     for entry in _get_configured_models():
@@ -845,7 +845,7 @@ def _get_default_fallback_models() -> List['ModelConfig']:
                 model_name="mistral-large-latest",
                 api_key=os.getenv("MISTRAL_API_KEY"),
                 api_base=PROVIDER_ENDPOINTS["mistral"],
-                max_tokens=128000,
+                max_tokens=8192,
                 max_context=128000,
                 temperature=0.7,
                 cost_per_1k_tokens=0.002,

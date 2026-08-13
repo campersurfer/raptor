@@ -744,8 +744,8 @@ class TestFallbackModelsFromConfig:
                 det._cached_llm_availability = None
                 fallbacks = _get_default_fallback_models()
         names = [f.model_name for f in fallbacks]
-        assert "gemini-2.5-pro" in names
         assert "gemini-2.5-flash" in names
+        assert "gemini-2.5-pro" not in names
 
 
 class TestModelDataConsistency:
