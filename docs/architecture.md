@@ -1,7 +1,6 @@
 # RAPTOR Modular Architecture
 
-**Version**: 3.1
-**Date**: 2026-07-22
+**Updated**: 2026-08-13
 
 See also: [README](README.md), [security](security.md), [sandbox](sandbox.md).
 
@@ -92,20 +91,23 @@ raptor/
 │   ├── archive/           # Archive extraction and handling
 │   ├── ast/               # AST enrichment helpers
 │   ├── atomic_fs/         # Atomic filesystem operations (tempfile + rename)
+│   ├── audit/             # Hypothesis-driven code audit (orchestrator, strategies, gates)
 │   ├── binary/            # Binary analysis primitives (ELF parsing, symbol lookup)
 │   ├── build/             # Build-system detection + toolchain probes
 │   ├── config/            # RaptorConfig (paths, settings)
 │   ├── coverage/          # Read-coverage tracking + summary
 │   ├── cve/               # CVE data structures and lookups
+│   ├── concepts/          # Concept compiler (invariants → mechanical rules)
 │   ├── dataflow/          # Dataflow analysis primitives
+│   ├── dispatch/          # Dispatch broker (multi-model routing)
 │   ├── dockerfile/        # Dockerfile parsing helpers
-│   ├── dynamic/           # Dynamic analysis support (Frida integration)
 │   ├── evidence/          # Evidence collection and management
 │   ├── function_taxonomy/ # Function classification (source, sink, sanitiser)
 │   ├── git/               # Sandbox-routed clone + URL allowlist
 │   ├── hash/              # SHA-256 helpers
 │   ├── http/              # EgressClient + per-host allowlists
 │   ├── inventory/         # Source inventory (file enumeration, extractors, call graph)
+│   ├── iris/              # Checker synthesis and specification inference
 │   ├── json/              # BOM-tolerant JSON utils + cache helpers
 │   ├── labeled_attempts/  # Labeled attempt tracking for iterative workflows
 │   ├── license/           # Licence detection and analysis
@@ -157,6 +159,7 @@ raptor/
 │   ├── exploitation/      # Exploit generation engine
 │   ├── frida/             # Frida dynamic instrumentation
 │   ├── hypothesis_validation/# Hypothesis-driven validation
+│   ├── joern/             # Joern CPG server lifecycle + queries
 │   ├── nvd/               # NVD (National Vulnerability Database) queries
 │   ├── osv/               # OSV (Open Source Vulnerabilities) queries
 │   ├── recon/             # Reconnaissance and enumeration
@@ -341,7 +344,6 @@ python3 packages/codeql/agent.py \
 **Components**:
 - `agent.py` - Main CodeQL workflow orchestrator
 - `autonomous_analyzer.py` - LLM-powered CodeQL analysis
-- `build_detector.py` - Automatic build system detection
 - `database_manager.py` - CodeQL database creation and management
 - `dataflow_validator.py` - Validates dataflow paths from CodeQL results
 - `dataflow_visualizer.py` - Generates visual dataflow diagrams
@@ -1065,7 +1067,7 @@ export OPENAI_API_KEY=your_key_here
 
 ### Cost Considerations
 
-We think it useful to include such costings, just so people understand how much it might cost to generate code. It will vary
+We think it useful to include such costings, just so people understand how much it might cost to generate code. Costs will vary by provider, model, and the complexity of the target.
 
 
 **Frontier Models**:

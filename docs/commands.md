@@ -1072,41 +1072,18 @@ Send a free-form prompt to any configured LLM model and print the response.  Dev
 | `--max-tokens N` | `4096` | Maximum output tokens |
 | `--temperature F` | model default | Sampling temperature |
 | `--json-schema PATH` | *(none)* | Path to a JSON schema file for structured output |
+| `--system-file PATH` | *(none)* | Load system prompt from a file |
+| `--raw` | off | Print response text only (compact JSON for structured output) |
 | `--debug` | off | Show model metadata, cost, provider logging, and scorecard summary |
 
 By default only the model's response text is printed — no logging, no scorecard line, no metadata.  Pass `--debug` to see the full diagnostic output.
 
+When no positional prompt is given and stdin is a pipe, stdin is the prompt.
+Multiple `--file` flags concatenate in order, followed by the prompt text.
+
 Natural-language routing: when the user says "ask gemini...", "ask claude...", "ask gpt..." or similar, Claude routes through this tool automatically.
 
 **Implementation:** `libexec/raptor-llm-ask`
-
----
-
-### /ask
-
-Send a prompt to any configured LLM model.  Developer tool for cross-model
-diagnosis, debugging model reasoning, or comparing verdicts.
-
-```
-/ask --model <name> "prompt text"
-/ask --model <name> --file context.c "Why is this vulnerable?"
-/ask --model <name> --system-file system.txt --file code.c "Review this"
-```
-
-| Flag | Description |
-|------|-------------|
-| `--model <name>` | Model to query (required) |
-| `--file <path>` | Prepend file contents as context (repeatable) |
-| `--system <text>` | System prompt (inline) |
-| `--system-file <path>` | Load system prompt from a file |
-| `--json-schema <path>` | Path to a JSON schema file for structured output |
-| `--max-tokens <n>` | Maximum output tokens (default: 4096) |
-| `--temperature <f>` | Sampling temperature |
-| `--raw` | Print response text only (compact JSON for structured output) |
-| `--debug` | Show model metadata, cost, and provider logging |
-
-When no positional prompt is given and stdin is a pipe, stdin is the prompt.
-Multiple `--file` flags concatenate in order, followed by the prompt text.
 
 ---
 
