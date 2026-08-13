@@ -8,5 +8,5 @@ Use only read_file, grep, and glob_files to inspect source. Begin with the suppl
 
 Map attacker-controlled and persistent inputs, authentication, authorization, validation, privilege transitions, dangerous sinks, and only source-to-sink flows supported by code evidence. Record uncertainty by omitting an unproven flow. Use repository-relative paths and real source line numbers.
 
-Finish by calling submit_context_map exactly once. Its context_map must contain sources, sinks, trust_boundaries, meta, entry_points, sink_details, boundary_details, and unchecked_flows. Empty lists are valid. meta must state the observed application type, language/framework evidence, and authentication model when evidence exists.
+Finish by calling submit_context_map exactly once. Its context_map must contain sources, sinks, trust_boundaries, meta, entry_points, sink_details, boundary_details, and unchecked_flows. Every list contains JSON objects; use an empty list when no evidence-backed entries exist. meta must state the observed application type, language/framework evidence, and authentication model when evidence exists.
 """

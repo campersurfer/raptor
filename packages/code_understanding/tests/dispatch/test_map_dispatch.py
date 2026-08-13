@@ -130,3 +130,33 @@ def test_map_dispatch_rejects_missing_context_map(tmp_path):
         result = default_map_dispatch(_model(), str(tmp_path))
 
     assert result["error"] == "submit_context_map payload missing context_map object"
+
+def test_map_submission_schema_requires_object_entries(tmp_path):
+    from packages.code_understanding.dispatch.map_dispatch import _build_tools
+    from packages.code_understanding.dispatch.tools import SandboxedTools
+
+    tools = _build_tools(SandboxedTools.for_repo(tmp_path))
+    submit_tool = next(tool for tool in tools if tool.name == "submit_context_map")
+    fields = submit_tool.input_schema["properties"]["context_map"]["properties"]
+    for name in (
+        "sources",
+        "sinks",
+        "trust_boundaries",
+        "entry_points",
+        "sink_details",
+        "boundary_details",
+        "unchecked_flows",
+    ):
+        assert fields[name] == {"type": "array", "items": {"type": "object"}}
+
+
+def test_model_context_map_rejects_scalar_entries():
+    from core.orchestration.agentic_passes import _validate_model_context_map
+
+    context_map = _context_map()
+    context_map["entry_points"] = ["main"]
+
+    assert (
+        _validate_model_context_map(context_map)
+        == "'entry_points' must contain only objects"
+    )

@@ -133,14 +133,35 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
                     "context_map": {
                         "type": "object",
                         "properties": {
-                            "sources": {"type": "array"},
-                            "sinks": {"type": "array"},
-                            "trust_boundaries": {"type": "array"},
+                            "sources": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
+                            "sinks": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
+                            "trust_boundaries": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
                             "meta": {"type": "object"},
-                            "entry_points": {"type": "array"},
-                            "sink_details": {"type": "array"},
-                            "boundary_details": {"type": "array"},
-                            "unchecked_flows": {"type": "array"},
+                            "entry_points": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
+                            "sink_details": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
+                            "boundary_details": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
+                            "unchecked_flows": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
                         },
                         "required": [
                             "sources",
