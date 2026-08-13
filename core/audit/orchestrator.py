@@ -3185,6 +3185,16 @@ def _run_audit_body(
         if study_consumer_thread.is_alive():
             logger.warning("study-consumer: did not drain within 600s")
 
+    # --- Concept discovery: mine outcomes for invariants ---
+    try:
+        if not executor_stats.budget_stopped:
+            _run_concept_discovery(
+                reviewed_outcomes, config, shared, gaps,
+                mechanical_findings, reviewed_set,
+            )
+    except Exception:
+        logger.debug("concept discovery failed", exc_info=True)
+
     # --- Synthesis queue second pass ---
     #
     # Optional enrichment, so it must never cost the run its results.
@@ -4442,6 +4452,140 @@ def _run_invariant_prescreening(
             total += 1
 
     return total
+
+
+def _run_concept_discovery(
+    reviewed_outcomes: "_LockedOutcomes",
+    config: "OrchestratorConfig",
+    shared: "SharedState",
+    gaps: list[dict[str, Any]],
+    mechanical_findings: Dict[str, List[Dict[str, Any]]],
+    reviewed_set: set,
+) -> None:
+    """Mine review outcomes for recurring patterns, compile into rules.
+
+    1. Cluster findings by CWE
+    2. Extract invariant candidates from clusters of 2+
+    3. Compile into Semgrep/Coccinelle rules (LLM call)
+    4. Run prescreening and inject hits into mechanical_findings
+    """
+    from .concept_discovery import (
+        candidates_to_model_entries,
+        discover_invariants,
+    )
+
+    snapshot = dict(reviewed_outcomes)
+    if not snapshot:
+        return
+
+    dm = shared.domain_model
+    candidates = discover_invariants(snapshot, dm)
+    if not candidates:
+        return
+
+    logger.info(
+        "concept discovery: %d invariant candidate(s) from %d outcomes",
+        len(candidates), len(snapshot),
+    )
+
+    entries = candidates_to_model_entries(candidates)
+
+    if dm is None:
+        dm = {"concepts": [], "invariants": [], "contracts": []}
+    existing_ids = {
+        inv.get("id") for inv in dm.get("invariants", [])
+        if isinstance(inv, dict)
+    }
+    new_entries = [e for e in entries if e["id"] not in existing_ids]
+    if not new_entries:
+        return
+
+    dm.setdefault("invariants", []).extend(new_entries)
+    shared.domain_model = dm
+
+    if config.out_dir:
+        try:
+            import json as _json
+
+            dm_path = config.out_dir / "domain-model.json"
+            dm_path.write_text(
+                _json.dumps(dm, indent=2) + "\n", encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("concept discovery: domain model write failed", exc_info=True)
+
+    from core.llm.client import LLMClient
+    from core.llm.task_types import TaskType
+
+    _model = (
+        config.models[0]
+        if config.models and config.models[0] != "default"
+        else None
+    )
+    client = LLMClient(pinned_model=_model) if _model else LLMClient()
+
+    def _llm(prompt, schema, system_prompt):
+        try:
+            data, _ = client.generate_structured(
+                prompt=prompt,
+                schema=schema,
+                system_prompt=system_prompt,
+                task_type=TaskType.AUDIT,
+            )
+            return data
+        except Exception as exc:
+            logger.debug("concept discovery LLM call failed: %s", exc)
+            return None
+
+    from core.concepts.compiler import compile_invariant
+    from core.concepts.model import Invariant
+    from packages.checker_synthesis.languages import fallback_engine
+
+    compiled_count = 0
+    for entry in new_entries:
+        inv = Invariant(
+            id=entry["id"],
+            statement=entry["statement"],
+            negation=entry["negation"],
+            description=entry.get("description", ""),
+            confidence=entry.get("confidence", "observed"),
+            relevant_cwes=entry.get("relevant_cwes", []),
+            evidence=entry.get("evidence", []),
+        )
+
+        engine = "semgrep"
+        for ev in inv.evidence:
+            ev_file = ev.split(":")[0].strip() if ":" in ev else ""
+            if ev_file:
+                from packages.checker_synthesis.languages import detect_engine
+
+                detected = detect_engine(ev_file)
+                if detected:
+                    engine = detected
+                    break
+
+        cr = compile_invariant(inv, engine, _llm, config.out_dir or Path("."))
+        if not cr.success:
+            alt = fallback_engine(engine)
+            if alt:
+                cr = compile_invariant(
+                    inv, alt, _llm, config.out_dir or Path("."),
+                )
+
+        if cr.success:
+            entry["mechanical_rule"] = cr.rule_id
+            compiled_count += 1
+
+    if compiled_count:
+        logger.info(
+            "concept discovery: compiled %d/%d invariant(s)",
+            compiled_count, len(new_entries),
+        )
+        n = _run_invariant_prescreening(dm, config, gaps, mechanical_findings)
+        if n:
+            logger.info(
+                "concept discovery prescreening: %d new match(es)", n,
+            )
 
 
 class _InjectModeResolver:

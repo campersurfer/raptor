@@ -37,7 +37,7 @@ class Evidence:
 # Concept
 # ------------------------------------------------------------------
 
-CONFIDENCE_GRADES = ("inferred", "traced", "corroborated", "documented", "tested")
+CONFIDENCE_GRADES = ("inferred", "observed", "traced", "corroborated", "documented", "tested")
 
 LIFECYCLE_STATES = (
     "discovered",
