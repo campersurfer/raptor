@@ -3246,6 +3246,20 @@ class ClaudeCodeLLMProvider(LLMProvider):
         self._session_id = None
         self._messages_seen = 0
 
+    def _cli_model(self) -> Optional[str]:
+        """Model name to pass as ``claude -p --model``.
+
+        ``None`` (omit the flag; the subprocess inherits the CLI
+        session's own default model) when the config carries the
+        claudecode fallback sentinel rather than an operator-chosen
+        name — a hardcoded name breaks backends (Bedrock/Vertex)
+        that don't serve bare Anthropic model IDs.
+        """
+        from .config import CLAUDECODE_SESSION_MODEL
+        if self.config.model_name == CLAUDECODE_SESSION_MODEL:
+            return None
+        return self.config.model_name
+
     def generate(
         self,
         prompt: str,
@@ -3277,7 +3291,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             capture_json_envelope=False,
             stream_json=True,
             system_prompt=system_prompt,
-            model=self.config.model_name,
+            model=self._cli_model(),
         )
         cmd = build_cc_command(cc_config)
 
@@ -3389,7 +3403,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             capture_json_envelope=False,
             stream_json=True,
             system_prompt=system_prompt,
-            model=self.config.model_name,
+            model=self._cli_model(),
         )
         cmd = build_cc_command(cc_config)
 
@@ -3617,7 +3631,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             capture_json_envelope=False,
             stream_json=True,
             system_prompt=sys_combined,
-            model=self.config.model_name,
+            model=self._cli_model(),
             session_id=self._session_id,
             persist_session=True,
         )

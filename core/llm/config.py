@@ -363,6 +363,18 @@ def _build_ollama_config() -> Optional['ModelConfig']:
     )
 
 
+# Sentinel model name for the claudecode fallback: "inherit whatever
+# model the operator's `claude` CLI session is configured to use".
+# ClaudeCodeLLMProvider omits `--model` when it sees this, so the
+# subprocess resolves its model exactly like an interactive session
+# (settings.json, ANTHROPIC_MODEL, Bedrock/Vertex model mapping).
+# Hardcoding a name here breaks installs whose backend doesn't serve
+# that ID — e.g. a Bedrock-backed CLI with no mapping for the bare
+# Anthropic name hangs/fails on every call. Operators who want a
+# specific model on the claudecode provider set it in models.json.
+CLAUDECODE_SESSION_MODEL = "session-default"
+
+
 def _build_claudecode_config() -> Optional['ModelConfig']:
     """Last-resort fallback: ``claude`` CLI on PATH, no API key needed.
     Slower (subprocess + ``--json-schema`` structured output for
@@ -378,11 +390,12 @@ def _build_claudecode_config() -> Optional['ModelConfig']:
     import shutil
     if not shutil.which("claude"):
         return None
-    default_model = PROVIDER_DEFAULT_MODELS["anthropic"]
-    limits = MODEL_LIMITS.get(default_model, {})
+    # Capacity limits are unknowable without asking the CLI which model
+    # it will use; assume the current Anthropic flagship's as a proxy.
+    limits = MODEL_LIMITS.get(PROVIDER_DEFAULT_MODELS["anthropic"], {})
     return ModelConfig(
         provider="claudecode",
-        model_name=default_model,
+        model_name=CLAUDECODE_SESSION_MODEL,
         api_key=None,
         max_tokens=limits.get("max_output", 32000),
         max_context=limits.get("max_context", 1000000),

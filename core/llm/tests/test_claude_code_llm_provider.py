@@ -917,3 +917,62 @@ def test_resumable_false_uses_stateless_path(monkeypatch) -> None:
 
     assert "--no-session-persistence" in captured["cmd"]
     assert "--resume" not in captured["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# Session-default sentinel (claudecode fallback inherits CLI session model)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_session_default_omits_model_flag(monkeypatch) -> None:
+    """The fallback sentinel must not become ``--model session-default``
+    — the flag is omitted entirely so the subprocess inherits the CLI
+    session's own default model (Bedrock/Vertex-backed installs don't
+    serve bare Anthropic model IDs)."""
+    from core.llm.config import CLAUDECODE_SESSION_MODEL
+    import core.llm.cc_adapter as _cc_adapter
+    captured: dict[str, Any] = {}
+
+    def fake_stream(cmd, prompt, *, env, timeout_s):
+        captured["cmd"] = list(cmd)
+        return _stream_freeform()
+
+    monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    p = ClaudeCodeLLMProvider(_config(model=CLAUDECODE_SESSION_MODEL))
+    p.generate("hi")
+
+    assert "--model" not in captured["cmd"]
+
+
+def test_generate_explicit_model_still_passes_flag(monkeypatch) -> None:
+    """An operator-chosen model name (models.json claudecode entry) is
+    still forwarded as ``--model``."""
+    import core.llm.cc_adapter as _cc_adapter
+    captured: dict[str, Any] = {}
+
+    def fake_stream(cmd, prompt, *, env, timeout_s):
+        captured["cmd"] = list(cmd)
+        return _stream_freeform()
+
+    monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    p = ClaudeCodeLLMProvider(_config(model="claude-opus-4-6"))
+    p.generate("hi")
+
+    cmd = captured["cmd"]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-6"
+
+
+def test_build_claudecode_config_uses_session_sentinel(monkeypatch) -> None:
+    """The auto-fallback builder stamps the sentinel, not a hardcoded
+    Anthropic model name."""
+    import shutil as _shutil
+    from core.llm.config import (
+        CLAUDECODE_SESSION_MODEL,
+        _build_claudecode_config,
+    )
+    monkeypatch.setattr(_shutil, "which", lambda name: "/usr/bin/claude")
+    cfg = _build_claudecode_config()
+    assert cfg is not None
+    assert cfg.provider == "claudecode"
+    assert cfg.model_name == CLAUDECODE_SESSION_MODEL
