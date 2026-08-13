@@ -233,6 +233,106 @@ def _infer_engine(inv: Invariant) -> str:
 
 
 # ------------------------------------------------------------------
+# Driver adapters (proposer + oracle for the generate-and-verify loop)
+# ------------------------------------------------------------------
+
+class _InvariantProposer:
+    """Wraps the LLM call as a Proposer for the driver."""
+
+    def __init__(self, llm, inv, engine, source_snippets):
+        self._llm = llm
+        self._inv = inv
+        self._engine = engine
+        self._source_snippets = source_snippets
+        self._system = _invariant_system_for_engine(engine)
+
+    def propose(self, context, feedback, *, prior_verdict=None):
+        from packages.checker_synthesis.prompts import SYNTHESIS_SCHEMA
+
+        prompt = build_invariant_prompt(
+            self._inv, self._engine, retry_feedback=feedback,
+            source_snippets=self._source_snippets,
+        )
+        try:
+            return self._llm(prompt, SYNTHESIS_SCHEMA, self._system)
+        except Exception as exc:
+            raise ValueError(f"LLM error: {exc}") from exc
+
+
+class _DualControlOracle:
+    """Validates, builds, and dual-control tests a proposed rule."""
+
+    reliability_class = "decisive"
+
+    def __init__(self, inv, engine, out_dir):
+        self._inv = inv
+        self._engine = engine
+        self._out_dir = out_dir
+        self._call_count = 0
+
+    def judge(self, candidate, context):
+        from core.orchestration.driver import Verdict
+        from packages.checker_synthesis.models import SynthesisedRule
+        from packages.checker_synthesis.synthesise import (
+            _dual_control,
+            _fixup_cocci_body,
+            _validate_rule_body,
+            _write_rule,
+        )
+
+        self._call_count += 1
+
+        if not isinstance(candidate, dict):
+            return Verdict(passed=False, feedback="LLM returned non-dict")
+
+        body = candidate.get("rule_body", "")
+        if not isinstance(body, str) or not body.strip():
+            return Verdict(passed=False, feedback="missing rule_body")
+
+        body_err = _validate_rule_body(body)
+        if body_err:
+            return Verdict(passed=False, feedback=body_err)
+
+        if self._engine == "coccinelle":
+            body = _fixup_cocci_body(body)
+
+        rule_id = _make_rule_id(self._inv, self._engine, self._call_count - 1)
+        test_pos = str(candidate.get("test_positive", "") or "")
+        test_neg = str(candidate.get("test_negative", "") or "")
+        rationale = str(candidate.get("rationale", "") or "")
+
+        rule = SynthesisedRule(
+            engine=self._engine, rule_id=rule_id, body=body,
+            rationale=rationale, test_positive=test_pos,
+            test_negative=test_neg,
+        )
+        rule_path = _write_rule(self._out_dir, rule)
+
+        evidence = {
+            "rule_id": rule_id, "body": body,
+            "rule_path": rule_path, "rationale": rationale,
+        }
+
+        ext = _fixture_ext(self._inv, self._engine)
+        if not test_pos or not test_neg:
+            return Verdict(
+                passed=False,
+                feedback="no test fixtures for dual control",
+                evidence=evidence,
+            )
+
+        dc_ok, dc_errors = _dual_control(rule, rule_path, self._engine, ext)
+        if dc_ok:
+            return Verdict(passed=True, evidence=evidence)
+
+        dc_feedback = "; ".join(e for e in dc_errors if "dual control:" in e)
+        return Verdict(
+            passed=False, feedback=dc_feedback,
+            evidence={**evidence, "dc_errors": dc_errors},
+        )
+
+
+# ------------------------------------------------------------------
 # Core compilation
 # ------------------------------------------------------------------
 
@@ -253,15 +353,8 @@ def compile_invariant(
     dual control passes.  *source_snippets*: code excerpts of known
     violation sites — dramatically improves rule quality.
     """
-    from packages.checker_synthesis.models import SynthesisedRule
-    from packages.checker_synthesis.prompts import SYNTHESIS_SCHEMA
-    from packages.checker_synthesis.synthesise import (
-        _dual_control,
-        _fixup_cocci_body,
-        _run_engine,
-        _validate_rule_body,
-        _write_rule,
-    )
+    from core.orchestration.driver import DriverConfig
+    from core.orchestration.driver import run as driver_run
 
     result = CompilationResult(invariant_id=inv.id, engine=engine)
 
@@ -269,85 +362,30 @@ def compile_invariant(
         result.errors.append("invariant needs both statement and negation")
         return result
 
-    system_prompt = _invariant_system_for_engine(engine)
-    feedback = ""
+    proposer = _InvariantProposer(llm, inv, engine, source_snippets)
+    oracle = _DualControlOracle(inv, engine, out_dir)
 
-    for attempt in range(max_retries + 1):
-        prompt = build_invariant_prompt(
-            inv, engine, retry_feedback=feedback,
-            source_snippets=source_snippets,
-        )
+    dr = driver_run(
+        proposer, oracle, {},
+        config=DriverConfig(max_attempts=max_retries + 1),
+    )
 
-        try:
-            data = llm(prompt, SYNTHESIS_SCHEMA, system_prompt)
-        except Exception as e:
-            result.errors.append(f"attempt {attempt}: LLM error: {e}")
-            feedback = str(e)
-            continue
+    result.errors.extend(dr.errors)
 
-        if not isinstance(data, dict):
-            result.errors.append(f"attempt {attempt}: LLM returned non-dict")
-            feedback = "response was not a JSON object"
-            continue
-
-        body = data.get("rule_body", "")
-        if not isinstance(body, str) or not body.strip():
-            result.errors.append(f"attempt {attempt}: missing rule_body")
-            feedback = "response missing rule_body"
-            continue
-
-        body_err = _validate_rule_body(body)
-        if body_err:
-            result.errors.append(f"attempt {attempt}: {body_err}")
-            feedback = body_err
-            continue
-
-        if engine == "coccinelle":
-            body = _fixup_cocci_body(body)
-
-        rule_id = _make_rule_id(inv, engine, attempt)
-        test_pos = str(data.get("test_positive", "") or "")
-        test_neg = str(data.get("test_negative", "") or "")
-        rationale = str(data.get("rationale", "") or "")
-
-        rule = SynthesisedRule(
-            engine=engine,
-            rule_id=rule_id,
-            body=body,
-            rationale=rationale,
-            test_positive=test_pos,
-            test_negative=test_neg,
-        )
-
-        rule_path = _write_rule(out_dir, rule)
-
-        ext = _fixture_ext(inv, engine)
-        if test_pos and test_neg:
-            dc_ok, dc_errors = _dual_control(rule, rule_path, engine, ext)
-            result.errors.extend(
-                f"attempt {attempt}: {e}" for e in dc_errors
-            )
-            if dc_ok:
-                result.rule_id = rule_id
-                result.rule_body = body
-                result.rule_path = rule_path
-                result.rationale = rationale
-                result.dual_control = True
-                break
-            feedback = "; ".join(
-                e for e in dc_errors if "dual control:" in e
-            )
-        else:
-            result.errors.append(
-                f"attempt {attempt}: no test fixtures for dual control"
-            )
-            result.rule_id = rule_id
-            result.rule_body = body
-            result.rule_path = rule_path
-            result.rationale = rationale
-            feedback = "provide test_positive and test_negative fixtures"
+    if dr.verdict and dr.verdict.evidence:
+        ev = dr.verdict.evidence
+        result.rule_id = ev.get("rule_id")
+        result.rule_body = ev.get("body", "")
+        result.rule_path = ev.get("rule_path")
+        result.rationale = ev.get("rationale", "")
+        result.dual_control = dr.verdict.passed
+        if "dc_errors" in ev:
+            result.errors.extend(ev["dc_errors"])
 
     if result.rule_body and repo_root and repo_root.is_dir():
+        from packages.checker_synthesis.models import SynthesisedRule
+        from packages.checker_synthesis.synthesise import _run_engine
+
         rule = SynthesisedRule(
             engine=engine,
             rule_id=result.rule_id or "sweep",
