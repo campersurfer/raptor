@@ -168,6 +168,54 @@ def _shadows_per_ns(path: str) -> bool:
     return norm in _SHADOW_PATHS
 
 
+def _copy_dir_shallow(src: str, dst: str) -> None:
+    """Recursively copy *src* into *dst*, preserving directory structure.
+
+    Files are hard-linked when possible (same filesystem), otherwise copied
+    byte-for-byte via sendfile.  Symlinks are recreated as symlinks.
+    Permissions and ownership are NOT preserved — every entry is owned by
+    the caller's uid/gid with mode 0o644 (files) / 0o755 (dirs).
+
+    This is intentionally lightweight: it runs post-fork / pre-exec in the
+    sandbox child, where no allocator-heavy stdlib (shutil.copytree) should
+    be used.  Errors on individual entries are silently skipped — the host
+    /etc may contain entries readable only by host-root (shadow, gshadow).
+    """
+    for dirpath, dirnames, filenames in os.walk(src):
+        rel = os.path.relpath(dirpath, src)
+        dst_dir = os.path.join(dst, rel) if rel != "." else dst
+        for dn in dirnames:
+            try:
+                os.makedirs(os.path.join(dst_dir, dn), 0o755, exist_ok=True)
+            except OSError:
+                pass
+        for fn in filenames:
+            src_file = os.path.join(dirpath, fn)
+            dst_file = os.path.join(dst_dir, fn)
+            try:
+                if os.path.islink(src_file):
+                    link_target = os.readlink(src_file)
+                    os.symlink(link_target, dst_file)
+                    continue
+                # Try hard-link first (fast, no copy).
+                try:
+                    os.link(src_file, dst_file)
+                    continue
+                except OSError:
+                    pass
+                # Byte copy via sendfile.
+                with open(src_file, "rb") as sf:
+                    with open(dst_file, "wb") as df:
+                        while True:
+                            chunk = sf.read(65536)
+                            if not chunk:
+                                break
+                            df.write(chunk)
+                os.chmod(dst_file, 0o644)
+            except OSError:
+                pass  # skip unreadable entries (shadow, etc.)
+
+
 def setup_mount_ns(target: Optional[str], output: Optional[str],
                    extra_ro_paths: Optional[Iterable[str]] = None,
                    root_path: Optional[str] = None,
@@ -248,13 +296,60 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
     # 4. Bind system dirs read-only. Two-step bind + remount-ro because
     # one-step `--bind -o ro` sometimes fails with EPERM on unprivileged
     # user-ns — the ro attribute can only be set by a subsequent remount.
+    #
+    # /etc with etc_overlay: when overlay entries target paths that don't
+    # exist on the host, the bind mount's underlying FS permissions block
+    # creation (EACCES — namespace uid != host root), and the MNT_LOCKED
+    # flag (kernel ≥5.12) blocks remounting RW.  Fix: mount a tmpfs on
+    # {root}/etc and shallow-copy the host /etc contents into it.  This
+    # gives us a writable /etc where mount-point stubs for overlay files
+    # can be created freely.  The copy is O(entries-in-etc) — typically
+    # a few hundred inodes, negligible vs LLM latency.
+    _etc_has_missing_targets = False
+    if etc_overlay:
+        for ns_target in etc_overlay:
+            if (isinstance(ns_target, str)
+                    and ns_target.startswith("/etc/")
+                    and not os.path.exists(ns_target)):
+                _etc_has_missing_targets = True
+                break
+
     for d in _SYSTEM_RO_DIRS:
         host_dir = f"/{d}"
         if not os.path.isdir(host_dir):
             continue
         inside = f"{root}/{d}"
-        _mount(host_dir, inside, None, MS_BIND)
-        _mount(host_dir, inside, None, MS_REMOUNT | MS_BIND | MS_RDONLY)
+        if d == "etc" and _etc_has_missing_targets:
+            _mount("tmpfs", inside, "tmpfs", 0, "mode=755")
+            _copy_dir_shallow(host_dir, inside)
+            # Pre-create mount-point stubs for overlay targets that
+            # don't exist on the host.
+            for ns_target in etc_overlay:
+                if not isinstance(ns_target, str):
+                    continue
+                if not ns_target.startswith("/etc/"):
+                    continue
+                stub = f"{root}{ns_target}"
+                if not os.path.exists(stub):
+                    try:
+                        os.makedirs(os.path.dirname(stub), exist_ok=True)
+                        fd = os.open(
+                            stub,
+                            os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
+                            0o600,
+                        )
+                        os.close(fd)
+                    except OSError as exc:
+                        warn_post_fork(
+                            b"RAPTOR: mount_ns: etc_overlay pre-create "
+                            b"failed (errno=%d)\n" % (exc.errno or 0,)
+                        )
+            _mount("tmpfs", inside, None,
+                   MS_REMOUNT | MS_BIND | MS_RDONLY)
+        else:
+            _mount(host_dir, inside, None, MS_BIND)
+            _mount(host_dir, inside, None,
+                   MS_REMOUNT | MS_BIND | MS_RDONLY)
 
     # 5. /dev and /sys: recursive bind from host. A minimal /dev would
     # be more conservative but real tools (ASAN, glibc, curl) need
@@ -445,30 +540,12 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
     # installed on kernel 6.15+, and mounting on top of the RO /etc
     # bind from step 4 only succeeds while we still have CAP_SYS_ADMIN
     # in the user-ns.
+    #
+    # Mount-point stubs for /etc paths that don't exist on the host
+    # were already created in step 4 (between bind and remount-RO).
+    # On kernel ≥5.12, MNT_LOCKED prevents remounting RO bind mounts
+    # back to RW, so the old remount-RW approach silently failed.
     if etc_overlay:
-        # If any entry needs a new file/dir created under /etc (which
-        # got bound RO in step 4 above), drop the RO on /etc for the
-        # duration of overlay creation, then re-remount RO once all
-        # overlays are bound. MS_REMOUNT can flip the read-only flag
-        # in either direction within a user-ns mount. This addresses
-        # /etc/pam.d/<service> overlays where the host has no PAM
-        # config for the service (e.g. sudoedit) — previously the
-        # create raised EROFS and the overlay was silently dropped.
-        _etc_remounted_rw = False
-        for ns_target in etc_overlay:
-            if not isinstance(ns_target, str):
-                continue
-            if ns_target.startswith("/etc/") and not os.path.exists(
-                f"{root}{ns_target}"
-            ):
-                try:
-                    _mount("/etc", f"{root}/etc", None, MS_REMOUNT | MS_BIND)
-                    _etc_remounted_rw = True
-                except OSError:
-                    # Stays RO; create attempts below will fail and
-                    # be reported by the existing warn_post_fork.
-                    pass
-                break
         for ns_target, host_source in etc_overlay.items():
             if not isinstance(ns_target, str) or not isinstance(host_source, str):
                 warn_post_fork(
@@ -483,14 +560,9 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                     b"skipping bind\n"
                 )
                 continue
-            # If the in-sandbox target doesn't exist yet, create it. For
-            # /etc/<filename> entries the target ALWAYS exists (the
-            # whole /etc tree got bound RO at step 4), so this branch
-            # only fires for caller-supplied paths under the
-            # per-sandbox tmpfs (/tmp/<x>, /run/<x>) where the path
-            # genuinely needs to be created before the bind. We mirror
-            # the source's kind (file → touch, dir → mkdir) so the
-            # subsequent bind has the right target type.
+            # For non-/etc paths (e.g. /tmp/<x>, /run/<x>) the mount
+            # point may still need creating — those dirs are fresh tmpfs
+            # (step 7), not host bind-mounts.
             if not os.path.exists(inside):
                 try:
                     if os.path.isdir(host_source):
@@ -499,7 +571,7 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                         os.makedirs(os.path.dirname(inside), exist_ok=True)
                         fd = os.open(
                             inside,
-                            os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW | os.O_EXCL,
+                            os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
                             0o600,
                         )
                         os.close(fd)
@@ -516,20 +588,6 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                     b"RAPTOR: mount_ns: etc_overlay bind failed; "
                     b"target will see host /etc\n"
                 )
-        # Restore RO on /etc if we dropped it for overlay creation.
-        if _etc_remounted_rw:
-            try:
-                _mount(
-                    "/etc", f"{root}/etc", None,
-                    MS_REMOUNT | MS_BIND | MS_RDONLY,
-                )
-            except OSError:
-                warn_post_fork(
-                    b"RAPTOR: mount_ns: failed to restore /etc RO "
-                    b"after overlay; aborting (Landlock alone is "
-                    b"insufficient for /etc write protection)\n"
-                )
-                raise OSError("mount_ns: /etc RO restore failed after overlay") from None
 
     # 8e. Caller-supplied stage_files — materialise arbitrary files in
     # the tmpfs root so they appear at their namespace path post-pivot.
