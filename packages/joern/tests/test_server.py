@@ -238,11 +238,18 @@ class TestJoernServerRunTieredSweep:
 
 
 class TestJoernServerZGCFlags:
-    def test_start_cmd_includes_zgc(self):
-        """Verify ZGC and ForkJoinPool flags are in the server launch command."""
-        from unittest.mock import MagicMock
+    @staticmethod
+    def _safe_stop(srv):
+        # The mocked Popen carries a fake pid — stop() must never reach the
+        # real os.killpg, or it signals whatever live process group owns
+        # that pgid (this killed operator screen sessions).
+        with patch("packages.joern.server.os.killpg",
+                   side_effect=ProcessLookupError):
+            srv.stop()
 
-        srv = JoernServer(heap_mb=8192)
+    @staticmethod
+    def _start_and_capture(srv):
+        from unittest.mock import MagicMock
 
         captured_cmd = []
 
@@ -255,11 +262,22 @@ class TestJoernServerZGCFlags:
             mock_proc.wait = MagicMock()
             return mock_proc
 
-        with patch("packages.joern.server.subprocess.Popen", side_effect=fake_popen):
-            with patch.object(srv, "_wait_for_ready", return_value=True):
-                with patch.object(srv, "_warmup_imports"):
-                    srv.start()
+        with patch("packages.joern.server.os.killpg",
+                   side_effect=ProcessLookupError):
+            with patch("packages.joern.server.subprocess.Popen",
+                       side_effect=fake_popen):
+                with patch.object(srv, "_wait_for_ready", return_value=True):
+                    with patch.object(srv, "_warmup_imports"):
+                        srv.start()
+        return captured_cmd
 
+    def test_start_cmd_includes_zgc_jdk21(self):
+        """JDK 21-23: ZGC selected, G1 disabled, ZGenerational passed."""
+        srv = JoernServer(heap_mb=8192)
+        with patch("packages.joern.prereqs._java_version", return_value=21):
+            captured_cmd = self._start_and_capture(srv)
+
+        assert "-J-XX:-UseG1GC" in captured_cmd
         assert "-J-XX:+UseZGC" in captured_cmd
         assert "-J-XX:+ZGenerational" in captured_cmd
         assert "-J-XX:+UseStringDeduplication" in captured_cmd
@@ -267,7 +285,53 @@ class TestJoernServerZGCFlags:
         assert "-J-Xms8192m" in captured_cmd
         assert "-J-Xmx8192m" in captured_cmd
 
-        srv.stop()
+        self._safe_stop(srv)
+
+    def test_start_cmd_omits_zgenerational_jdk24_plus(self):
+        """JDK >= 24 removed ZGenerational — must not be passed."""
+        srv = JoernServer()
+        with patch("packages.joern.prereqs._java_version", return_value=25):
+            captured_cmd = self._start_and_capture(srv)
+
+        assert "-J-XX:+UseZGC" in captured_cmd
+        assert "-J-XX:+ZGenerational" not in captured_cmd
+
+        self._safe_stop(srv)
+
+    def test_boot_retries_without_gc_flags_when_jvm_dies(self):
+        """First boot dies (e.g. GC flag conflict) → retry with defaults."""
+        from unittest.mock import MagicMock
+
+        srv = JoernServer()
+        launches = []
+
+        def fake_popen(cmd, **kwargs):
+            launches.append(list(cmd))
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            # First launch: dead process; second: alive.
+            mock_proc.poll.return_value = 1 if len(launches) == 1 else None
+            mock_proc.stderr = MagicMock()
+            mock_proc.wait = MagicMock()
+            return mock_proc
+
+        ready_results = iter([False, True])
+
+        with patch("packages.joern.prereqs._java_version", return_value=25):
+            with patch("packages.joern.server.os.killpg",
+                       side_effect=ProcessLookupError):
+                with patch("packages.joern.server.subprocess.Popen",
+                           side_effect=fake_popen):
+                    with patch.object(srv, "_wait_for_ready",
+                                      side_effect=lambda: next(ready_results)):
+                        with patch.object(srv, "_warmup_imports"):
+                            srv.start()
+
+        assert len(launches) == 2
+        assert any(a.startswith("-J-XX:") for a in launches[0])
+        assert not any(a.startswith("-J-XX:") for a in launches[1])
+
+        self._safe_stop(srv)
 
 
 class TestQueryCancellable:

@@ -383,37 +383,60 @@ def run_query(
     except OSError:
         is_script_file = False
     if is_script_file:
-        cmd = [joern, "--script", str(query_path), "--import", str(cpg.path)]
+        try:
+            script_body = query_path.read_text()
+        except OSError as e:
+            return JoernResult(query=query, errors=[f"cannot read script: {e}"])
     else:
-        cmd = [joern, "--script-content", query, "--import", str(cpg.path)]
+        script_body = query
+
+    # joern's CLI flag surface drifts across releases: `--script-content`
+    # does not exist in 4.x, and `--import` there means "compile .sc onto
+    # the classpath", not "load this CPG".  The stable interface across
+    # versions is `--script` plus the importCpg predef, so wrap every
+    # query in a temporary script that loads the CPG itself.  Written
+    # next to the CPG so the sandbox read grant covers it.
+    wrapper = (
+        f'importCpg("{_escape_scala_string(str(cpg.path))}")\n'
+        f"{script_body}\n"
+    )
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=cpg.path.parent, suffix=".sc",
+            prefix="raptor-query-", delete=False,
+        ) as f:
+            f.write(wrapper)
+            wrapper_path = Path(f.name)
+    except OSError as e:
+        return JoernResult(query=query, errors=[f"cannot write query script: {e}"])
+
+    cmd = [joern, "--script", str(wrapper_path)]
 
     runner = subprocess_runner or _default_sandbox_runner()
 
     start = time.monotonic()
     try:
-        proc = runner(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            target=str(cpg.target),
-            block_network=True,
-        )
-    except TypeError:
         try:
+            # cwd + output grant point at the CPG dir: importCpg copies
+            # the CPG into a `workspace/` under the process cwd, which
+            # must be writable inside the sandbox.
+            proc = runner(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                target=str(cpg.target),
+                output=str(cpg.path.parent),
+                cwd=str(cpg.path.parent),
+                block_network=True,
+            )
+        except TypeError:
             proc = runner(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
             )
-        except subprocess.TimeoutExpired:
-            return JoernResult(
-                query=query,
-                errors=[f"query timed out after {timeout}s"],
-            )
-        except OSError as e:
-            return JoernResult(query=query, errors=[str(e)])
     except subprocess.TimeoutExpired:
         return JoernResult(
             query=query,
@@ -421,6 +444,11 @@ def run_query(
         )
     except OSError as e:
         return JoernResult(query=query, errors=[str(e)])
+    finally:
+        try:
+            wrapper_path.unlink()
+        except OSError:
+            pass
 
     elapsed = int((time.monotonic() - start) * 1000)
 
@@ -735,21 +763,33 @@ def _try_parse_flow_json(json_str: str) -> tuple:
         return None, str(exc)
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def _parse_output(stdout: str) -> tuple:
     """Parse Joern stdout for JOERN_FLOW: lines.
 
     Returns (flows, errors).
+
+    REPL output format drifts across joern versions: the Scala 3 REPL
+    (joern 4.x) wraps values in ANSI colour codes and echoes the final
+    string as ``val resN: String = \"\"\"JOERN_FLOWS_START...``, and
+    each flow may appear multiple times (println + value echoes, the
+    latter with escaped quotes).  So: strip ANSI, match sentinels by
+    prefix/suffix rather than exact line, accept any line whose payload
+    parses as JSON, and dedupe.
     """
     flows: List[TaintFlow] = []
     errors: List[str] = []
+    seen_flows: Set[str] = set()
     in_flows = False
 
-    for line in stdout.splitlines():
-        line = line.strip()
-        if line == "JOERN_FLOWS_START":
+    for raw_line in stdout.splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", raw_line).strip()
+        if line.endswith("JOERN_FLOWS_START"):
             in_flows = True
             continue
-        if line == "JOERN_FLOWS_END":
+        if line.startswith("JOERN_FLOWS_END") or line.endswith("JOERN_FLOWS_END"):
             in_flows = False
             continue
 
@@ -757,14 +797,19 @@ def _parse_output(stdout: str) -> tuple:
         if marker_idx < 0:
             continue
 
-        if not in_flows:
-            continue
-
         json_str = line[marker_idx + len("JOERN_FLOW:"):]
         steps_data, parse_err = _try_parse_flow_json(json_str)
         if parse_err:
-            errors.append(f"failed to parse flow: {parse_err}")
+            # Value echoes re-print flows with escaped quotes; only
+            # report unparseable lines inside the sentinel block that
+            # aren't such echoes.
+            if in_flows and '\\"' not in json_str:
+                errors.append(f"failed to parse flow: {parse_err}")
             continue
+        dedupe_key = json.dumps(steps_data, sort_keys=True)
+        if dedupe_key in seen_flows:
+            continue
+        seen_flows.add(dedupe_key)
         if isinstance(steps_data, list) and steps_data:
             steps = [FlowStep.from_dict(s) for s in steps_data if isinstance(s, dict)]
             if steps:

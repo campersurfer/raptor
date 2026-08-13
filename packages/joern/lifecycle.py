@@ -59,6 +59,40 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _read_comm(pid: int) -> Optional[str]:
+    """Best-effort /proc/<pid>/comm read (None off-Linux or on error)."""
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(
+            encoding="utf-8", errors="replace"
+        ).strip()
+    except OSError:
+        return None
+
+
+def _pid_is_our_server(state: dict[str, Any]) -> bool:
+    """True only if state's pid is alive AND still the process we started.
+
+    The pid comes from an on-disk state file that can outlive the
+    server by hours; a reused pid would otherwise receive our
+    SIGTERM/SIGKILL (this has bitten operator screen sessions).
+    Same pid-reuse defence as core.run.metadata._pid_alive.
+    """
+    pid = state.get("pid")
+    if not pid or not _pid_alive(pid):
+        return False
+    comm = _read_comm(pid)
+    if comm is None:
+        # Off-Linux / no procfs — accept the residual reuse risk.
+        return True
+    expected = state.get("comm")
+    if expected:
+        return comm == expected
+    # Older state file without a recorded comm: require a JVM-shaped
+    # process (the joern launcher execs java; comm may also be the
+    # launcher script name during early boot).
+    return "java" in comm.lower() or "joern" in comm.lower()
+
+
 def _read_state(lock_fd: int) -> Optional[dict[str, Any]]:
     if not _STATE_FILE.exists():
         return None
@@ -96,7 +130,9 @@ def _locked():
 
 def _health_check(port: int) -> bool:
     from urllib.error import URLError
-    from urllib.request import Request, urlopen
+    from urllib.request import Request
+
+    from .server import _NO_PROXY_OPENER
 
     url = f"http://127.0.0.1:{port}/query-sync"
     payload = json.dumps({"query": "1+1"}).encode("utf-8")
@@ -104,7 +140,7 @@ def _health_check(port: int) -> bool:
                   headers={"Content-Type": "application/json"},
                   method="POST")
     try:
-        with urlopen(req, timeout=5) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data.get("success", False) is not False
     except (URLError, OSError, json.JSONDecodeError, TimeoutError):
@@ -134,7 +170,6 @@ def _connect_existing(state: dict[str, Any]) -> Optional[JoernServer]:
     srv._base_url = f"http://127.0.0.1:{port}"
     srv._cpg_loaded = False
     srv._http_client = None
-    srv._version_downgrade = False
     srv._last_post_error = ""
     return srv
 
@@ -190,6 +225,7 @@ def joern_acquire(tunables: Optional[JoernTunables] = None) -> Optional[JoernSer
 
         new_state = {
             "pid": srv.pid,
+            "comm": _read_comm(srv.pid),
             "port": srv.port,
             "heap_mb": tunables.heap_mb,
             "query_timeout_s": tunables.query_timeout_s,
@@ -265,7 +301,7 @@ def _kill_server(state: dict[str, Any]) -> None:
     pid = state.get("pid")
     if not pid:
         return
-    if not _pid_alive(pid):
+    if not _pid_is_our_server(state):
         return
     try:
         os.kill(pid, signal.SIGTERM)
@@ -274,6 +310,9 @@ def _kill_server(state: dict[str, Any]) -> None:
             if not _pid_alive(pid):
                 return
             time.sleep(0.5)
-        os.kill(pid, signal.SIGKILL)
+        # Re-verify before SIGKILL: the pid may have died and been
+        # reused during the grace window.
+        if _pid_is_our_server(state):
+            os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass

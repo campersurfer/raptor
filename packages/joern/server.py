@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import signal
 import socket
 import subprocess
 import threading
@@ -24,7 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 try:
     import httpx as _httpx
@@ -50,19 +52,11 @@ _HEALTH_QUERY = "1+1"
 _SHUTDOWN_GRACE_S = 5
 _REPL_BRIDGE_NAME = "repl-bridge"
 
-# Version-adaptive rewrites for Joern API changes.
-# Each entry is (old_str, new_str) applied when a query fails compilation.
-# Written for v4 (current); rewrites downgrade to v3 patterns.
-_V4_TO_V3_REWRITES: list[tuple[str, str]] = [
-    # v4 wraps EngineConfig in EngineContext; v3 passes EngineConfig directly
-    ("EngineContext(config = tier1Config)", "tier1Config"),
-    ("EngineContext(config = tier2Config)", "tier2Config"),
-    # v4 moved Path from queryengine to language
-    (
-        "io.joern.dataflowengineoss.language.Path",
-        "io.joern.dataflowengineoss.queryengine.Path",
-    ),
-]
+# The Joern server only ever listens on 127.0.0.1.  Loopback traffic
+# must never route through an HTTP proxy — hosts with HTTP_PROXY set
+# (and no localhost NO_PROXY entry) would silently send every query to
+# the proxy instead of the server.
+_NO_PROXY_OPENER = build_opener(ProxyHandler({}))
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _SCALA_ERROR_MARKERS = ("-- [E", "error:", "Error:")
@@ -90,6 +84,25 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _jvm_gc_flags() -> list[str]:
+    """GC tuning flags adapted to the host JDK and Joern launcher.
+
+    Newer joern-cli launchers (>= ~4.0.6xx) hardcode ``-XX:+UseG1GC``
+    ahead of caller flags, so selecting ZGC alone dies with "Multiple
+    garbage collectors selected" — explicitly disable G1 first (later
+    ``-XX`` flags win).  ``ZGenerational`` exists only on JDK 21-23:
+    JDK 24 removed the flag (ZGC is generational-only there).
+    """
+    from .prereqs import _java_version
+
+    flags = ["-J-XX:-UseG1GC", "-J-XX:+UseZGC"]
+    jdk = _java_version()
+    if jdk is not None and 21 <= jdk < 24:
+        flags.append("-J-XX:+ZGenerational")
+    flags.append("-J-XX:+UseStringDeduplication")
+    return flags
+
+
 def _repl_bridge_path() -> str | None:
     """Resolve repl-bridge — the real Joern server binary.
 
@@ -101,9 +114,12 @@ def _repl_bridge_path() -> str | None:
     if joern is None:
         return None
     joern_dir = Path(joern).resolve().parent
-    bridge = joern_dir / _REPL_BRIDGE_NAME
-    if bridge.exists():
-        return str(bridge)
+    # Location moved across joern releases: next to the joern wrapper
+    # in older builds, under bin/ in 4.x.
+    for bridge in (joern_dir / _REPL_BRIDGE_NAME,
+                   joern_dir / "bin" / _REPL_BRIDGE_NAME):
+        if bridge.exists():
+            return str(bridge)
     import shutil
     return shutil.which(_REPL_BRIDGE_NAME)
 
@@ -138,7 +154,6 @@ class JoernServer:
         self._cpg_loaded = False
         self._cpg_path: Path | None = None
         self._http_client: Any | None = None
-        self._version_downgrade: bool = False
         self._last_post_error: str = ""
         self._restart_lock = threading.Lock()
 
@@ -148,36 +163,55 @@ class JoernServer:
             return
 
         binary = _repl_bridge_path() or _joern_path() or "joern"
-        self._port = _find_free_port()
-        self._base_url = f"http://127.0.0.1:{self._port}"
 
-        cmd = [binary]
+        heap_flags: list[str] = []
         if self._heap_mb is not None:
-            cmd.append(f"-J-Xms{self._heap_mb}m")
-            cmd.append(f"-J-Xmx{self._heap_mb}m")
-        cmd.extend([
-            "-J-XX:+UseZGC",
-            "-J-XX:+ZGenerational",
-            "-J-XX:+UseStringDeduplication",
-            "-J-Djava.util.concurrent.ForkJoinPool.common.parallelism=6",
-            "--server",
-            "--server-host", "127.0.0.1",
-            "--server-port", str(self._port),
-        ])
+            heap_flags.append(f"-J-Xms{self._heap_mb}m")
+            heap_flags.append(f"-J-Xmx{self._heap_mb}m")
 
-        logger.info("starting Joern server on 127.0.0.1:%d", self._port)
+        # Attempt tuned GC flags first; if the JVM rejects them (flag
+        # sets drift across JDK releases and joern launcher versions),
+        # the process dies within seconds — retry once with launcher
+        # defaults rather than failing the whole run.
+        parallelism = "-J-Djava.util.concurrent.ForkJoinPool.common.parallelism=6"
+        flag_sets = [_jvm_gc_flags() + [parallelism], [parallelism]]
 
         from core.config import RaptorConfig
-        self._proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=RaptorConfig.get_safe_env(),
-        )
+        for attempt, tuning_flags in enumerate(flag_sets):
+            self._port = _find_free_port()
+            self._base_url = f"http://127.0.0.1:{self._port}"
 
-        if not self._wait_for_ready():
+            cmd = [binary] + heap_flags + tuning_flags + [
+                "--server",
+                "--server-host", "127.0.0.1",
+                "--server-port", str(self._port),
+            ]
+
+            logger.info("starting Joern server on 127.0.0.1:%d", self._port)
+
+            # New session so stop() can signal the whole process group:
+            # the joern launcher may be a shell wrapper that spawns the
+            # JVM without exec — terminating just the wrapper orphans it.
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=RaptorConfig.get_safe_env(),
+                start_new_session=True,
+            )
+
+            if self._wait_for_ready():
+                break
+
+            died_during_boot = self._proc.poll() is not None
             self.stop()
+            if died_during_boot and attempt + 1 < len(flag_sets):
+                logger.warning(
+                    "Joern server died with tuned JVM flags; "
+                    "retrying with launcher defaults"
+                )
+                continue
             raise RuntimeError(
                 f"Joern server failed to start within {self._boot_timeout_s}s"
             )
@@ -252,11 +286,27 @@ class JoernServer:
         pid = self._proc.pid
         logger.info("stopping Joern server (pid %d)", pid)
 
+        def _signal_group(sig: int) -> None:
+            # The launcher may be a shell wrapper whose JVM child would
+            # survive a plain terminate() — signal the whole group.  Only
+            # killpg when pid is the leader of its own group: Popen used
+            # start_new_session=True, so anything else means the pid was
+            # reused (or mocked) and the group is not ours to signal.
+            try:
+                if os.getpgid(pid) != pid:
+                    raise ProcessLookupError
+                os.killpg(pid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                if sig == signal.SIGTERM:
+                    self._proc.terminate()
+                else:
+                    self._proc.kill()
+
         try:
-            self._proc.terminate()
+            _signal_group(signal.SIGTERM)
             self._proc.wait(timeout=_SHUTDOWN_GRACE_S)
         except subprocess.TimeoutExpired:
-            self._proc.kill()
+            _signal_group(signal.SIGKILL)
             self._proc.wait(timeout=5)
         except OSError:
             pass
@@ -515,6 +565,7 @@ class JoernServer:
         # ~50ms TCP setup overhead is negligible vs query execution time.
         client = _httpx.Client(
             timeout=_httpx.Timeout(timeout, connect=5.0),
+            trust_env=False,
         )
         try:
             resp = client.post(url, json=payload)
@@ -545,7 +596,7 @@ class JoernServer:
             method="POST",
         )
         try:
-            with urlopen(req, timeout=timeout) as resp:
+            with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except (URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
             if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
@@ -574,7 +625,7 @@ class JoernServer:
                 req = Request(url, data=body,
                               headers={"Content-Type": "application/json"},
                               method="POST")
-                with urlopen(req, timeout=10) as resp:
+                with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             return data.get("uuid") or data.get("id")
         except Exception as e:
@@ -592,7 +643,7 @@ class JoernServer:
                 data = resp.json()
             else:
                 req = Request(url, method="GET")
-                with urlopen(req, timeout=5) as resp:
+                with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             if data.get("success") is not None:
                 return data
@@ -844,31 +895,6 @@ class JoernServer:
             logger.warning("batch taint query errors: %s", result.errors)
         return result.flows
 
-    def _apply_version_rewrites(self, content: str) -> str:
-        """Apply cached version rewrites from prior adaptation."""
-        if self._version_downgrade:
-            for old, new in _V4_TO_V3_REWRITES:
-                content = content.replace(old, new)
-        return content
-
-    def _try_version_fallback(self, content: str) -> str | None:
-        """Apply v4→v3 rewrites and test compilation.
-
-        Returns the rewritten content if it compiles, None otherwise.
-        Caches the result so future queries skip the probe.
-        """
-        candidate = content
-        for old, new in _V4_TO_V3_REWRITES:
-            candidate = candidate.replace(old, new)
-        if candidate == content:
-            return None
-        result = self._submit_query(candidate, timeout=30)
-        if not result.errors:
-            self._version_downgrade = True
-            logger.info("joern version adaptation: applied v3 API rewrites")
-            return candidate
-        return None
-
     def _submit_query(
         self,
         content: str,
@@ -932,20 +958,9 @@ class JoernServer:
             "__MAX_OUTPUT_ARGS__", str(lang_profile.max_output_args_expansion),
         )
 
-        content = self._apply_version_rewrites(content)
-
-        result = self._submit_query(
+        return self._submit_query(
             content, timeout=timeout, cancel_check=cancel_check,
         )
-
-        if result.errors and any("query failed:" in e for e in result.errors):
-            adapted = self._try_version_fallback(content)
-            if adapted is not None:
-                result = self._submit_query(
-                    adapted, timeout=timeout, cancel_check=cancel_check,
-                )
-
-        return result
 
     def run_summary_batch(
         self,
