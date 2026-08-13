@@ -322,7 +322,10 @@ def detect_widely_used(
     if isinstance(files_data, list):
         file_iter = ((f["path"], f.get("items", [])) for f in files_data if isinstance(f, dict))
     elif isinstance(files_data, dict):
-        file_iter = files_data.items()
+        file_iter = (
+            (k, v.get("items", []) if isinstance(v, dict) else v)
+            for k, v in files_data.items()
+        )
     else:
         return widely_used
     for file_path, items in file_iter:

@@ -129,7 +129,7 @@ def _load_coverage_store(project_dir: Path | None):
         return None
     try:
         from core.coverage.store import CoverageStore
-        return CoverageStore.load(cov_path)
+        return CoverageStore(cov_path)
     except Exception:
         return None
 
@@ -576,6 +576,29 @@ def _stale_journal(args):
         )
 
 
+def cmd_coverage(args):
+    """Show mechanical tool coverage for a project run."""
+    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    store = _load_coverage_store(project_dir)
+    if store is None:
+        print("  No coverage data found.")
+        return
+
+    file_filter = getattr(args, "file", None)
+    all_files = store.files()
+    if file_filter:
+        all_files = [f for f in all_files if file_filter in f]
+        if not all_files:
+            print(f"  No coverage records matching '{file_filter}'.")
+            return
+
+    for path in all_files:
+        cov = store.file_coverage(path)
+        print(f"  {path}: {cov:.0f}%")
+
+    print(f"\n  {len(all_files)} file(s) with coverage data.")
+
+
 def cmd_compact(args):
     """Compact the project journal index."""
     project_dir = _resolve_project_dir(getattr(args, "project", None))
@@ -649,8 +672,6 @@ def main():
         choices=["annotation", "journal", "both"],
         help="Which store to check for staleness (default: annotation)",
     )
-    p_stale.add_argument("--project", default=None,
-                         help="Project directory (defaults to .active)")
 
     sub.add_parser("compact", parents=[common], help="Compact project journal index")
 
@@ -683,6 +704,7 @@ def main():
         "edit": cmd_edit,
         "stale": cmd_stale,
         "compact": cmd_compact,
+        "coverage": cmd_coverage,
     }
 
     handler = dispatch.get(args.command)

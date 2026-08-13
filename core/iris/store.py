@@ -62,7 +62,7 @@ def checklist_sha(checklist: dict[str, Any]) -> str:
     Deterministic: sorted by path, each entry is ``path:sha256``.
     """
     parts = []
-    for f in sorted(checklist.get("files", []), key=lambda x: x.get("path", "")):
+    for f in sorted(checklist.get("files") or [], key=lambda x: x.get("path", "")):
         path = f.get("path", "")
         sha = f.get("sha256", "")
         if path:

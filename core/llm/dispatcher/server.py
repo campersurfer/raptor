@@ -720,7 +720,11 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 return
 
             # ---- request body ----
-            content_length = int(self.headers.get("Content-Length", "0"))
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except (ValueError, TypeError):
+                self._send_simple(400, "invalid Content-Length")
+                return
             body = self.rfile.read(content_length) if content_length else b""
 
             method = self.command

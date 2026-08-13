@@ -672,7 +672,7 @@ def build_evidence_index(
 
     index: Dict[str, EvidenceRecord] = {}
 
-    for file_entry in checklist.get("files", []):
+    for file_entry in checklist.get("files") or []:
         file_path = file_entry.get("path", "")
         if not file_path:
             continue

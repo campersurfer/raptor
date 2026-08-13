@@ -396,9 +396,9 @@ def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
             if isinstance(cost, (int, float)):
                 result.cost_usd = cost
             usage = obj.get("usage", {})
-            if usage.get("input_tokens"):
+            if isinstance(usage.get("input_tokens"), int):
                 result.input_tokens = usage["input_tokens"]
-            if usage.get("output_tokens"):
+            if isinstance(usage.get("output_tokens"), int):
                 result.output_tokens = usage["output_tokens"]
             if obj.get("is_error"):
                 result.error = obj.get("result", "stream-json reported is_error")

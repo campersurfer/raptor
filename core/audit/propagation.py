@@ -593,7 +593,8 @@ def _try_taint_approx_resolve(
         return None
 
     param_idx = None
-    for i, p in enumerate(approx.params):
+    params = approx.get("params", []) if isinstance(approx, dict) else getattr(approx, "params", [])
+    for i, p in enumerate(params):
         if p == param_name:
             param_idx = i
             break
@@ -729,8 +730,10 @@ def _tick_tier(
     if tier_counters is None or tier not in tier_counters:
         return
     tc = tier_counters[tier]
-    if result.resolved:
+    if result.resolved and result.resolution == "confirmed":
         tc.confirmed += 1
+    elif result.resolved:
+        tc.refuted += 1
     else:
         tc.inconclusive += 1
 

@@ -353,8 +353,11 @@ def _load_findings(out_dir: Path) -> List[Dict[str, Any]]:
     path = out_dir / "findings.json"
     if not path.exists():
         return []
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
     return data if isinstance(data, list) else data.get("findings", [])
 
 
@@ -362,8 +365,11 @@ def _load_gaps(out_dir: Path) -> Dict[str, Any]:
     path = out_dir / "gaps.json"
     if not path.exists():
         return {}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def _compute_stats(audit_data: Dict[str, Any]) -> Dict[str, int]:

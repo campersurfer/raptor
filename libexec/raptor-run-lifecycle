@@ -52,7 +52,7 @@ def _merge_journal_index(out_dir: Path) -> None:
     journal_path = out_dir / "review-journal.jsonl"
     if not journal_path.is_file():
         return
-    active = Path(".active")
+    active = Path.home() / ".raptor" / "projects" / ".active"
     if not active.is_symlink() and not active.exists():
         return
     try:

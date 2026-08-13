@@ -57,7 +57,9 @@ def _escape_char(c: str) -> str:
     o = ord(c)
     if o <= 0xFF:
         return f"\\x{o:02x}"
-    return f"\\u{o:04x}"
+    if o <= 0xFFFF:
+        return f"\\u{o:04x}"
+    return f"\\U{o:08x}"
 
 
 def has_nonprintable(s: str) -> bool:
