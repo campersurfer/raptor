@@ -1322,6 +1322,8 @@ def _merge_attack_surface(
     all_boundary_details = context_map.get("boundary_details", [])
     for boundary in new_boundaries:
         for bd in all_boundary_details:
+            if not isinstance(bd, dict):
+                continue
             if bd.get("gaps") and _boundary_matches(boundary, bd):
                 boundary["gaps"] = bd["gaps"]
                 boundary["gaps_source"] = "understand:map"
@@ -1706,11 +1708,13 @@ def _merge_list_by_key(
     existing_keys = {
         item.get(key, "")
         for item in existing
-        if item.get(key)
+        if isinstance(item, dict) and item.get(key)
     }
 
     result = list(existing)
     for item in incoming:
+        if not isinstance(item, dict):
+            continue
         item_key = item.get(key, "")
         if item_key and item_key in existing_keys:
             continue

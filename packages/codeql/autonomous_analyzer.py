@@ -466,12 +466,12 @@ class AutonomousCodeQLAnalyzer:
         return CodeQLFinding(
             rule_id=rule_id,
             rule_name=rule_name,
-            message=result.get("message", {}).get("text", ""),
+            message=(result.get("message") or {}).get("text", ""),
             level=result.get("level", "warning"),
             file_path=artifact.get("uri", ""),
             start_line=region.get("startLine", 0),
             end_line=region.get("endLine") or region.get("startLine", 0),
-            snippet=region.get("snippet", {}).get("text", ""),
+            snippet=(region.get("snippet") or {}).get("text", ""),
             cwe=cwe,
             has_dataflow=has_dataflow,
             dataflow_path_count=dataflow_path_count

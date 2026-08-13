@@ -99,6 +99,8 @@ def _merge_discovered_sinks(
 
     existing: Set[tuple] = set()
     for sd in sink_details:
+        if not isinstance(sd, dict):
+            continue
         f = sd.get("file", "")
         line = sd.get("line") or 0
         existing.add((f, line))
@@ -242,6 +244,8 @@ def _populate_sinks_array(
 
     existing: Set[tuple] = set()
     for s in sinks:
+        if not isinstance(s, dict):
+            continue
         existing.add((s.get("file", ""), s.get("function", ""), s.get("target", "")))
 
     added = 0
@@ -277,6 +281,8 @@ def _next_sink_id(sink_details: list) -> int:
     """Find the next available SINK-NNN id number."""
     max_id = 0
     for sd in sink_details:
+        if not isinstance(sd, dict):
+            continue
         sid = sd.get("id") or ""
         if sid.startswith("SINK-"):
             try:

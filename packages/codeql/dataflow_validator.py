@@ -520,8 +520,8 @@ class DataflowValidator:
                     file_path=artifact.get("uri", ""),
                     line=region.get("startLine", 0),
                     column=region.get("startColumn", 0),
-                    snippet=region.get("snippet", {}).get("text", ""),
-                    label=loc.get("message", {}).get("text", "")
+                    snippet=(region.get("snippet") or {}).get("text", ""),
+                    label=(loc.get("message") or {}).get("text", "")
                 )
                 steps.append(step)
 
@@ -542,7 +542,7 @@ class DataflowValidator:
                 intermediate_steps=intermediate,
                 sanitizers=sanitizers,
                 rule_id=result.get("ruleId", ""),
-                message=result.get("message", {}).get("text", "")
+                message=(result.get("message") or {}).get("text", "")
             )
 
         except Exception as e:

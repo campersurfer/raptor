@@ -63,7 +63,8 @@ class DatabaseMetadata:
 
     @staticmethod
     def from_dict(data: dict):
-        return DatabaseMetadata(**data)
+        fields = {f.name for f in __import__('dataclasses').fields(DatabaseMetadata)}
+        return DatabaseMetadata(**{k: v for k, v in data.items() if k in fields})
 
 
 @dataclass

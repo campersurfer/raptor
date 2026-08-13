@@ -704,7 +704,7 @@ class CodeQLAgent:
 
                     # Extract path information
                     rule_id = result.get("ruleId", "unknown")
-                    message = result.get("message", {}).get("text", "")
+                    message = (result.get("message") or {}).get("text", "")
 
                     # Get the dataflow path
                     flow = code_flows[0]
