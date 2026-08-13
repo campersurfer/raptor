@@ -160,6 +160,42 @@ def _drain_status_pipe(status_r: int, parent_fds: set):
     return _parse_setup_status(raw)
 
 
+# Path to the raptor-gidmap-allow helper — same checkout-relative
+# resolution as the coord-launcher.  When built and granted CAP_SETGID
+# this binary writes gid_map WITHOUT denying setgroups, letting targets
+# that call setgroups(2) during init (sudo, su, login) start normally.
+GIDMAP_ALLOW_PATH = (
+    Path(__file__).resolve().parent / "helpers" / "raptor-gidmap-allow"
+)
+
+
+def _gidmap_allow_available() -> "str | None":
+    """Return the path to raptor-gidmap-allow if built and capable.
+
+    Probes once per process (cached in ``state._gidmap_allow_cache``).
+    Returns the resolved path string if the binary exists and ``getcap``
+    confirms ``cap_setgid``, else ``None``.
+    """
+    with state._cache_lock:
+        if state._gidmap_allow_cache is not None:
+            return state._gidmap_allow_cache or None
+        result: str | bool = False
+        try:
+            if GIDMAP_ALLOW_PATH.is_file():
+                getcap = shutil.which("getcap")
+                if getcap:
+                    r = subprocess.run(
+                        [getcap, str(GIDMAP_ALLOW_PATH)],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    if "cap_setgid" in r.stdout:
+                        result = str(GIDMAP_ALLOW_PATH)
+        except Exception:
+            pass
+        state._gidmap_allow_cache = result
+        return result or None
+
+
 def mount_ns_available() -> bool:
     """Return True if the full mount-ns+newuidmap path is usable here.
 
@@ -1493,10 +1529,14 @@ def run_sandboxed(
             _parent_fds.discard(p_ready_r)
 
         # Step 6: newuidmap / newgidmap.
+        # Prefer raptor-gidmap-allow when available — it writes gid_map
+        # WITHOUT denying setgroups, so targets that call setgroups(2)
+        # during init can start.  Falls back to newgidmap silently.
         host_uid = os.getuid()
         host_gid = os.getgid()
         newuidmap = shutil.which("newuidmap")
-        newgidmap = shutil.which("newgidmap")
+        gidmap_allow = _gidmap_allow_available()
+        newgidmap = gidmap_allow or shutil.which("newgidmap")
         if not newuidmap or not newgidmap:
             _kill_and_reap(child_pid)
             raise FileNotFoundError(

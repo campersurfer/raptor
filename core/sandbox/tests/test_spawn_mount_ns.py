@@ -361,6 +361,72 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
                       "overlay file not visible alongside host /etc")
 
 
+class TestGidmapAllowProbe(unittest.TestCase):
+    """_gidmap_allow_available() — detection of the raptor-gidmap-allow helper."""
+
+    def setUp(self):
+        from core.sandbox import state
+        state._gidmap_allow_cache = None
+
+    def tearDown(self):
+        from core.sandbox import state
+        state._gidmap_allow_cache = None
+
+    def test_returns_none_when_binary_missing(self):
+        """When the helper binary doesn't exist, returns None."""
+        from unittest.mock import patch
+        from core.sandbox._spawn import _gidmap_allow_available
+        with patch("core.sandbox._spawn.GIDMAP_ALLOW_PATH") as mock_path:
+            mock_path.is_file.return_value = False
+            self.assertIsNone(_gidmap_allow_available())
+
+    def test_returns_none_when_no_cap_setgid(self):
+        """Binary exists but getcap doesn't show cap_setgid → None."""
+        from unittest.mock import patch, MagicMock
+        from core.sandbox._spawn import _gidmap_allow_available
+        mock_run = MagicMock(return_value=MagicMock(stdout="", returncode=0))
+        with patch("core.sandbox._spawn.GIDMAP_ALLOW_PATH") as mock_path:
+            mock_path.is_file.return_value = True
+            with (
+                patch("core.sandbox._spawn.shutil.which",
+                      return_value="/usr/sbin/getcap"),
+                patch("core.sandbox._spawn.subprocess.run", mock_run),
+            ):
+                self.assertIsNone(_gidmap_allow_available())
+
+    def test_returns_path_when_cap_present(self):
+        """Binary exists and getcap confirms cap_setgid → returns path."""
+        from unittest.mock import patch, MagicMock
+        from core.sandbox._spawn import _gidmap_allow_available
+        mock_run = MagicMock(return_value=MagicMock(
+            stdout="/path/to/raptor-gidmap-allow cap_setgid=ep",
+            returncode=0,
+        ))
+        with patch("core.sandbox._spawn.GIDMAP_ALLOW_PATH") as mock_path:
+            mock_path.is_file.return_value = True
+            mock_path.__str__ = lambda _: "/path/to/raptor-gidmap-allow"
+            with (
+                patch("core.sandbox._spawn.shutil.which",
+                      return_value="/usr/sbin/getcap"),
+                patch("core.sandbox._spawn.subprocess.run", mock_run),
+            ):
+                result = _gidmap_allow_available()
+                self.assertEqual(result, "/path/to/raptor-gidmap-allow")
+
+    def test_cached_after_first_probe(self):
+        """Second call returns the cached value without re-probing."""
+        from unittest.mock import patch
+        from core.sandbox import state
+        from core.sandbox._spawn import _gidmap_allow_available
+        with patch("core.sandbox._spawn.GIDMAP_ALLOW_PATH") as mock_path:
+            mock_path.is_file.return_value = False
+            _gidmap_allow_available()
+        # Cache should be set to False (not None).
+        self.assertFalse(state._gidmap_allow_cache)
+        # Second call should still return None — cache is already decided.
+        self.assertIsNone(_gidmap_allow_available())
+
+
 class TestDeathPipeOrphanTeardown(unittest.TestCase):
     """Death-pipe mechanism: intermediate child exits 137 when the
     parent's write end closes (simulating orchestrator SIGKILL/OOM).
