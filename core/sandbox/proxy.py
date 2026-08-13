@@ -934,17 +934,23 @@ class EgressProxy:
                 {v6_task, v4_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            # First to finish — if it succeeded, take it; if it failed,
-            # wait on the other.
+            # First to finish — if it succeeded, take it; close/cancel
+            # the loser. When both land in `done` simultaneously,
+            # cancel() is a no-op — close the writer explicitly.
+            winner = None
             for t in done:
                 try:
                     result = t.result()
-                    # Cancel the loser.
-                    for p in pending:
-                        p.cancel()
-                    return result
+                    if winner is None:
+                        winner = result
+                    else:
+                        result[1].close()
                 except (OSError, asyncio.TimeoutError):
                     pass
+            if winner is not None:
+                for p in pending:
+                    p.cancel()
+                return winner
             # Both done in this iteration with failures? Wait the rest.
             last_err: Optional[Exception] = None
             for t in pending:

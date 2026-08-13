@@ -165,6 +165,13 @@ class SandboxHost:
         opener_thread.start()
         opener_thread.join(timeout=startup_timeout)
         if opener_thread.is_alive() or _open_state["error"] is not None:
+            for _fd_key in ("write_fd", "read_fd"):
+                _fd = _open_state[_fd_key]
+                if _fd is not None:
+                    try:
+                        os.close(_fd)
+                    except OSError:
+                        pass
             if not thread.is_alive():
                 raise HostRPCError(
                     f"daemon died before FIFO open: "

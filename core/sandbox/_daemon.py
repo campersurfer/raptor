@@ -639,6 +639,10 @@ _MAX_STDIN_BYTES = 8 * 1024 * 1024   # 8 MiB per spawn stdin
 
 def _cap(name: str, value, ceiling, fn=float):
     v = fn(value)
+    if v <= 0:
+        raise ValueError(
+            f"{name}={v} must be positive"
+        )
     if v > ceiling:
         raise ValueError(
             f"{name}={v} exceeds cap {ceiling} — reject to bound "

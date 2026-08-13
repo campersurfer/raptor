@@ -313,14 +313,14 @@ def run_landlock_audit(
 
     target_pid = -1
     tracer_pid = -1
-    parent_owned_fds = [
-        p_go_r, p_go_w, t_ready_r, t_ready_w,
-        out_r, out_w, err_r, err_w,
-    ]
-
     def _cleanup_fds() -> None:
-        for fd in parent_owned_fds:
+        nonlocal p_go_r, p_go_w, t_ready_r, t_ready_w
+        nonlocal out_r, out_w, err_r, err_w
+        for fd in (p_go_r, p_go_w, t_ready_r, t_ready_w,
+                   out_r, out_w, err_r, err_w):
             _close_safely(fd)
+        p_go_r = p_go_w = t_ready_r = t_ready_w = -1
+        out_r = out_w = err_r = err_w = -1
 
     try:
         # ----- Fork the target -----
@@ -535,23 +535,28 @@ def run_landlock_audit(
             _close_safely(p_go_w)
             p_go_w = -1
 
-        # Drain stdio capture pipes while waiting for target exit.
-        # Simple sequential read since we don't expect huge stderr
-        # interleaved with stdout in the cc_profile / probe use
-        # cases. If a downstream consumer ever pumps GBs through
-        # stdout, switch to selectors.
+        # Drain both stdio pipes concurrently to avoid deadlock when
+        # the child fills one pipe buffer while we block reading the other.
         stdout_bytes = stderr_bytes = b""
         if capture_output:
-            try:
-                stdout_bytes = _read_to_eof(out_r)
-            finally:
-                _close_safely(out_r)
-                out_r = -1
-            try:
-                stderr_bytes = _read_to_eof(err_r)
-            finally:
-                _close_safely(err_r)
-                err_r = -1
+            bufs = {out_r: [], err_r: []}
+            fds_open = {out_r, err_r}
+            while fds_open:
+                ready, _, _ = select.select(list(fds_open), [], [], 30.0)
+                if not ready:
+                    break
+                for fd in ready:
+                    chunk = os.read(fd, 65536)
+                    if chunk:
+                        bufs[fd].append(chunk)
+                    else:
+                        fds_open.discard(fd)
+            stdout_bytes = b"".join(bufs[out_r])
+            stderr_bytes = b"".join(bufs[err_r])
+            _close_safely(out_r)
+            out_r = -1
+            _close_safely(err_r)
+            err_r = -1
 
         # waitpid the target.
         target_rc = -1
