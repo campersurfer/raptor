@@ -206,6 +206,21 @@ def _strip_ipa_suffix(name: str) -> str:
         name = stripped
 
 
+def _strip_params(full: str) -> str:
+    """Strip parameter list from a demangled C++ symbol, preserving
+    ``operator()`` and similar operators whose names contain parens."""
+    if "(" not in full:
+        return full
+    # operator() — the parens are part of the name, not the param list
+    op_marker = "operator()"
+    oi = full.find(op_marker)
+    if oi != -1:
+        after = full[oi + len(op_marker):]
+        prefix = full[: oi + len(op_marker)]
+        return prefix + (after.split("(", 1)[0] if "(" in after else after)
+    return full.split("(", 1)[0]
+
+
 def _nm_symbols(binary_path: Path) -> Dict[str, int]:
     """Name → address for every text symbol (local + global) defined in the
     binary. Missing tools / non-ELF input return ``{}``.
@@ -241,7 +256,7 @@ def _nm_symbols(binary_path: Path) -> Dict[str, int]:
             #   bare       "Uncompress"           ← legacy bare-name lookup
             # Without ``qualified``, C++ measurement against ``gcov -m``
             # demangled output couldn't match nm — surfaced in snappy Inc 3c.
-            qualified = full.split("(", 1)[0] if "(" in full else full
+            qualified = _strip_params(full)
             qualified = _strip_ipa_suffix(qualified)
             if qualified and qualified != full:
                 syms.setdefault(qualified, addr)
@@ -716,7 +731,7 @@ def _dynamic_nm_symbols(binary_path: Path) -> Dict[str, int]:
                 continue
             full = parts[2].strip()
             syms[full] = addr
-            qualified = full.split("(", 1)[0] if "(" in full else full
+            qualified = _strip_params(full)
             qualified = _strip_ipa_suffix(qualified)
             if qualified and qualified != full:
                 syms.setdefault(qualified, addr)

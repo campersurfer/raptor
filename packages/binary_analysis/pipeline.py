@@ -1593,7 +1593,7 @@ def _ingest_graph_body(store: BinaryGraphStore, result: BinaryAnalysisResult, ou
         )
         ingress_node = ingress_nodes.get(boundary.get("ingress_id") or "")
         function_node = function_nodes.get(boundary.get("boundary_function_id") or "")
-        surface_node = surface_nodes.get(boundary.get("parser_surface_id") or "")
+        surface_node = all_surface_nodes.get(boundary.get("parser_surface_id") or "")
         store.add_edge(
             snapshot_id,
             manifest.binary_sha256,

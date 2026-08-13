@@ -882,7 +882,8 @@ class CrashAnalyser:
             if stripped.startswith(("frame #", "* frame #")):
                 backtrace_lines.append(stripped)
 
-        context.stack_trace = "\n".join(backtrace_lines)
+        if not context.stack_trace:
+            context.stack_trace = "\n".join(backtrace_lines)
 
         # Extract crash instruction and address from disassembly
         crash_instruction_found = False
@@ -1044,7 +1045,8 @@ class CrashAnalyser:
                 elif "quit" in line.lower():
                     break
 
-        context.stack_trace = "\n".join(backtrace_lines)
+        if not context.stack_trace:
+            context.stack_trace = "\n".join(backtrace_lines)
 
         # Extract crash instruction and address
         crash_instruction_found = False
@@ -1073,7 +1075,7 @@ class CrashAnalyser:
                             addr_start = line.index("0x")
                             addr_end = addr_start + 18
                             addr_part = line[addr_start:addr_end].split()[0]
-                            if addr_part.startswith("0x"):
+                            if is_valid_hex_address(addr_part):
                                 context.crash_address = addr_part
                         crash_instruction_found = True
                         logger.debug("Found crash instruction from disassembly: %s", context.crash_instruction)
