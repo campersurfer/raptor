@@ -18,6 +18,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.security.prompt_envelope import neutralize_tag_forgery
+
 logger = logging.getLogger(__name__)
 
 
@@ -460,9 +462,7 @@ def format_context_for_prompt(
         sections.append(PromptSection("sinks", "\n".join(sp), 1))
 
     if ctx.get("mechanical_evidence"):
-        evidence_text = ctx["mechanical_evidence"].replace(
-            "</untrusted>", "<\\/untrusted>",
-        )
+        evidence_text = neutralize_tag_forgery(ctx["mechanical_evidence"])
         ep = [
             '\n<untrusted kind="mechanical-evidence"'
             ' origin="audit-evidence-index">',
