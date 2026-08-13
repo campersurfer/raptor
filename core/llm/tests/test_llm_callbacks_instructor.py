@@ -316,7 +316,12 @@ class TestCoerceToSchema:
         assert _coerce_to_schema({"text": None}, schema) == {"text": None}
 
     def test_correct_types_unchanged(self):
-        schema = {"properties": {"flag": {"type": "boolean"}, "score": {"type": "number"}}}
+        schema = {
+            "properties": {
+                "flag": {"type": "boolean"},
+                "score": {"type": "number"},
+            },
+        }
         data = {"flag": True, "score": 0.9}
         assert _coerce_to_schema(data, schema) == data
 
@@ -480,3 +485,56 @@ class TestStructuredFallback:
         # full_response should be valid JSON
         parsed_response = json.loads(full_response)
         assert parsed_response["name"] == "test"
+
+
+class TestGeminiNativeStructuredTruncation:
+    """Gemini native structured path must raise on truncated output."""
+
+    @staticmethod
+    def _make_gemini(mock_response):
+        pytest.importorskip("google.genai")
+        from core.llm.providers import GeminiProvider
+        import threading
+
+        provider = GeminiProvider(ModelConfig(
+            provider="gemini", model_name="gemini-2.5-flash",
+            api_key="test-key", timeout=1,
+        ))
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        provider._clients[threading.get_ident()] = mock_client
+        return provider
+
+    @staticmethod
+    def _mock_response(text, finish_reason_name, out_tokens=100):
+        fr = MagicMock()
+        fr.name = finish_reason_name
+        candidate = MagicMock()
+        candidate.finish_reason = fr
+        usage = MagicMock()
+        usage.prompt_token_count = 50
+        usage.candidates_token_count = out_tokens
+        usage.thoughts_token_count = 0
+        resp = MagicMock()
+        resp.text = text
+        resp.candidates = [candidate]
+        resp.usage_metadata = usage
+        return resp
+
+    def test_truncated_response_raises_runtime_error(self):
+        resp = self._mock_response(
+            '{"result": "trun', "MAX_TOKENS", 8192,
+        )
+        provider = self._make_gemini(resp)
+
+        with pytest.raises(RuntimeError, match="truncated"):
+            provider.generate_structured("test", {"result": "string"})
+
+    def test_complete_response_not_raised(self):
+        resp = self._mock_response('{"result": "ok"}', "STOP", 20)
+        provider = self._make_gemini(resp)
+
+        result = provider.generate_structured(
+            "test", {"result": "string"},
+        )
+        assert result.result["result"] == "ok"

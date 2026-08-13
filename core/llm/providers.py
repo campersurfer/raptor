@@ -3017,6 +3017,18 @@ class GeminiProvider(LLMProvider):
             logger.debug("[Gemini] structured model=%s, tokens=%s, cost=$%.4f, duration=%.2fs, thinking=%s",
                          self.config.model_name, tokens_used, cost, duration, thinking_tokens)
 
+            finish_reason = "complete"
+            if response.candidates and response.candidates[0].finish_reason:
+                fr = response.candidates[0].finish_reason
+                finish_reason = getattr(fr, 'name', str(fr)).lower()
+
+            if finish_reason in ("max_tokens", "length"):
+                raise RuntimeError(
+                    "Gemini native structured response truncated "
+                    f"(finish_reason={finish_reason}, "
+                    f"output_tokens={output_tokens})"
+                )
+
             content = (response.text or "").strip()
             if content.startswith("```") and content.endswith("```"):
                 if "\n" in content:
