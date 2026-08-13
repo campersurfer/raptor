@@ -1348,8 +1348,14 @@ def _run_version_diff_review(client, canonical, supply_chain_findings, http, out
             name=dep.name,
             ecosystem=dep.ecosystem,
             version=old_version,
-            source=dep.source,
-            manifest_path=dep.manifest_path,
+            declared_in=dep.declared_in,
+            scope=dep.scope,
+            is_lockfile=dep.is_lockfile,
+            pin_style=dep.pin_style,
+            direct=dep.direct,
+            purl=dep.purl,
+            parser_confidence=dep.parser_confidence,
+            source_kind=dep.source_kind,
         )
 
         verdict = review_version_diff(client, old_dep, dep, http)
