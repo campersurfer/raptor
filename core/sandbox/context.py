@@ -1561,10 +1561,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         # that happened during THAT subprocess. For a sandbox() block with
         # multiple run() calls, the accumulated view is exposed as
         # `run.events` (see below).
-        proxy_token = (
-            proxy_instance.register_sandbox(caller_label=caller_label)
-            if proxy_instance is not None else None
-        )
+        proxy_token = None
         # Mount-ns path: bypass subprocess+preexec entirely. _spawn
         # handles fork + newuidmap + mount + Landlock + seccomp + pid-ns
         # in the right order (mount ops MUST precede Landlock install on
@@ -1745,6 +1742,10 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         # per-sandbox dict would grow unboundedly across a long
         # session with flaky sandboxes.
         try:
+            proxy_token = (
+                proxy_instance.register_sandbox(caller_label=caller_label)
+                if proxy_instance is not None else None
+            )
             if spawn_eligible and use_seatbelt:
                 # macOS sandbox-exec path. No fork/pivot_root chain; no
                 # mount-ns fallback ladder. sandbox-exec wraps a single
@@ -2290,7 +2291,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
         # Stamp the nonce in either case so the operator can pass
         # it to parse_observe_log() for spoof-resistant parsing.
         _audit_engaged_anywhere = (
-            spawn_eligible or _audit_landlock_engaged
+            used_spawn or _audit_landlock_engaged
         )
         if (nonlocal_observe_nonce is not None
                 and nonlocal_audit_mode

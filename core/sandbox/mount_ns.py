@@ -380,21 +380,20 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
         inside = f"{root}{target}"
         os.makedirs(inside, exist_ok=True)
         _mount(target, inside, None, MS_BIND)
-        # Remount-bind-ro is best-effort. The kernel rejects remount-ro
-        # with EPERM when the source filesystem isn't owned by our
-        # user-ns (common when target is under the HOST's /tmp tmpfs
-        # and our sandbox also has a fresh tmpfs at /tmp — stacking
-        # rules interact). Landlock enforces read-only on target at
-        # the filesystem-access layer independently, so the ro mount
-        # flag is defence-in-depth rather than the primary control.
-        try:
-            _mount(target, inside, None, MS_REMOUNT | MS_BIND | MS_RDONLY)
-        except OSError as exc:
-            warn_post_fork(
-                b"mount_ns: target remount-ro failed (errno=%d); "
-                b"relying on Landlock for read-only enforcement\n"
-                % (exc.errno or 0)
-            )
+        # Remount-bind-ro is best-effort. Skip when output == target
+        # since output must remain writable. Landlock enforces
+        # read-only on target at the filesystem-access layer
+        # independently, so the ro mount flag is defence-in-depth
+        # rather than the primary control.
+        if output != target:
+            try:
+                _mount(target, inside, None, MS_REMOUNT | MS_BIND | MS_RDONLY)
+            except OSError as exc:
+                warn_post_fork(
+                    b"mount_ns: target remount-ro failed (errno=%d); "
+                    b"relying on Landlock for read-only enforcement\n"
+                    % (exc.errno or 0)
+                )
     if output and output != target and not _shadows_per_ns(output):
         inside = f"{root}{output}"
         os.makedirs(inside, exist_ok=True)

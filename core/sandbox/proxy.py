@@ -652,20 +652,21 @@ class EgressProxy:
             raise RuntimeError("proxy event loop not running")
 
         import os as _os
-        old_umask = _os.umask(0o077)
-        try:
-            async def _bind():
+
+        async def _bind():
+            old_umask = _os.umask(0o077)
+            try:
                 srv = await asyncio.start_unix_server(
                     self._handle_unix_client, path=path,
                 )
-                with self._unix_lock:
-                    self._unix_servers[path] = srv
-                return srv
+            finally:
+                _os.umask(old_umask)
+            with self._unix_lock:
+                self._unix_servers[path] = srv
+            return srv
 
-            future = asyncio.run_coroutine_threadsafe(_bind(), self._loop)
-            future.result(timeout=_PROXY_CONNECT_TIMEOUT_S)
-        finally:
-            _os.umask(old_umask)
+        future = asyncio.run_coroutine_threadsafe(_bind(), self._loop)
+        future.result(timeout=_PROXY_CONNECT_TIMEOUT_S)
         logger.info("egress proxy: unix socket bound at %s", path)
 
     def unbind_unix(self, path: str) -> None:
