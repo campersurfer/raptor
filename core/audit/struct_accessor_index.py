@@ -77,7 +77,7 @@ _LOCK_CALL_RE = re.compile(
     r"|rcu_read_lock|rw_lock"
     r"|pthread_mutex_lock"
     r"|sync\.(?:Mutex|RWMutex)\.(?:Lock|RLock)"
-    r"|\.acquire\(\))\s*\(",
+    r"|\.acquire)\s*\(",
     re.I,
 )
 
@@ -86,8 +86,8 @@ _UNLOCK_CALL_RE = re.compile(
     r"|spin_unlock_bh|read_unlock|write_unlock|up_read|up_write"
     r"|rcu_read_unlock|rw_unlock"
     r"|pthread_mutex_unlock"
-    r"|\.Unlock\(\)|\.RUnlock\(\)"
-    r"|\.release\(\))\s*\(",
+    r"|\.Unlock|\.RUnlock"
+    r"|\.release)\s*\(",
     re.I,
 )
 

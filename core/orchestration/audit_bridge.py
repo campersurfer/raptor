@@ -47,9 +47,20 @@ def find_audit_output(
     from core.orchestration.run_discovery import find_sibling_run
 
     validate_dir = Path(validate_dir)
+
+    def _target_matches(d: Path) -> bool:
+        if not target_path:
+            return True
+        try:
+            meta = json.loads((d / ".raptor-run.json").read_text())
+            return meta.get("target", "") == target_path
+        except Exception:
+            return True
+
     best = find_sibling_run(
         validate_dir, CONSTRAINTS_FILENAME,
         search_global=bool(target_path),
+        dir_filter=_target_matches if target_path else None,
     )
     if best:
         logger.info("audit_bridge: selected %s", best)

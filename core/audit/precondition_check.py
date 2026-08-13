@@ -160,14 +160,33 @@ def _extract_c_function(source: str, name: str) -> Optional[str]:
 
     start = m.start()
     depth = 0
-    i = m.end() - 1  # at the opening brace
-    for i in range(m.end() - 1, len(source)):
-        if source[i] == '{':
+    length = len(source)
+    i = m.end() - 1
+    in_string = False
+    string_char = ""
+    while i < length:
+        ch = source[i]
+        if in_string:
+            if ch == string_char and (i == 0 or source[i - 1] != "\\"):
+                in_string = False
+        elif ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+        elif ch == "/" and i + 1 < length:
+            nxt = source[i + 1]
+            if nxt == "/":
+                nl = source.find("\n", i + 2)
+                i = nl if nl >= 0 else length
+            elif nxt == "*":
+                end = source.find("*/", i + 2)
+                i = end + 1 if end >= 0 else length
+        elif ch == "{":
             depth += 1
-        elif source[i] == '}':
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 return source[start:i + 1]
+        i += 1
     return source[start:]
 
 

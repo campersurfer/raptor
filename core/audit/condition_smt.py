@@ -3046,7 +3046,6 @@ def _check_early_release_go(lines: List[str]) -> EarlyReleaseResult:
             brace_depth += ln.count("{") - ln.count("}")
             if brace_depth <= 0 and j > 0:
                 func_end = j
-                break
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()

@@ -526,11 +526,12 @@ def _refute_by_known_return_type(
         if has_cwe:
             dist = 0
         else:
-            nearby = hyp_lower[max(0, func_pos - 100):func_pos + 100]
+            nearby_start = max(0, func_pos - 100)
+            nearby = hyp_lower[nearby_start:func_pos + 100]
             m = _OVERFLOW_KW.search(nearby)
             if not m:
                 continue
-            dist = abs(func_pos - m.start())
+            dist = abs(func_pos - nearby_start - m.start())
 
         if best is None or dist < best[3]:
             best = (func_name, ret_type, max_val, dist)
