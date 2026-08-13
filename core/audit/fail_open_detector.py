@@ -287,7 +287,7 @@ def _detect_truncation_via_ts(
     for cap in caps:
         func_body = extract_function_body(file_path, source, cap.function)
         if func_body is None:
-            return None
+            continue
         if not func_body:
             continue
         if not re.search(r"^\s*return\b", func_body, re.MULTILINE):
@@ -534,8 +534,9 @@ def _detect_consumer_fail_open(
             confidence = "high" if caller_file in silent_by_file else "medium"
 
             line = 0
+            start_line = _function_start_line(source, caller_name)
             if empty_check:
-                line = caller_body[:empty_check.start()].count("\n") + 1
+                line = start_line + caller_body[:empty_check.start()].count("\n")
 
             results.append(FailOpenPattern(
                 file=caller_file,
@@ -553,6 +554,14 @@ def _detect_consumer_fail_open(
             ))
 
     return results
+
+
+def _function_start_line(source: str, func_name: str) -> int:
+    """Return the 1-based line number of a function definition in source."""
+    for i, line in enumerate(source.splitlines(), 1):
+        if re.search(rf"\b{re.escape(func_name)}\s*\(", line):
+            return i
+    return 1
 
 
 def _extract_caller_body(

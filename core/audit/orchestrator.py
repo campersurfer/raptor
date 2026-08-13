@@ -1569,8 +1569,6 @@ def review_one_function(
             "[suspicious-demotion: no verification evidence "
             "with Joern available]\n\n" + outcome.body
         )
-        with result._lock:
-            result.suspicious_demoted = getattr(result, "suspicious_demoted", 0) + 1
 
     # ── Dynamic validation ────────────────────────────────────────────
     if config.dynamic_validation and outcome.status == "finding":
@@ -3534,7 +3532,10 @@ def _run_audit_body(
                         continue
                     if prior is not None:
                         _untally_outcome(result, prior)
-                        result.outcomes.remove(prior)
+                        try:
+                            result.outcomes.remove(prior)
+                        except ValueError:
+                            pass
                     _tally_outcome(result, outcome)
                     if collector is not None:
                         collector.submit(outcome, target_gap)
@@ -7680,19 +7681,21 @@ def _run_tool_chain(
                         continue
 
                 rule_path = tool_cfg["rule"]
-                sweep = run_semgrep_sweep(
-                    target_path=effective_target,
-                    file_path=file_path,
-                    function_name=function_name,
-                    rule_config=rule_path,
-                    line_start=line_start,
-                    line_end=line_start + 50 if line_start else 0,
-                )
-                if rule_path and os.path.basename(rule_path).startswith("audit_sweep_"):
-                    try:
-                        os.unlink(rule_path)
-                    except OSError:
-                        pass
+                try:
+                    sweep = run_semgrep_sweep(
+                        target_path=effective_target,
+                        file_path=file_path,
+                        function_name=function_name,
+                        rule_config=rule_path,
+                        line_start=line_start,
+                        line_end=line_start + 50 if line_start else 0,
+                    )
+                finally:
+                    if rule_path and os.path.basename(rule_path).startswith("audit_sweep_"):
+                        try:
+                            os.unlink(rule_path)
+                        except OSError:
+                            pass
                 if sweep.outcome == "confirmed":
                     confirmed.append(f"semgrep:{sweep.rule_id or 'hypothesis'}")
                     if tier_counters:
@@ -9120,12 +9123,8 @@ def _re_review_disagreements(
             for i, o in enumerate(result.outcomes):
                 if f"{o.file}:{o.function}" == key:
                     result.outcomes[i] = outcome
-                    if outcome.status == "finding":
-                        result.findings += 1
-                        result.clean -= 1
-                    elif outcome.status == "suspicious":
-                        result.suspicious += 1
-                        result.clean -= 1
+                    _untally_outcome(result, prior)
+                    _tally_outcome(result, outcome)
                     break
 
     if re_reviewed:
@@ -9138,8 +9137,8 @@ def _re_review_disagreements(
 def _gap_index(checklist: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Build file:function → gap dict from checklist."""
     index: Dict[str, Dict[str, Any]] = {}
-    for item in checklist.get("items", []):
-        for func in item.get("functions", []):
+    for item in checklist.get("files", []):
+        for func in item.get("items", item.get("functions", [])):
             key = f"{item.get('file', '')}:{func.get('name', '')}"
             index[key] = {
                 "file": item.get("file", ""),
@@ -12005,7 +12004,11 @@ def _callee_contract_requeue(
     effective_workers = max(1, max_workers)
     prepared = []
     cl = checklist if isinstance(checklist, dict) else {}
-    cl_entries = cl.get("entries", []) if cl else []
+    cl_entries = [
+        {**item, "file": fi.get("path", "")}
+        for fi in cl.get("files", [])
+        for item in fi.get("items", [])
+    ] if cl else []
     for caller_outcome, callee_name, assumption, callee_outcome in candidates:
         gap = next(
             (

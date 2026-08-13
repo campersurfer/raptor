@@ -484,6 +484,10 @@ _LIFECYCLE_OPS = frozenset({
     "release", "destroy", "put_", "refcount", "kref",
 })
 
+_AUTH_RE = re.compile(r"\b(?:" + "|".join(re.escape(k) for k in _AUTH_KEYWORDS) + r")")
+_CRYPTO_RE = re.compile(r"\b(?:" + "|".join(re.escape(k) for k in _CRYPTO_APIS) + r")")
+_LIFECYCLE_RE = re.compile(r"\b(?:" + "|".join(re.escape(k) for k in _LIFECYCLE_OPS) + r")")
+
 _INTEGER_ARITH_RE = re.compile(
     r"[\w)]\s*\+\s*[\w(]"
     r"|"
@@ -536,16 +540,17 @@ def _is_sink_unreachable_clean(
 
     source_lower = source.lower()
 
-    if any(kw in source_lower for kw in _AUTH_KEYWORDS):
+    if _AUTH_RE.search(source_lower):
         return False
 
-    if any(api in source_lower for api in _CRYPTO_APIS):
+    if _CRYPTO_RE.search(source_lower):
         return False
 
-    if any(op in source_lower for op in (_CONCURRENCY_OPS | extra_concurrency)):
+    all_concurrency = _CONCURRENCY_OPS | extra_concurrency
+    if any(re.search(rf"\b{re.escape(op)}", source_lower) for op in all_concurrency):
         return False
 
-    if any(op in source_lower for op in _LIFECYCLE_OPS):
+    if _LIFECYCLE_RE.search(source_lower):
         return False
 
     if re.search(r"==\s*(0x[0-9a-fA-F]+|[4-5]\d{2})\b", source):

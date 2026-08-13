@@ -2075,9 +2075,9 @@ class TestDisagreementParallel:
             self._make_outcome("b.c", "bar", "clean"),
         ]
         checklist = {
-            "items": [
-                {"file": "a.c", "functions": [{"name": "foo", "line_start": 1, "line_end": 50}]},
-                {"file": "b.c", "functions": [{"name": "bar", "line_start": 1, "line_end": 50}]},
+            "files": [
+                {"file": "a.c", "items": [{"name": "foo", "line_start": 1, "line_end": 50}]},
+                {"file": "b.c", "items": [{"name": "bar", "line_start": 1, "line_end": 50}]},
             ],
         }
         config = OrchestratorConfig(
@@ -2147,9 +2147,9 @@ class TestDisagreementParallel:
             self._make_outcome("b.c", "bar", "clean"),
         ]
         checklist = {
-            "items": [
-                {"file": "a.c", "functions": [{"name": "foo"}]},
-                {"file": "b.c", "functions": [{"name": "bar"}]},
+            "files": [
+                {"file": "a.c", "items": [{"name": "foo"}]},
+                {"file": "b.c", "items": [{"name": "bar"}]},
             ],
         }
         config = OrchestratorConfig(
