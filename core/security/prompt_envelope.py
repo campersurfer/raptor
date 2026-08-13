@@ -572,7 +572,7 @@ def _render_slot(name: str, value: TaintedString, profile: ModelDefenseProfile) 
     if value.trust == 'trusted':
         rendered = _xml_content_escape(_escape_for_envelope(value.value))
     else:
-        rendered = _xml_content_escape(_content_for_envelope(value.value, profile))
+        rendered = _content_for_envelope(_xml_content_escape(value.value), profile)
     return f'<slot name="{safe_name}" trust="{value.trust}">{rendered}</slot>'
 
 
