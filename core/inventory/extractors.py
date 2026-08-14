@@ -834,6 +834,14 @@ class CExtractor:
                 func.line_end = cls._find_end_brace(lines, func.line_start - 1)
 
 
+_JAVA_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _count_braces_outside_strings(line: str) -> int:
+    cleaned = _JAVA_STRING_RE.sub("", line)
+    return cleaned.count("{") - cleaned.count("}")
+
+
 class JavaExtractor:
     """Extract methods from Java files using regex.
 
@@ -883,7 +891,7 @@ class JavaExtractor:
         for i, line in enumerate(content.split('\n'), 1):
             stripped = line.lstrip()
 
-            brace_depth += line.count("{") - line.count("}")
+            brace_depth += _count_braces_outside_strings(line)
 
             class_match = re.search(r'\bclass\s+(\w+)', line)
             if class_match:

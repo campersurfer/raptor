@@ -491,8 +491,7 @@ def run_command_streaming(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,  # Line buffered
-            universal_newlines=True,
+            bufsize=1,
             env=child_env,
             pass_fds=tuple(child_pass_fds),
             # Detach from parent's process group so operator
