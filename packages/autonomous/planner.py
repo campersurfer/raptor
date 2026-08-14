@@ -182,7 +182,7 @@ class FuzzingPlanner:
         # Record decision in history
         self.decision_history.append({
             "time": state.current_time,
-            "action": action,
+            "action": action.value,
             "reasoning": reasoning,
             "state_snapshot": {
                 "crashes": state.total_crashes,

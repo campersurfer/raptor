@@ -905,6 +905,9 @@ def _walk_gitlab_image_refs(data: dict):
                         yield name.strip(), label
 
     yield from _from(data, "top-level")
+    default_block = data.get("default")
+    if isinstance(default_block, dict):
+        yield from _from(default_block, "default")
     for k, v in data.items():
         if not isinstance(k, str) or k in _RESERVED:
             continue

@@ -353,10 +353,12 @@ def inject_chains_as_hypotheses(
 
     # Build a set of existing content keys to avoid duplicate injection.
     existing_keys: set = set()
+    base_idx = 0
     for h in hypotheses:
         if isinstance(h, dict) and h.get("source") == "audit_chain":
             key = (h.get("description", ""), h.get("goal", ""))
             existing_keys.add(key)
+            base_idx += 1
 
     for chain in chains:
         desc = chain.get("description", "")
@@ -365,7 +367,7 @@ def inject_chains_as_hypotheses(
             continue
         existing_keys.add((desc, goal))
         hypothesis = {
-            "id": f"audit_chain_{injected}",
+            "id": f"audit_chain_{base_idx + injected}",
             "source": "audit_chain",
             "status": "imported",
             "description": desc,

@@ -384,3 +384,21 @@ class TestNormalizeAuditFindings:
         assert f["function"] == "parse"
         assert f["line"] == 42
         assert f["severity"] == "medium"
+
+
+class TestInjectChainsIdCollision:
+    def test_repeated_inject_no_id_collision(self, tmp_path):
+        surface_path = tmp_path / "attack-surface.json"
+        surface_path.write_text(json.dumps({"hypotheses": []}))
+        chains_a = [{"description": "chain A", "goal": "goal A",
+                      "primitives": [], "findings": []}]
+        chains_b = [{"description": "chain B", "goal": "goal B",
+                      "primitives": [], "findings": []}]
+
+        inject_chains_as_hypotheses(chains_a, surface_path)
+        inject_chains_as_hypotheses(chains_b, surface_path)
+
+        data = json.loads(surface_path.read_text())
+        ids = [h["id"] for h in data["hypotheses"]]
+        assert len(ids) == len(set(ids)), f"duplicate IDs: {ids}"
+        assert ids == ["audit_chain_0", "audit_chain_1"]

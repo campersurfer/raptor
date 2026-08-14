@@ -68,7 +68,6 @@ patches.
 | `--sarif-out <file>` | Write merged SARIF output to file |
 | `--reanalyze <dir>` | Re-analyse a previous run directory |
 | `--out <dir>` | Output directory override |
-| `--mode {fast,thorough}` | Analysis depth |
 | `--sequential` | Bypass parallel orchestration |
 | `--verbose` | Verbose output |
 | `--log-level <level>` | Logging level |

@@ -366,13 +366,7 @@ def _dep_state_pypi(
         client, parent_name, parent_version,
     )
     if requires_dist is None:
-        meta = client.get_metadata(parent_name)
-        if not isinstance(meta, dict):
-            return None
-        info = meta.get("info") or {}
-        requires_dist = info.get("requires_dist") or []
-        if not isinstance(requires_dist, list):
-            return None
+        return None
 
     transitive_canon = transitive_name.lower().replace("_", "-")
     extras: List[str] = []

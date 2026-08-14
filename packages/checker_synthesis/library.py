@@ -262,6 +262,18 @@ class RuleLibrary:
         if not result.triage:
             return None
 
+        with self._lock:
+            return self._promote_locked(result, target_hash=target_hash,
+                                        timestamp=timestamp, source=source)
+
+    def _promote_locked(
+        self,
+        result: CheckerSynthesisResult,
+        *,
+        target_hash: str = "",
+        timestamp: str = "",
+        source: str = "",
+    ) -> Optional[LibraryEntry]:
         self._ensure_dirs()
         rule = result.rule
         bh = _body_hash(rule.body)

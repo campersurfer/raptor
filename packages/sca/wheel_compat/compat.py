@@ -436,7 +436,7 @@ def find_compatible_version(
 
 
 _STABLE_VERSION_RE = __import__("re").compile(
-    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$"
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?(?:\.post\d+)?$"
 )
 
 
