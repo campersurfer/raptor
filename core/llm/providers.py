@@ -3298,16 +3298,15 @@ class ClaudeCodeLLMProvider(LLMProvider):
         )
         cmd = build_cc_command(cc_config)
 
-        # Pass safe env to the cc subprocess. Pre-fix
-        # `subprocess.run(cmd, ...)` inherited the parent's
-        # full environment, including HTTPS_PROXY, BASH_ENV,
-        # PYTHONSTARTUP, and any other variable a poisoned
-        # operator dotfile might set. Use RaptorConfig.get_
-        # safe_env() to strip DANGEROUS_ENV_VARS + proxy
-        # vars so cc runs with a clean baseline. See
-        # the long-form rationale at the first cc subprocess.
-        from core.config import RaptorConfig as _RaptorConfig
-        _cc_env = _RaptorConfig.get_safe_env()
+        # Sanitised baseline (get_safe_env strips shell-evaluated
+        # vars a poisoned dotfile might set) + the backend env
+        # families (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) the CLI needs
+        # to reach its provider — a bare get_safe_env() left a
+        # Bedrock-backed CLI child with no credentials/model
+        # mapping, hanging every call until timeout. See
+        # cc_subprocess_env's docstring.
+        from .cc_adapter import cc_subprocess_env
+        _cc_env = cc_subprocess_env()
 
         # monotonic() — wall clock can jump under NTP/DST, producing
         # negative durations on long CC calls.
@@ -3410,16 +3409,15 @@ class ClaudeCodeLLMProvider(LLMProvider):
         )
         cmd = build_cc_command(cc_config)
 
-        # Pass safe env to the cc subprocess. Pre-fix
-        # `subprocess.run(cmd, ...)` inherited the parent's
-        # full environment, including HTTPS_PROXY, BASH_ENV,
-        # PYTHONSTARTUP, and any other variable a poisoned
-        # operator dotfile might set. Use RaptorConfig.get_
-        # safe_env() to strip DANGEROUS_ENV_VARS + proxy
-        # vars so cc runs with a clean baseline. See
-        # the long-form rationale at the first cc subprocess.
-        from core.config import RaptorConfig as _RaptorConfig
-        _cc_env = _RaptorConfig.get_safe_env()
+        # Sanitised baseline (get_safe_env strips shell-evaluated
+        # vars a poisoned dotfile might set) + the backend env
+        # families (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) the CLI needs
+        # to reach its provider — a bare get_safe_env() left a
+        # Bedrock-backed CLI child with no credentials/model
+        # mapping, hanging every call until timeout. See
+        # cc_subprocess_env's docstring.
+        from .cc_adapter import cc_subprocess_env
+        _cc_env = cc_subprocess_env()
 
         start = _time.monotonic()
         try:
@@ -3640,9 +3638,9 @@ class ClaudeCodeLLMProvider(LLMProvider):
         )
         cmd = build_cc_command(cc_config)
 
-        from core.config import RaptorConfig as _RaptorConfig
+        from .cc_adapter import cc_subprocess_env
 
-        _cc_env = _RaptorConfig.get_safe_env()
+        _cc_env = cc_subprocess_env()
 
         start = _time.monotonic()
         try:

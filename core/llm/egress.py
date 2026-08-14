@@ -110,6 +110,34 @@ _LOCAL_BYPASS = ("localhost", "127.0.0.1")
 # operator-supplied value.
 _enabled = False
 
+# The proxy env exactly as the operator had it before enable_llm_egress
+# mutated os.environ (None = never mutated). Consumers that spawn
+# trusted egress-needing subprocesses (the claude CLI transport) must
+# hand children the OPERATOR's route, not our in-process loopback
+# pointer — the in-process proxy's allowlist is derived from the
+# SDK-model config and doesn't cover whatever backend the child CLI
+# resolves for itself (e.g. Bedrock).
+_PROXY_VAR_NAMES = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "no_proxy",
+)
+_original_proxy_env: "dict[str, str] | None" = None
+
+
+def operator_proxy_env() -> "dict[str, str]":
+    """Proxy vars as the operator set them at launch.
+
+    Returns the pre-``enable_llm_egress`` snapshot when this process
+    has mutated proxy env, else the live values. Hosts with no proxy
+    configured get an empty dict.
+    """
+    if _original_proxy_env is not None:
+        return dict(_original_proxy_env)
+    return {
+        k: v for k in _PROXY_VAR_NAMES
+        if (v := os.environ.get(k)) is not None
+    }
+
 
 def derive_allowlist(config: "LLMConfig") -> Set[str]:
     """Walk ``config`` and extract the set of hostnames the in-process
@@ -253,7 +281,14 @@ def enable_llm_egress(config: "LLMConfig") -> None:
     # Step 3: point HTTPS_PROXY at our in-process proxy so httpx-based
     # SDKs route through it. Honour http (not https) — the in-process
     # proxy is plain-HTTP-on-loopback (CONNECT to upstream is what
-    # carries the TLS).
+    # carries the TLS). Snapshot the operator's values first so
+    # operator_proxy_env() can hand trusted subprocesses the real
+    # route instead of our loopback pointer.
+    global _original_proxy_env
+    _original_proxy_env = {
+        k: v for k in _PROXY_VAR_NAMES
+        if (v := os.environ.get(k)) is not None
+    }
     os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy.port}"
     os.environ["https_proxy"] = os.environ["HTTPS_PROXY"]
 
@@ -277,11 +312,13 @@ def _reset_for_tests() -> None:
     """Test-only helper: reset the module-level idempotency flag.
     Does NOT clear env vars or the singleton proxy — those are
     process-wide concerns the test fixture handles separately."""
-    global _enabled
+    global _enabled, _original_proxy_env
     _enabled = False
+    _original_proxy_env = None
 
 
 __all__ = [
     "derive_allowlist",
     "enable_llm_egress",
+    "operator_proxy_env",
 ]

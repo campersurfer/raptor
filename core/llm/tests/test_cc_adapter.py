@@ -349,3 +349,87 @@ class TestParseStreamJsonLines:
         r = parse_stream_json_lines(lines)
         assert r.input_tokens == 100
         assert r.output_tokens == 50
+
+
+class TestCcSubprocessEnv:
+    """cc_subprocess_env: safe baseline + backend overlay."""
+
+    def test_backend_families_overlaid(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "anthropic.claude-mythos-5")
+        monkeypatch.setenv("AWS_PROFILE", "mythos")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        env = cc_subprocess_env()
+        assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert env["ANTHROPIC_MODEL"] == "anthropic.claude-mythos-5"
+        assert env["AWS_PROFILE"] == "mythos"
+        assert env["AWS_REGION"] == "us-east-1"
+
+    def test_aws_gated_on_bedrock(self, monkeypatch):
+        """AWS credentials must not reach CLI children on installs
+        that never selected Bedrock — some children run with tools
+        enabled against hostile repos."""
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+        monkeypatch.setenv("AWS_PROFILE", "prod")
+        env = cc_subprocess_env()
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert "AWS_PROFILE" not in env
+
+    def test_dangerous_vars_still_stripped(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setenv("BASH_ENV", "/tmp/evil")
+        monkeypatch.setenv("PYTHONSTARTUP", "/tmp/evil.py")
+        env = cc_subprocess_env()
+        assert "BASH_ENV" not in env
+        assert "PYTHONSTARTUP" not in env
+
+    def test_safe_baseline_preserved(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        env = cc_subprocess_env()
+        assert "PATH" in env
+        assert "HOME" in env
+
+    def test_operator_proxy_propagated(self, monkeypatch):
+        """Mandatory-egress-proxy hosts: the CLI child has no route to
+        any backend unless the operator's proxy env survives."""
+        from core.llm import egress
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setattr(egress, "_original_proxy_env", None)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.setenv("NO_PROXY", "169.254.169.254")
+        env = cc_subprocess_env()
+        assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
+        assert env["NO_PROXY"] == "169.254.169.254"
+
+    def test_proxy_snapshot_wins_over_egress_rewrite(self, monkeypatch):
+        """After enable_llm_egress points HTTPS_PROXY at the in-process
+        loopback proxy, children must still get the operator's original
+        route — the loopback proxy's allowlist doesn't cover the CLI's
+        backend hosts."""
+        from core.llm import egress
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:45123")
+        monkeypatch.setattr(
+            egress, "_original_proxy_env",
+            {"HTTPS_PROXY": "http://proxy.corp:3128"},
+        )
+        env = cc_subprocess_env()
+        assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
+
+
+class TestNeutralCwd:
+    def test_creates_private_dir_once(self):
+        import os
+        from core.llm.cc_adapter import neutral_cwd
+        d1 = neutral_cwd()
+        d2 = neutral_cwd()
+        assert d1 == d2
+        assert os.path.isdir(d1)
+        assert os.path.basename(d1).startswith("raptor-cc-cwd-")
+        # mkdtemp guarantees 0700 — no other local user can plant
+        # .claude hooks the CLI child would execute.
+        assert (os.stat(d1).st_mode & 0o777) == 0o700
+        assert os.listdir(d1) == []

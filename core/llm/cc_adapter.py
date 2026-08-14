@@ -16,6 +16,91 @@ from core.security.redaction import redact_secrets
 logger = logging.getLogger(__name__)
 
 
+# Env-var families the ``claude`` CLI needs to select and authenticate
+# its backend: CLAUDE_CODE_* (USE_BEDROCK / USE_VERTEX / USE_MANTLE and
+# friends), ANTHROPIC_* (API key, MODEL mapping for alternate clouds).
+# Prefix families rather than an exact list so new provider knobs keep
+# working. AWS_* (profile / region / credentials for Bedrock) is
+# handled separately: passed ONLY when CLAUDE_CODE_USE_BEDROCK is set,
+# so cloud credentials never flow to CLI children on installs that
+# don't need them — some of those children (cc_dispatch, validate
+# post-pass) run with tools enabled against hostile repos, and while
+# they inherently hold their own provider auth, there is no reason to
+# widen that to ambient AWS credentials on non-Bedrock setups.
+_CC_BACKEND_ENV_PREFIXES = ("CLAUDE_CODE_", "ANTHROPIC_")
+_CC_BEDROCK_ENV_PREFIX = "AWS_"
+
+
+def cc_subprocess_env() -> dict:
+    """Sanitised env for spawning the trusted ``claude`` binary.
+
+    Starts from ``RaptorConfig.get_safe_env()`` (drops shell-evaluated
+    / exec-capable vars a poisoned dotfile might set), then overlays
+    the backend-selection + auth families from the parent env. Without
+    the overlay, a Bedrock/Vertex-backed CLI child may get a backend
+    selected via ``~/.claude/settings.json`` (HOME survives the
+    allowlist) but no AWS profile / credentials / model mapping — every
+    dispatch then hangs until the provider timeout.
+
+    Also restores the operator's proxy env (via
+    ``egress.operator_proxy_env()`` — the launch-time values, not the
+    in-process loopback pointer ``enable_llm_egress`` may have swapped
+    in). get_safe_env() strips proxy vars to stop a hostile repo
+    redirecting untrusted children through an attacker proxy; the
+    operator's own launch-time proxy is trusted input, and on
+    mandatory-egress-proxy hosts the CLI has no route to any backend
+    without it.
+
+    ONLY for the ``claude`` CLI used as a pure-LLM substrate (internal
+    tools disabled via ``--allowed-tools ""``). Do NOT reuse for
+    children that execute target-repo code: get_safe_env()'s whole
+    point is that untrusted children never see cloud credentials.
+    """
+    import os
+    from core.config import RaptorConfig
+    from core.llm.egress import operator_proxy_env
+    env = RaptorConfig.get_safe_env()
+    # Bedrock installs signal via env (the launcher exports it).
+    # Settings.json-only Bedrock setups must export the var too —
+    # documented trade-off; the gate keeps AWS credentials out of
+    # children on every install that never asked for Bedrock.
+    bedrock = bool(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
+    for key, value in os.environ.items():
+        if key.startswith(_CC_BACKEND_ENV_PREFIXES):
+            env[key] = value
+        elif bedrock and key.startswith(_CC_BEDROCK_ENV_PREFIX):
+            env[key] = value
+    env.update(operator_proxy_env())
+    return env
+
+
+_neutral_cwd: Optional[str] = None
+
+
+def neutral_cwd() -> str:
+    """Private empty directory for ``claude`` CLI children.
+
+    The CLI treats its working directory as a project root: it loads
+    CLAUDE.md, .claude/settings hooks, and skills from there. A
+    pure-LLM substrate child must not inherit whatever project the
+    parent process happens to be running in — that bloats every call
+    with the project's boot context (cost + latency) and runs the
+    project's SessionStart hooks. mode-0700 mkdtemp rather than
+    ``tempfile.gettempdir()`` because /tmp is world-writable: another
+    local user could plant ``/tmp/.claude`` hooks the child would
+    execute. Lazily created once per process, removed at exit.
+    """
+    import os
+    global _neutral_cwd
+    if _neutral_cwd is None or not os.path.isdir(_neutral_cwd):
+        import atexit
+        import shutil
+        import tempfile
+        _neutral_cwd = tempfile.mkdtemp(prefix="raptor-cc-cwd-")
+        atexit.register(shutil.rmtree, _neutral_cwd, ignore_errors=True)
+    return _neutral_cwd
+
+
 @dataclass(frozen=True)
 class CCDispatchConfig:
     """Parameters for a ``claude -p`` invocation."""
@@ -411,6 +496,7 @@ def run_cc_streaming(
     prompt: str,
     env: dict[str, str],
     timeout_s: Optional[int],
+    cwd: Optional[str] = None,
 ) -> StreamJsonResult:
     """Run ``claude -p --output-format stream-json`` via Popen, reading
     JSON lines as they arrive.
@@ -418,6 +504,16 @@ def run_cc_streaming(
     Returns as soon as the process exits. The assistant message content
     is available from the first ``assistant`` JSON line — typically
     seconds before the process finishes its cleanup.
+
+    ``cwd=None`` (the default) runs the child in :func:`neutral_cwd`,
+    NOT the parent's cwd: the CLI loads project context (CLAUDE.md,
+    settings hooks, memory bootstrap) from its working directory, so
+    inheriting the parent's cwd makes every pure-LLM call boot
+    whatever project lives there — measured 98s / $0.35 for a
+    one-line prompt from the RAPTOR repo vs 7s / $0.05 from a neutral
+    dir — and executes that project's hooks, which is an injection
+    surface when the cwd is not operator-controlled. Pass an explicit
+    path only when a caller genuinely wants project context loaded.
     """
     import subprocess
     import select
@@ -430,6 +526,7 @@ def run_cc_streaming(
         stderr=subprocess.PIPE,
         text=True,
         env=env,
+        cwd=cwd if cwd is not None else neutral_cwd(),
     )
 
     if proc.stdin:
