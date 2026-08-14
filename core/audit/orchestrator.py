@@ -6204,6 +6204,16 @@ def _study_consumer_loop(
     seen_concepts = st.get("seen_concepts", set())
 
     while not study_queue.is_done():
+        # The consumer runs its own LLM calls (study-prep, Phase 2/3
+        # batches, re-reviews) — without this gate it kept working
+        # long past max_seconds/max_cost (observed 27min against a
+        # 900s cap) because only the main review loop checked budget.
+        if _check_budget(config, start_time, result):
+            logger.info(
+                "study-consumer: run budget exhausted (%s) — stopping",
+                result.terminated_by,
+            )
+            break
         batch = study_queue.dequeue_batch(max_items=15, timeout=30.0)
         if not batch:
             continue
@@ -11802,6 +11812,13 @@ def _re_review_joern_enriched(
     if not candidates:
         return result
 
+    if _check_budget(config, start_time, result):
+        logger.info(
+            "joern re-review skipped: run budget exhausted (%s)",
+            result.terminated_by,
+        )
+        return result
+
     effective_workers = max(1, max_workers)
     logger.info(
         "re-reviewing %d clean verdicts that gained Joern evidence (workers=%d)",
@@ -12162,6 +12179,13 @@ def _re_review_study_enriched(
         candidates.append((gap, prior))
 
     if not candidates:
+        return result
+
+    if _check_budget(config, start_time, result):
+        logger.info(
+            "study re-review skipped: run budget exhausted (%s)",
+            result.terminated_by,
+        )
         return result
 
     effective_workers = max(1, max_workers)
