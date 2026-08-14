@@ -33,17 +33,17 @@ from typing import Any, Dict, List, Optional, Sequence
 logger = logging.getLogger(__name__)
 
 _SANITISER_PATTERNS = re.compile(
-    r"(?:sanitiz|sanitise|clean|strip|escape|filter|purif|scrub|bleach|safe)",
+    r"\b(?:sanitiz|sanitise|clean|strip|escape|filter|purif|scrub|bleach|safe)",
     re.IGNORECASE,
 )
 
 _VALIDATOR_PATTERNS = re.compile(
-    r"(?:validat|verify|check|assert|is_valid|is_safe|ensure|confirm|guard)",
+    r"\b(?:validat|verify|check|assert|is_valid|is_safe|ensure|confirm|guard)",
     re.IGNORECASE,
 )
 
 _ENCODER_PATTERNS = re.compile(
-    r"(?:encod|decod|serial|deserial|marshal|unmarshal|pack|unpack|render|format)",
+    r"\b(?:encod|decod|serial|deserial|marshal|unmarshal|pack|unpack|render|format)",
     re.IGNORECASE,
 )
 

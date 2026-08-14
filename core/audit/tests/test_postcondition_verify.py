@@ -44,6 +44,12 @@ class TestClassifyRole:
     def test_unrelated(self):
         assert classify_function_role("process_data") is None
 
+    def test_unsafe_not_classified_as_sanitiser(self):
+        assert classify_function_role("mark_unsafe") != FunctionRole.SANITISER
+
+    def test_unchecked_not_classified_as_validator(self):
+        assert classify_function_role("unchecked_cast") != FunctionRole.VALIDATOR
+
     def test_summary_text_contributes(self):
         assert classify_function_role(
             "process",

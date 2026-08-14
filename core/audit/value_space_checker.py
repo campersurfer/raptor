@@ -508,6 +508,12 @@ def _compute_gaps(
         # Remove template values from unhandled (they aren't literal gaps).
         unhandled = [u for u in unhandled if not _is_template(u)]
 
+        # Symmetric normalization for dead branches: remove consumer values
+        # that match a producer value after case-folding / zero-stripping.
+        if dead:
+            producer_norms = {_normalize_for_comparison(p) for p in producer.produced}
+            dead = [d for d in dead if _normalize_for_comparison(d) not in producer_norms]
+
         # Format normalization: flag exact-miss values that match after
         # case-folding or zero-stripping.
         format_mismatches: List[str] = []

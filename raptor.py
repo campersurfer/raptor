@@ -888,8 +888,12 @@ def mode_codeql(args: list) -> int:
         print(f"✗ CodeQL script not found: {codeql_script}", file=sys.stderr)
         return 1
 
-    # Default to scan-only; autonomous analysis requires explicit --analyze
-    if '--scan-only' not in args and '--analyze' not in args:
+    # Default to scan-only; autonomous analysis requires explicit --analyze.
+    # Strip --analyze after using it as a sentinel — the codeql child
+    # script does not define it in its argparse.
+    analyze = '--analyze' in args
+    args = [a for a in args if a != '--analyze']
+    if '--scan-only' not in args and not analyze:
         args = ['--scan-only'] + args
 
     # Re-inject --trust-repo stripped by main(): the codeql child parses it

@@ -526,3 +526,27 @@ class TestFormatMismatchFiltering:
         assert "07" not in match.unhandled, (
             "format-mismatch value '07' should be removed from unhandled"
         )
+
+    def test_case_mismatch_not_in_dead(self):
+        """A consumed value that differs only in case from a produced value
+        should not be reported as dead."""
+        source = {
+            "pkg/producer.py": (
+                'def produce():\n'
+                '    return "error"\n'
+            ),
+            "pkg/consumer.py": (
+                'def consume(v):\n'
+                '    if v == "ERROR":\n'
+                '        pass\n'
+                '    elif v == "error":\n'
+                '        pass\n'
+            ),
+        }
+        results = detect_value_space_mismatches(source)
+        match = _find_mismatch(results, "produce", "consume")
+        if match is None:
+            return
+        assert "ERROR" not in match.dead, (
+            "case-variant 'ERROR' should not appear in dead branches"
+        )
