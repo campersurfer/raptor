@@ -175,7 +175,14 @@ def _has_lock_before(callee: str, source: str) -> bool:
     if callee_pos < 0:
         return False
     preamble = source[:callee_pos]
-    return any(lp in preamble for lp in _LOCK_PATTERNS)
+    for lp in _LOCK_PATTERNS:
+        idx = preamble.find(lp)
+        if idx < 0:
+            continue
+        if idx > 0 and preamble[idx - 1].isalpha():
+            continue
+        return True
+    return False
 
 
 def _extract_param_from_precondition(precondition: str) -> str:

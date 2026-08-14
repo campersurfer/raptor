@@ -164,12 +164,12 @@ def _cwe_matches(record: LabeledAttempt, query_cwe: str) -> bool:
 
 
 def _record_age_days(record: LabeledAttempt, now: datetime) -> float:
-    """Age in days of a record's timestamp. Defensive: returns 0 when
-    the timestamp can't be parsed."""
+    """Age in days of a record's timestamp. Unparseable timestamps
+    return a large age so they sort last in recency rankings."""
     try:
         ts = datetime.fromisoformat(record.timestamp)
     except (ValueError, TypeError):
-        return 0.0
+        return 365_000.0
     # Normalise both to UTC for the diff.
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
@@ -212,7 +212,7 @@ def _describe_evidence(record: LabeledAttempt) -> str:
     sb = record.sandbox_evidence
     if sb is not None:
         bits = [f"observed={sb.observed_outcome}"]
-        verdict = sb.outcome_detail.get("engine_verdict_summary")
+        verdict = (sb.outcome_detail or {}).get("engine_verdict_summary")
         if verdict:
             bits.append(f"verdict={verdict}")
         return " · ".join(bits)

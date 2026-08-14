@@ -57,7 +57,7 @@ def _read_tuning() -> dict:
     try:
         import re
         text = _tuning_path().read_text()
-        clean = re.sub(r"//.*", "", text)
+        clean = re.sub(r"(?<!:)//.*", "", text)
         return json.loads(clean)
     except Exception:
         return {}
