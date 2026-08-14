@@ -2330,20 +2330,13 @@ class GeminiProvider(LLMProvider):
             raise
 
     # ------------------------------------------------------------------
-    # Tool-use via JSON-protocol synthesis.
+    # Tool-use via Gemini JSON mode.
     # ------------------------------------------------------------------
     #
-    # The native google-genai SDK exposes Gemini's function-calling but
-    # this provider doesn't wire that up — operators wanting native
-    # function-calling install ``openai`` alongside ``google-genai`` and
-    # the factory routes through :class:`OpenAICompatibleProvider`
-    # against Gemini's OpenAI-compat endpoint.
-    #
-    # For users who installed ONLY the google-genai SDK (chosen for
-    # accurate ``thoughts_token_count`` cost tracking, server-side
-    # schema-constrained JSON), the synthesis fallback gives them
-    # tool-use without forcing an additional SDK install. Same pattern
-    # as :class:`ClaudeCodeLLMProvider`.
+    # Gemini's native SDK keeps thinking-token accounting, while its free-form
+    # text fallback can end a terminal tool loop with prose. The shared
+    # JSON-protocol parser already normalizes one tool call per turn, so ask
+    # Gemini for JSON directly and preserve that existing loop contract.
 
     def supports_tool_use(self) -> bool: return True
     def supports_prompt_caching(self) -> bool: return False
@@ -2359,11 +2352,82 @@ class GeminiProvider(LLMProvider):
         cache_control: CacheControl = CacheControl(),
         **provider_specific: Any,
     ) -> TurnResponse:
-        """Tool-use via the ABC's JSON-protocol fallback."""
-        return self._tool_use_fallback(
-            messages, tools,
-            system=system, max_tokens=max_tokens,
-            cache_control=cache_control, **provider_specific,
+        """Generate one tool-use turn through the native SDK."""
+        if not tools:
+            return self._tool_use_fallback(
+                messages,
+                tools,
+                system=system,
+                max_tokens=max_tokens,
+                cache_control=cache_control,
+                **provider_specific,
+            )
+        del cache_control, provider_specific
+        tool_protocol = self._render_tool_protocol(tools) + (
+            "\n\nThis Gemini turn is JSON-constrained. When no tool call is "
+            'needed, respond exactly as {"text": "<final response>"}.'
+        )
+        system_prompt = "\n\n".join(value for value in (system, tool_protocol) if value) or None
+        contents = [{"role": "user", "parts": [{"text": self._render_messages_as_prompt(messages)}]}]
+        config_kwargs: dict[str, Any] = {
+            "temperature": self.config.temperature,
+            "max_output_tokens": max_tokens,
+            "response_mime_type": "application/json",
+        }
+        # Gemini 2.5 Flash otherwise spends the per-turn response budget on
+        # hidden reasoning and truncates the terminal context-map payload.
+        # The map loop needs concise, evidence-backed JSON, not reasoning text.
+        if self.config.model_name.startswith("gemini-2.5-flash"):
+            config_kwargs["thinking_config"] = {"thinking_budget": 0}
+        if system_prompt:
+            config_kwargs["system_instruction"] = system_prompt
+
+        started_at = time.monotonic()
+        response = self.client.models.generate_content(
+            model=self.config.model_name,
+            contents=contents,
+            config=config_kwargs,
+        )
+        duration = time.monotonic() - started_at
+        content = response.text or ""
+        if not content:
+            raise RuntimeError("Gemini returned an empty JSON tool response")
+        block, stop_reason = self._parse_fallback_response(content, tools)
+        if isinstance(block, TextBlock):
+            try:
+                parsed = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            else:
+                if isinstance(parsed, str):
+                    block = TextBlock(text=parsed)
+                elif (
+                    isinstance(parsed, dict)
+                    and set(parsed) == {"text"}
+                    and isinstance(parsed["text"], str)
+                ):
+                    block = TextBlock(text=parsed["text"])
+        input_tokens = 0
+        output_tokens = 0
+        thinking_tokens = 0
+        if response.usage_metadata:
+            input_tokens = response.usage_metadata.prompt_token_count or 0
+            output_tokens = response.usage_metadata.candidates_token_count or 0
+            thinking_tokens = getattr(response.usage_metadata, "thoughts_token_count", 0) or 0
+        cost = self._calculate_cost_split(input_tokens, output_tokens, thinking_tokens)
+        self.track_usage(
+            input_tokens + output_tokens + thinking_tokens,
+            cost,
+            input_tokens,
+            output_tokens,
+            duration,
+        )
+        return TurnResponse(
+            content=[block],
+            stop_reason=stop_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
         )
 
 

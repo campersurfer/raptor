@@ -2,12 +2,10 @@
 real-LLM testing:
 
 1. **``turn()`` accumulates provider stats.** All four providers'
-   ``turn()`` methods must call ``track_usage`` (directly or via
-   delegation to ``generate()`` / ``generate_structured()``).
-   Pre-fix, AnthropicProvider and OpenAICompatibleProvider skipped
-   it, so ``LLMClient.get_stats()`` reported zero tool-use spend.
-   Gemini and CC delegate; the delegation path was correct but
-   untested. This file pins all four.
+   ``turn()`` methods must call ``track_usage`` directly or through
+   their native transport. Pre-fix, AnthropicProvider and
+   OpenAICompatibleProvider skipped it, so ``LLMClient.get_stats()``
+   reported zero tool-use spend. This file pins all four.
 
 2. **Keyless-Anthropic factory routing.** When ``ANTHROPIC_SDK_AVAILABLE``
    is False but OpenAI SDK is present, the factory must build an
@@ -19,7 +17,7 @@ real-LLM testing:
 
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -111,43 +109,40 @@ def test_openai_turn_calls_track_usage() -> None:
 
 
 # ---------------------------------------------------------------------------
-# turn() track_usage via delegation — Gemini + ClaudeCode
+# turn() track_usage via native Gemini + delegated Claude Code
 # ---------------------------------------------------------------------------
 
 
-def test_gemini_turn_tracks_via_delegated_generate() -> None:
-    """``GeminiProvider.turn`` delegates to ``_tool_use_fallback`` →
-    ``self.generate()`` which tracks usage. Pin-test confirms the
-    delegation chain hasn't broken."""
+def test_gemini_turn_tracks_native_sdk_usage() -> None:
+    """``GeminiProvider.turn`` records native response token accounting."""
     pytest.importorskip("google.genai")
-    from core.llm.providers import GeminiProvider, LLMResponse
-    from core.llm.tool_use import Message, TextBlock
+    from core.llm.providers import GeminiProvider
+    from core.llm.tool_use import Message, TextBlock, ToolDef
 
     p = GeminiProvider(ModelConfig(
         provider="gemini", model_name="gemini-2.5-pro",
         api_key="test-key", timeout=1,
     ))
-
-    # Replace generate with a tracking spy so we don't hit the SDK.
-    def _g(prompt: str, system_prompt: Any = None, **kw: Any) -> LLMResponse:
-        # Mimic the real generate's track_usage call.
-        p.track_usage(
-            tokens=15, cost=0.001,
-            input_tokens=10, output_tokens=5, duration=0.0,
-        )
-        return LLMResponse(
-            content="ok", model="gemini-2.5-pro", provider="gemini",
-            tokens_used=15, cost=0.001, finish_reason="stop",
-            input_tokens=10, output_tokens=5,
-        )
-    p.generate = _g                                                 # type: ignore[method-assign]
+    response = SimpleNamespace(
+        text='{"tool": "echo", "input": {}}',
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=10,
+            candidates_token_count=5,
+            thoughts_token_count=2,
+        ),
+    )
+    p._local.client = SimpleNamespace(
+        models=SimpleNamespace(generate_content=lambda **_kwargs: response)
+    )
 
     assert p.call_count == 0
     p.turn(
         messages=[Message(role="user", content=[TextBlock(text="x")])],
-        tools=[],
+        tools=[ToolDef("echo", "echo", {"type": "object"}, lambda _input: "ok")],
     )
     assert p.call_count == 1
+    assert p.total_input_tokens == 10
+    assert p.total_output_tokens == 5
     assert p.total_cost > 0.0
 
 

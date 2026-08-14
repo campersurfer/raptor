@@ -34,6 +34,8 @@ DEFAULT_MAX_COST_USD = 5.00
 DEFAULT_MAX_ITERATIONS = 30
 DEFAULT_TOOL_TIMEOUT_S = 30.0
 DEFAULT_MAX_SECONDS = 900.0
+DEFAULT_MAX_TOKENS_PER_TURN = 8192
+
 _MAX_INVENTORY_FILES = 250
 _MAX_ITEMS_PER_FILE = 50
 _MAX_METADATA_TEXT = 256
@@ -114,6 +116,7 @@ def default_map_dispatch(
         max_cost_usd=max_cost_usd,
         max_seconds=max_seconds,
         tool_timeout_s=tool_timeout_s,
+        max_tokens_per_turn=DEFAULT_MAX_TOKENS_PER_TURN,
         context_policy=ContextPolicy.RAISE,
         cache_control=CacheControl(system=True, tools=True),
         terminate_on_handler_error=False,

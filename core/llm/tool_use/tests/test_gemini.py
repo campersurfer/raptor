@@ -1,19 +1,8 @@
-"""Tests for ``GeminiProvider.turn`` — JSON-protocol synthesis fallback.
-
-The native google-genai SDK exposes Gemini's function-calling, but
-``GeminiProvider`` doesn't wire that up; users wanting native
-function-calling install ``openai`` alongside and the factory routes
-them through :class:`OpenAICompatibleProvider` against Gemini's
-OpenAI-compat endpoint.
-
-This file covers the genai-only path: ``turn()`` delegates to the
-ABC's :meth:`_tool_use_fallback`, identical to the synthesis path
-:class:`ClaudeCodeLLMProvider` uses.
-"""
+"""Tests for ``GeminiProvider.turn`` through the native Google SDK."""
 
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,10 +20,10 @@ from core.llm.tool_use import (
 )
 
 
-def _config() -> ModelConfig:
+def _config(model_name: str = "gemini-2.5-pro") -> ModelConfig:
     return ModelConfig(
         provider="gemini",
-        model_name="gemini-2.5-pro",
+        model_name=model_name,
         api_key="test-key",
         timeout=1,
     )
@@ -53,16 +42,49 @@ def _user(text: str) -> Message:
     return Message(role="user", content=[TextBlock(text=text)])
 
 
+class _FakeModels:
+    def __init__(self, response) -> None:
+        self.response = response
+        self.calls = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+class _FakeClient:
+    def __init__(self, response) -> None:
+        self.models = _FakeModels(response)
+
+
+def _provider_with_response(
+    text: str,
+    *,
+    model_name: str = "gemini-2.5-pro",
+    input_tokens: int = 4,
+    output_tokens: int = 6,
+    thinking_tokens: int = 0,
+) -> tuple[GeminiProvider, _FakeClient]:
+    response = SimpleNamespace(
+        text=text,
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=input_tokens,
+            candidates_token_count=output_tokens,
+            thoughts_token_count=thinking_tokens,
+        ),
+    )
+    provider = GeminiProvider(_config(model_name))
+    client = _FakeClient(response)
+    provider._local.client = client
+    return provider, client
+
+
 # ---------------------------------------------------------------------------
 # Capability flags
 # ---------------------------------------------------------------------------
 
 
-def test_capabilities_advertise_synthesis_path() -> None:
-    """``supports_tool_use`` is True (via synthesis), but
-    ``supports_parallel_tools`` is False — the JSON-protocol fallback
-    only handles one tool call per turn. Caching off — Gemini doesn't
-    expose per-region cache breakpoints."""
+def test_capabilities_advertise_native_json_path() -> None:
     p = GeminiProvider(_config())
     assert p.supports_tool_use() is True
     assert p.supports_parallel_tools() is False
@@ -70,62 +92,72 @@ def test_capabilities_advertise_synthesis_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# turn() delegates to _tool_use_fallback
+# Native JSON turn()
 # ---------------------------------------------------------------------------
 
 
-def _stub_generate(text: str) -> Any:
-    """Replacement for ``self.generate`` that returns canned text without
-    hitting the SDK."""
-    def _g(prompt: str, system_prompt: Any = None, **_kw: Any) -> LLMResponse:
-        return LLMResponse(
-            content=text,
-            model="gemini-2.5-pro",
-            provider="gemini",
-            tokens_used=10,
-            cost=0.0,
-            finish_reason="stop",
-            input_tokens=4,
-            output_tokens=6,
-        )
-    return _g
+def test_turn_json_text_response_returns_complete() -> None:
+    p, client = _provider_with_response('{"text": "just a plain answer"}')
+    out = p.turn(messages=[_user("hi")], tools=[_echo_tool()])
 
-
-def test_turn_text_response_returns_complete() -> None:
-    p = GeminiProvider(_config())
-    p.generate = _stub_generate("just a plain answer")               # type: ignore[method-assign]
-    out = p.turn(messages=[_user("hi")], tools=[])
     assert out.stop_reason is StopReason.COMPLETE
     assert isinstance(out.content[0], TextBlock)
     assert out.content[0].text == "just a plain answer"
+    assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
 
 
-def test_turn_emits_tool_call_when_model_responds_with_json() -> None:
-    """The fallback parses ```json fenced tool calls — same protocol
-    as ClaudeCodeLLMProvider."""
+def test_turn_without_tools_preserves_text_transport() -> None:
     p = GeminiProvider(_config())
-    p.generate = _stub_generate(                                     # type: ignore[method-assign]
-        '```json\n{"tool": "echo", "input": {"q": "x"}}\n```'
+    p.generate = lambda *_args, **_kwargs: LLMResponse(
+        content="ordinary completion",
+        model="gemini-2.5-pro",
+        provider="gemini",
+        tokens_used=10,
+        cost=0.01,
+        finish_reason="stop",
+        input_tokens=4,
+        output_tokens=6,
+    )
+
+    out = p.turn(messages=[_user("hi")], tools=[])
+
+    assert out.stop_reason is StopReason.COMPLETE
+    assert isinstance(out.content[0], TextBlock)
+    assert out.content[0].text == "ordinary completion"
+    assert out.cost_usd == 0.01
+
+
+def test_turn_native_json_response_emits_tool_call() -> None:
+    p, client = _provider_with_response(
+        '{"tool": "echo", "input": {"q": "x"}}',
+        model_name="gemini-2.5-flash",
+        thinking_tokens=2,
     )
     out = p.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
     assert out.stop_reason is StopReason.NEEDS_TOOL_CALL
     assert isinstance(out.content[0], ToolCall)
     assert out.content[0].name == "echo"
     assert out.content[0].input == {"q": "x"}
+    assert out.content[0].id.startswith("call_")
+    assert out.input_tokens == 4
+    assert out.output_tokens == 6
+    assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
+    assert client.models.calls[0]["config"]["thinking_config"] == {"thinking_budget": 0}
 
 
-def test_turn_propagates_cost_usd_through_fallback() -> None:
-    """Same plumbing as ClaudeCodeLLMProvider: generate() cost flows
-    onto the TurnResponse so loop budget tracking matches reality."""
-    p = GeminiProvider(_config())
-    def _g(prompt: str, system_prompt: Any = None, **_kw: Any) -> LLMResponse:
-        return LLMResponse(
-            content="ok",
-            model="gemini-2.5-pro", provider="gemini",
-            tokens_used=10, cost=0.0451, finish_reason="stop",
-            input_tokens=4, output_tokens=6,
-        )
-    p.generate = _g                                                  # type: ignore[method-assign]
-    out = p.turn(messages=[_user("hi")], tools=[])
-    assert out.cost_usd == 0.0451
-    assert p.compute_cost(out) == 0.0451
+def test_turn_preserves_native_thinking_cost() -> None:
+    p, _ = _provider_with_response(
+        '{"tool": "echo", "input": {"q": "x"}}',
+        input_tokens=100,
+        output_tokens=50,
+        thinking_tokens=25,
+    )
+    out = p.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
+    expected_cost = p._calculate_cost_split(100, 50, 25)
+    assert out.cost_usd == expected_cost
+    assert p.compute_cost(out) == expected_cost
+    assert p.call_count == 1
+    assert p.total_input_tokens == 100
+    assert p.total_output_tokens == 50

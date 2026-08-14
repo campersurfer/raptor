@@ -99,6 +99,36 @@ def test_map_dispatch_accepts_terminal_context_map(tmp_path):
     assert result == result_map
 
 
+
+def test_map_dispatch_reserves_terminal_payload_budget(tmp_path, monkeypatch):
+    import packages.code_understanding.dispatch.map_dispatch as dispatch
+
+    result_map = _context_map()
+    captured = {}
+
+    class RecordingLoop:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self, _prompt):
+            return type(
+                "LoopResult",
+                (),
+                {
+                    "terminated_by": "terminal_tool",
+                    "terminal_tool_input": {"context_map": result_map},
+                },
+            )()
+
+    monkeypatch.setattr(dispatch, "ToolUseLoop", RecordingLoop)
+    with _patch_provider([]):
+        result = dispatch.default_map_dispatch(_model(), str(tmp_path))
+
+    assert result == result_map
+    assert captured["max_tokens_per_turn"] == dispatch.DEFAULT_MAX_TOKENS_PER_TURN
+    assert dispatch.DEFAULT_MAX_TOKENS_PER_TURN == 8192
+
+
 def test_map_dispatch_can_read_source_but_has_no_write_or_shell_tool(tmp_path):
     from packages.code_understanding.dispatch.map_dispatch import (
         _build_tools,
