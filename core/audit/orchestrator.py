@@ -353,6 +353,10 @@ class _LockedOutcomes:
         with self._lock:
             self._data[key] = value
 
+    def __getitem__(self, key: str) -> ReviewOutcome:
+        with self._lock:
+            return self._data[key]
+
     def get(self, key: str) -> Optional[ReviewOutcome]:
         with self._lock:
             return self._data.get(key)

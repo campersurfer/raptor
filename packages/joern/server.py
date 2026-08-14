@@ -924,11 +924,6 @@ class JoernServer:
         lang_profile (or defaults to Python profile), and submits.
         When *cancel_check* is provided, uses the async submit+poll
         path so the caller can abort mid-query.
-
-        Version-adaptive: if the query fails with a Scala compilation
-        error, known import substitutions are tried automatically
-        (e.g. Path moved between packages across Joern versions).
-        Successful substitutions are cached for the session.
         """
         if timeout is None:
             timeout = self._query_timeout_s

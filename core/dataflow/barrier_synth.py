@@ -568,11 +568,15 @@ class _BarrierProposerAdapter:
         self._fn = proposer_fn
         self._proposal = proposal
         self._refine_count = 0
+        self._last_verdict_id: int = -1
 
     def propose(self, context, feedback, *, prior_verdict=None):
         error = feedback if feedback else None
         if prior_verdict is not None and prior_verdict.evidence:
-            self._refine_count += 1
+            vid = id(prior_verdict)
+            if vid != self._last_verdict_id:
+                self._refine_count += 1
+                self._last_verdict_id = vid
             ev = prior_verdict.evidence
             sr = ev["synth_result"]
             refine_ctx = RefineContext(

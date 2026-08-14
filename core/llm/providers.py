@@ -3246,6 +3246,9 @@ class ClaudeCodeLLMProvider(LLMProvider):
         self._session_id = None
         self._messages_seen = 0
 
+    def context_window(self) -> int:
+        return self.config.max_context
+
     def _cli_model(self) -> Optional[str]:
         """Model name to pass as ``claude -p --model``.
 

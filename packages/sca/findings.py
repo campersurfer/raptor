@@ -363,7 +363,7 @@ class _Sortable:
             except VersionError:
                 other_ok = False
             if self_ok != other_ok:
-                return other_ok
+                return self_ok
             return self.v < other.v
 
 

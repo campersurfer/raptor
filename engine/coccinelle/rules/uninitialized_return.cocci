@@ -81,6 +81,7 @@ def _find_switch_no_default(filepath, decl_line, ret_line, var_name):
             depth = 0
             has_default = False
             assigns_var = False
+            switch_end_idx = None
             for j in range(i, len(lines)):
                 line = lines[j]
                 for ch in line:
@@ -89,8 +90,9 @@ def _find_switch_no_default(filepath, decl_line, ret_line, var_name):
                     elif ch == '}':
                         depth -= 1
                         if depth == 0:
+                            switch_end_idx = j
                             if not has_default and assigns_var:
-                                return sw_line
+                                pass
                             i = j
                             break
                 else:
@@ -104,6 +106,23 @@ def _find_switch_no_default(filepath, decl_line, ret_line, var_name):
                             assigns_var = True
                     continue
                 break
+            if not has_default and assigns_var and switch_end_idx is not None:
+                dominated = False
+                brace_depth = 0
+                for k in range(switch_end_idx + 1, ret_line - 1):
+                    if k >= len(lines):
+                        break
+                    kline = lines[k]
+                    for ch in kline:
+                        if ch == '{':
+                            brace_depth += 1
+                        elif ch == '}':
+                            brace_depth -= 1
+                    if brace_depth == 0 and assign_re.search(kline):
+                        dominated = True
+                        break
+                if not dominated:
+                    return sw_line
         i += 1
     return None
 

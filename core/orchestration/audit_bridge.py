@@ -53,9 +53,10 @@ def find_audit_output(
             return True
         try:
             meta = json.loads((d / ".raptor-run.json").read_text())
-            return meta.get("target", "") == target_path
+            stored = meta.get("target_path", "")
+            return Path(stored).resolve() == Path(target_path).resolve()
         except Exception:
-            return True
+            return False
 
     best = find_sibling_run(
         validate_dir, CONSTRAINTS_FILENAME,

@@ -597,10 +597,6 @@ def _find_brace_end(content: str, open_pos: int) -> int:
             elif nxt == "*":
                 end = content.find("*/", pos + 2)
                 pos = end + 1 if end >= 0 else length
-        elif ch == "#":
-            pos = content.find("\n", pos + 1)
-            if pos < 0:
-                break
         elif ch == "{":
             depth += 1
         elif ch == "}":

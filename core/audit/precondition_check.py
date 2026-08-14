@@ -167,8 +167,12 @@ def _extract_c_function(source: str, name: str) -> Optional[str]:
     while i < length:
         ch = source[i]
         if in_string:
-            if ch == string_char and (i == 0 or source[i - 1] != "\\"):
-                in_string = False
+            if ch == string_char:
+                bs = 0
+                while i - 1 - bs >= 0 and source[i - 1 - bs] == "\\":
+                    bs += 1
+                if bs % 2 == 0:
+                    in_string = False
         elif ch in ('"', "'"):
             in_string = True
             string_char = ch

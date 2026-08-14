@@ -332,13 +332,17 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                 stub = f"{root}{ns_target}"
                 if not os.path.exists(stub):
                     try:
-                        os.makedirs(os.path.dirname(stub), exist_ok=True)
-                        fd = os.open(
-                            stub,
-                            os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
-                            0o600,
-                        )
-                        os.close(fd)
+                        host_source = etc_overlay[ns_target]
+                        if isinstance(host_source, str) and os.path.isdir(host_source):
+                            os.makedirs(stub, exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(stub), exist_ok=True)
+                            fd = os.open(
+                                stub,
+                                os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
+                                0o600,
+                            )
+                            os.close(fd)
                     except OSError as exc:
                         warn_post_fork(
                             b"RAPTOR: mount_ns: etc_overlay pre-create "
