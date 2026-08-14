@@ -6,6 +6,7 @@ the startup banner, writes .startup-output, and sets up CLAUDE_ENV_FILE.
 Entry point: `python3 -m core.startup.init`
 """
 
+import importlib.util
 import logging
 import os
 import shutil
@@ -34,7 +35,14 @@ def check_tools() -> tuple[list, list, set]:
     results = []
     available = set()
     for name in sorted(RaptorConfig.TOOL_DEPS):
-        found = bool(shutil.which(RaptorConfig.TOOL_DEPS[name]["binary"]))
+        dep = RaptorConfig.TOOL_DEPS[name]
+        if "module" in dep:
+            # Python-module dependency (e.g. z3) — no binary to probe.
+            # find_spec locates without importing, so a broken module
+            # can't crash the banner.
+            found = importlib.util.find_spec(dep["module"]) is not None
+        else:
+            found = bool(shutil.which(dep["binary"]))
         results.append((name, found))
         if found:
             available.add(name)

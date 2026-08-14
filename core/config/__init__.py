@@ -111,6 +111,13 @@ class RaptorConfig:
         "frida":        {"binary": "frida",       "severity": "degrades", "affects": "/frida, dynamic analysis, /fuzz harness probe"},
         "frida-trace":  {"binary": "frida-trace", "severity": "degrades", "affects": "dynamic tracing"},
         "jadx":         {"binary": "jadx",        "severity": "degrades", "affects": "Android/APK reverse engineering"},
+        # SMT feasibility engine — a Python module, not a binary
+        # (checked via importlib.util.find_spec). Consumers guard the
+        # import and degrade: /audit path-feasibility, /codeql dataflow
+        # validation, and exploit_feasibility one-gadget checks fall
+        # back to LLM-only / unknown verdicts without it. ``pip`` names
+        # the PyPI distribution (module name differs).
+        "z3":           {"module": "z3", "pip": "z3-solver", "severity": "degrades", "affects": "/audit, /codeql, /exploit (SMT feasibility)"},
     }
 
     TOOL_GROUPS = {
