@@ -1537,18 +1537,18 @@ def check_lock_ordering(
     lock_missing_re = _LOCK_MISSING_UNLOCK
     unlock_re = _UNLOCK_PATTERN
     if domain_vocab and (domain_vocab.lock_acquires or domain_vocab.lock_releases):
-        extra_acq = "|".join(
-            rf"{re.escape(n)}\s*\(" for n in domain_vocab.lock_acquires
+        extra_acq_names = "|".join(
+            re.escape(n) for n in domain_vocab.lock_acquires
         )
         extra_rel = "|".join(
             rf"{re.escape(n)}\s*\(" for n in domain_vocab.lock_releases
         )
-        if extra_acq:
+        if extra_acq_names:
             lock_acquire_re = re.compile(
-                _LOCK_ACQUIRE.pattern + "|" + extra_acq,
+                _LOCK_ACQUIRE.pattern + rf"|({extra_acq_names})\s*\(",
             )
             lock_missing_re = re.compile(
-                _LOCK_MISSING_UNLOCK.pattern + "|" + extra_acq, re.I,
+                _LOCK_MISSING_UNLOCK.pattern + "|" + extra_acq_names + r"\s*\(", re.I,
             )
         if extra_rel:
             unlock_re = re.compile(

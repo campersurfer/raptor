@@ -1,6 +1,7 @@
 """Tests for core.iris.api — consumer-facing spec API."""
 
 from core.evidence import EvidenceTier
+from core.iris.specs import _parse_one_spec, _specs_from_list
 from core.iris.api import (
     _resolve_out_dir,
     get_project_propagators,
@@ -279,3 +280,29 @@ class TestResolveOutDir:
         assert resolved is not None
         project = _project_dir(resolved)
         assert project == fake_project_dir
+
+
+class TestTaintSpecParamsCoercion:
+    def test_parse_one_spec_coerces_string_params(self):
+        spec = _parse_one_spec({
+            "function": "f", "role": "source",
+            "params_affected": ["0", "1"],
+        })
+        assert spec is not None
+        assert spec.params_affected == [0, 1]
+        assert all(isinstance(p, int) for p in spec.params_affected)
+
+    def test_parse_one_spec_skips_bad_params(self):
+        spec = _parse_one_spec({
+            "function": "f", "role": "source",
+            "params_affected": ["0", "abc", "2"],
+        })
+        assert spec is not None
+        assert spec.params_affected == [0, 2]
+
+    def test_specs_from_list_coerces_list_params(self):
+        specs = _specs_from_list([
+            {"function": "exec", "params_affected": ["0", "1"],
+             "taint_classes": ["cmdi"], "role": "sink"},
+        ])
+        assert specs[0].params_affected == [0, 1]

@@ -212,15 +212,24 @@ def _parse_one_spec(data: Any) -> TaintSpec | None:
     taint_classes = data.get("taint_classes", [])
     if isinstance(taint_classes, str):
         taint_classes = [taint_classes]
-    params_affected = data.get("params_affected", [])
-    if isinstance(params_affected, (int, float)):
-        params_affected = [int(params_affected)]
+    raw_params = data.get("params_affected", [])
+    if isinstance(raw_params, (int, float)):
+        params_affected = [int(raw_params)]
+    elif isinstance(raw_params, list):
+        params_affected = []
+        for x in raw_params:
+            try:
+                params_affected.append(int(x))
+            except (TypeError, ValueError):
+                continue
+    else:
+        params_affected = []
     return TaintSpec(
         function=function,
         file=file,
         role=role,
         taint_classes=taint_classes if isinstance(taint_classes, list) else [],
-        params_affected=params_affected if isinstance(params_affected, list) else [],
+        params_affected=params_affected,
         return_tainted=data.get("return_tainted", False),
         confidence=_safe_confidence(data.get("confidence", 0.5)),
     )
@@ -494,7 +503,12 @@ def _specs_from_list(items: list[dict[str, Any]]) -> list[TaintSpec]:
         elif isinstance(pa, str) and pa.isdigit():
             params_affected = [int(pa)]
         elif isinstance(pa, list):
-            params_affected = pa
+            params_affected = []
+            for x in pa:
+                try:
+                    params_affected.append(int(x))
+                except (TypeError, ValueError):
+                    continue
         else:
             params_affected = []
         specs.append(TaintSpec(

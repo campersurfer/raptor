@@ -754,6 +754,26 @@ class TestCheckLockOrdering:
         gaps = [{"name": "f", "file": "a.c", "source": "return 0;"}]
         assert check_lock_ordering(gaps) == []
 
+    def test_domain_vocab_lock_names_captured(self):
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class _Vocab:
+            lock_acquires: frozenset = field(default_factory=frozenset)
+            lock_releases: frozenset = field(default_factory=frozenset)
+
+        vocab = _Vocab(
+            lock_acquires=frozenset({"spin_lock", "rw_lock"}),
+            lock_releases=frozenset({"spin_unlock", "rw_unlock"}),
+        )
+        gaps = [{"name": "work", "file": "drv.c", "source": (
+            "spin_lock(a);\nrw_lock(b);\n"
+            "do_work();\n"
+            "rw_unlock(b);\nspin_unlock(a);\n"
+        )}]
+        results = check_lock_ordering(gaps, domain_vocab=vocab)
+        assert any(f.cwe == "CWE-764" for f in results)
+
 
 class TestDeadGapExclusion:
     """Dead gaps must not pollute convention baselines or sibling votes."""
