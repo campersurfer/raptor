@@ -662,6 +662,21 @@ def validate_sarif(
     return True if full_validation_ran else None
 
 
+_TOOL_NAME_MAP = {
+    "semgrep oss": "semgrep",
+    "semgrep": "semgrep",
+    "codeql": "codeql",
+    "coccinelle": "coccinelle",
+}
+
+
+def _normalise_tool_name(driver_name: str) -> str:
+    """Map a SARIF ``tool.driver.name`` to the canonical key used by
+    ``scan_coverage.py`` (``semgrep``, ``codeql``, ``coccinelle``).
+    Falls back to a lowercased version of the driver name."""
+    return _TOOL_NAME_MAP.get(driver_name.lower(), driver_name.lower())
+
+
 def generate_scan_metrics(sarif_paths: List[str]) -> Dict[str, Any]:
     """
     Generate metrics from scan results.
@@ -682,6 +697,7 @@ def generate_scan_metrics(sarif_paths: List[str]) -> Dict[str, Any]:
             "none": 0,
         },
         "findings_by_rule": {},
+        "findings_by_tool": {},
         "tools_used": [],
     }
 
@@ -702,6 +718,11 @@ def generate_scan_metrics(sarif_paths: List[str]) -> Dict[str, Any]:
             # Count findings
             results = run.get("results", [])
             metrics["total_findings"] += len(results)
+
+            tool_key = _normalise_tool_name(tool_name)
+            metrics["findings_by_tool"][tool_key] = (
+                metrics["findings_by_tool"].get(tool_key, 0) + len(results)
+            )
 
             for result in results:
                 # Count by severity
