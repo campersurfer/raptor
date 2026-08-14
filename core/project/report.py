@@ -94,7 +94,7 @@ def _finding_fingerprint(finding: Dict[str, Any]) -> str:
         "id": finding.get("id") or finding.get("finding_id"),
         "file": finding.get("file"),
         "function": finding.get("function"),
-        "line": finding.get("line"),
+        "line": finding.get("line") or finding.get("line_start"),
         "type": finding.get("vuln_type") or finding.get("type"),
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
