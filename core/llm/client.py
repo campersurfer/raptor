@@ -276,7 +276,8 @@ def _is_retryable_error(error: Exception) -> bool:
 
     # Check error message for retryable patterns
     error_str = str(error).lower()
-    retryable_patterns = ("timeout", "connection", "502", "503", "504",
+    retryable_patterns = ("timeout", "timed out", "connection",
+                          "502", "503", "504",
                           "internal server error", "service unavailable")
     if any(p in error_str for p in retryable_patterns):
         return True
@@ -1591,7 +1592,13 @@ class LLMClient:
                 logger.warning("All attempts failed for %s/%s, trying next model...", model.provider, model.model_name)
 
             # All models in tier failed
-            tier = "local (Ollama)" if model_config.provider.lower() == "ollama" else "cloud"
+            _prov = model_config.provider.lower()
+            if _prov == "ollama":
+                tier = "local (Ollama)"
+            elif _prov.startswith("claudecode"):
+                tier = "claude CLI"
+            else:
+                tier = "cloud"
             error_msg = f"All {tier} models failed (tried {attempts_count} model(s))."
 
             # Check if last error was quota-related
@@ -1602,12 +1609,24 @@ class LLMClient:
                 error_msg += f"\nLast error: {_sanitize_log_message(str(last_error))}"
                 if tier == "local (Ollama)":
                     error_msg += f"\n→ Check Ollama server: {_ollama_check_url()}"
+                elif tier == "claude CLI":
+                    error_msg += (
+                        "\n→ claude CLI transport — the cause is in the "
+                        "error above (timeout / per-call budget / CLI "
+                        "failure), not API keys. Verify `claude -p` works."
+                    )
                 else:
                     error_msg += "\n→ Check API keys and network connectivity"
             else:
                 error_msg += "\nNo enabled models available in this tier."
                 if tier == "local (Ollama)":
                     error_msg += f"\n→ Check Ollama server: {_ollama_check_url()}"
+                elif tier == "claude CLI":
+                    error_msg += (
+                        "\n→ claude CLI transport — the cause is in the "
+                        "error above (timeout / per-call budget / CLI "
+                        "failure), not API keys. Verify `claude -p` works."
+                    )
                 else:
                     error_msg += "\n→ Check API keys and network connectivity"
 
@@ -1922,7 +1941,13 @@ class LLMClient:
                             time.sleep(delay)
 
             # All models in tier failed
-            tier = "local (Ollama)" if model_config.provider.lower() == "ollama" else "cloud"
+            _prov = model_config.provider.lower()
+            if _prov == "ollama":
+                tier = "local (Ollama)"
+            elif _prov.startswith("claudecode"):
+                tier = "claude CLI"
+            else:
+                tier = "cloud"
             error_msg = f"Structured generation failed for all {tier} models (tried {attempts_count} model(s))."
 
             if last_error and _is_quota_error(last_error):
@@ -1932,12 +1957,24 @@ class LLMClient:
                 error_msg += f"\nLast error: {_sanitize_log_message(str(last_error))}"
                 if tier == "local (Ollama)":
                     error_msg += f"\n→ Check Ollama server: {_ollama_check_url()}"
+                elif tier == "claude CLI":
+                    error_msg += (
+                        "\n→ claude CLI transport — the cause is in the "
+                        "error above (timeout / per-call budget / CLI "
+                        "failure), not API keys. Verify `claude -p` works."
+                    )
                 else:
                     error_msg += "\n→ Check API keys and network connectivity"
             else:
                 error_msg += "\nNo enabled models available in this tier."
                 if tier == "local (Ollama)":
                     error_msg += f"\n→ Check Ollama server: {_ollama_check_url()}"
+                elif tier == "claude CLI":
+                    error_msg += (
+                        "\n→ claude CLI transport — the cause is in the "
+                        "error above (timeout / per-call budget / CLI "
+                        "failure), not API keys. Verify `claude -p` works."
+                    )
                 else:
                     error_msg += "\n→ Check API keys and network connectivity"
 

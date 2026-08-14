@@ -130,7 +130,10 @@ def _is_under_projects_base(directory: Path) -> bool:
 # ------------------------------------------------------------------
 
 _DOC_MAX_BYTES = 8192
-_BATCH_WALL_TIMEOUT = 300  # seconds — abandon a hung API call
+_BATCH_WALL_TIMEOUT = 660  # seconds — abandon a hung API call.
+# Must exceed the slowest per-call transport timeout (claudecode
+# fallback: 600s) or healthy-but-slow CLI calls get abandoned here
+# after their tokens were already billed.
 _CONSECUTIVE_FAIL_LIMIT = 3  # abort run after N consecutive batch failures
 
 
