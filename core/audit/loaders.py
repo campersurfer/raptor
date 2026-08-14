@@ -44,7 +44,13 @@ def load_variants(out_dir: Path) -> Set[str]:
 
 
 def load_coverage_records(out_dir: Path) -> List[Dict[str, Any]]:
-    """Load coverage-record.json if present."""
+    """Load legacy coverage-record.json if present.
+
+    Back-compat: modern coverage uses per-tool records (coverage-*.json)
+    imported into CoverageStore, and the review journal is the primary
+    source of function-level coverage (see gaps._fold_journal_into_covered).
+    This loader exists for runs that pre-date the per-tool split.
+    """
     path = out_dir / "coverage-record.json"
     if not path.exists():
         return []
