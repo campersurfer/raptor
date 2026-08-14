@@ -3213,7 +3213,13 @@ class ClaudeCodeLLMProvider(LLMProvider):
         config: ModelConfig,
         *,
         claude_bin: Optional[str] = None,
-        budget_usd: str = "1.00",
+        # Per-CALL abort ceiling (claude -p --max-budget-usd), not a
+        # run budget — orchestrators cap total spend via --max-cost.
+        # Audit-sized structured reviews (system prompt + context
+        # slice + schema) measure $0.9-1.3 per call on Opus-class
+        # models; the old "1.00" default aborted them mid-response
+        # with subtype error_max_budget_usd.
+        budget_usd: str = "5.00",
         timeout_s: Optional[int] = None,
         resumable: bool = False,
     ) -> None:
