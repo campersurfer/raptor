@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Optional
 
+from core.llm.client import _is_retryable_error
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
 from core.llm.tool_use import (
@@ -35,6 +37,34 @@ DEFAULT_MAX_SECONDS = 900.0
 _MAX_INVENTORY_FILES = 250
 _MAX_ITEMS_PER_FILE = 50
 _MAX_METADATA_TEXT = 256
+
+_TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 4.0)
+
+
+class _RetryingMapProvider:
+    """Retry transient map-turn transport failures without replaying tool state."""
+
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
+
+    def turn(self, *args: Any, **kwargs: Any) -> Any:
+        for attempt, delay in enumerate((*_TRANSIENT_RETRY_DELAYS_SECONDS, None), start=1):
+            try:
+                return self._provider.turn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - provider boundary
+                if delay is None or not _is_retryable_error(exc):
+                    raise
+                logger.warning(
+                    "map: transient provider failure on attempt %d/%d; retrying in %.0fs",
+                    attempt,
+                    len(_TRANSIENT_RETRY_DELAYS_SECONDS) + 1,
+                    delay,
+                )
+                time.sleep(delay)
+        raise AssertionError("map provider retry loop exhausted without a result")
 
 
 def default_map_dispatch(
@@ -76,7 +106,7 @@ def default_map_dispatch(
         return {"error": f"provider construction failed: {type(exc).__name__}: {exc}"}
 
     loop = ToolUseLoop(
-        provider=provider,
+        provider=_RetryingMapProvider(provider),
         tools=_build_tools(sandbox),
         system=MAP_SYSTEM_PROMPT,
         terminal_tool="submit_context_map",

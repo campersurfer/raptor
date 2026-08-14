@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Iterator
 from unittest.mock import patch
 
+import pytest
+
 from core.llm.config import ModelConfig
 from core.llm.tool_use.types import StopReason, TextBlock, ToolCall, TurnResponse
 
@@ -160,3 +162,56 @@ def test_model_context_map_rejects_scalar_entries():
         _validate_model_context_map(context_map)
         == "'entry_points' must contain only objects"
     )
+
+
+def test_map_dispatch_retries_transient_provider_failure(tmp_path, monkeypatch):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    result_map = _context_map()
+    provider = None
+
+    class TransientProvider(FakeProvider):
+        def turn(self, messages, tools, **kwargs):
+            nonlocal provider
+            provider = self
+            if self._calls == 0:
+                self._calls += 1
+                raise RuntimeError("503 service unavailable")
+            return super().turn(messages, tools, **kwargs)
+
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.create_provider",
+        lambda _model: TransientProvider(
+            [FakeTurn(tool_calls=[("submit_context_map", {"context_map": result_map})])]
+        ),
+    )
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.time.sleep",
+        lambda _delay: None,
+    )
+    result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result == result_map
+    assert provider is not None
+    assert provider._calls == 2
+
+
+def test_map_dispatch_does_not_retry_nontransient_provider_failure(tmp_path, monkeypatch):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    class PermanentProvider(FakeProvider):
+        def turn(self, messages, tools, **kwargs):
+            raise RuntimeError("401 unauthorized")
+
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.create_provider",
+        lambda _model: PermanentProvider([]),
+    )
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.time.sleep",
+        lambda _delay: pytest.fail("nontransient failure must not retry"),
+    )
+
+    result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"].startswith("RuntimeError: 401 unauthorized")
