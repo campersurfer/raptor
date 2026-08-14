@@ -139,6 +139,8 @@ def prepare_source_intel(
             "prepare_source_intel: packages.source_intel not importable; "
             "skipping injection wiring",
         )
+        with _SI_LOCK:
+            _SI_RESULT_CACHE[key] = ("", None)
         return
     from packages.source_intel.cache import compute_target_signature
     sig = compute_target_signature(repo_path)
