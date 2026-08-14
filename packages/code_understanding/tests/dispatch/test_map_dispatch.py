@@ -213,5 +213,34 @@ def test_map_dispatch_does_not_retry_nontransient_provider_failure(tmp_path, mon
     )
 
     result = default_map_dispatch(_model(), str(tmp_path))
-
     assert result["error"].startswith("RuntimeError: 401 unauthorized")
+
+
+def test_map_dispatch_stops_after_bounded_transient_retries(tmp_path, monkeypatch):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    class UnavailableProvider(FakeProvider):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        def turn(self, messages, tools, **kwargs):
+            self.calls += 1
+            raise RuntimeError("503 service unavailable")
+
+    provider = UnavailableProvider()
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.create_provider",
+        lambda _model: provider,
+    )
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.time.sleep",
+        lambda _delay: None,
+    )
+
+    result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"].startswith("RuntimeError: 503 service unavailable")
+    assert provider.calls == 3
+
+    assert result["error"].startswith("RuntimeError: 503 service unavailable")
