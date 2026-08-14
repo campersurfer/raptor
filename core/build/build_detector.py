@@ -1363,7 +1363,10 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
 
         try:
             logger.info("  Asking Claude Code for additional compiler flags...")
-            from core.llm.cc_adapter import CCDispatchConfig, build_cc_command, strip_json_fences
+            from core.llm.cc_adapter import (
+                CCDispatchConfig, build_cc_command, cc_subprocess_env,
+                strip_json_fences,
+            )
             config = CCDispatchConfig(
                 claude_bin=claude_bin,
                 tools="Read,Grep,Glob",
@@ -1382,9 +1385,13 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
             # custom-endpoint setups. The downstream client is
             # ``claude`` either way, so the policy is identical.
             from core.llm.cc_proxy_hosts import proxy_hosts_for_cc_dispatch
+            # env: backend overlay (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) so a
+            # Bedrock/Vertex-backed CLI child can authenticate; the
+            # sandbox's proxy env still overrides HTTPS_PROXY.
             result = _sandbox_run(
                 build_cc_command(config),
                 target=repo_path, output=repo_path,
+                env=cc_subprocess_env(),
                 use_egress_proxy=True,
                 proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
                 caller_label="codeql-build-detect",

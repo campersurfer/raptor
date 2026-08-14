@@ -208,7 +208,9 @@ def _dispatch_validate_unsafe(
             selection_file, findings_count,
         )
 
-        from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
+        from core.llm.cc_adapter import (
+            CCDispatchConfig, build_cc_command, cc_subprocess_env,
+        )
         from core.sandbox import run_untrusted_networked
         from core.llm.cc_proxy_hosts import (
             readable_paths_for_cc_dispatch,
@@ -227,11 +229,15 @@ def _dispatch_validate_unsafe(
         )
 
         try:
+            # env: backend overlay (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) so a
+            # Bedrock/Vertex-backed CLI child can authenticate; the
+            # sandbox's proxy env still overrides HTTPS_PROXY.
             proc = run_untrusted_networked(
                 build_cc_command(dispatch_config),
                 input=prompt, text=True,
                 timeout=_VALIDATE_TIMEOUT_S,
                 target=str(target_path), output=str(validate_dir),
+                env=cc_subprocess_env(),
                 readable_paths=(
                     [str(_RAPTOR_DIR), str(audit_out_dir)]
                     + readable_paths_for_cc_dispatch(claude_bin)

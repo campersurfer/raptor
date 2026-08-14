@@ -199,7 +199,9 @@ def _run_understand_prepass_unsafe(
 
         prompt = _build_understand_prompt(target, understand_dir)
         try:
-            from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
+            from core.llm.cc_adapter import (
+                CCDispatchConfig, build_cc_command, cc_subprocess_env,
+            )
             prepass_config = CCDispatchConfig(
                 claude_bin=claude_bin,
                 tools=_UNDERSTAND_TOOLS,
@@ -216,11 +218,15 @@ def _run_understand_prepass_unsafe(
             # libexec/raptor-coverage-summary --mark (MAP-6) — those
             # scripts live under RAPTOR_DIR. target+understand_dir
             # auto-allowlisted via target=/output= positional args.
+            # env: backend overlay (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) so a
+            # Bedrock/Vertex-backed CLI child can authenticate; the
+            # sandbox's proxy env still overrides HTTPS_PROXY.
             proc = run_untrusted_networked(
                 build_cc_command(prepass_config),
                 input=prompt, text=True,
                 timeout=_PREPASS_TIMEOUT_S,
                 target=str(target), output=str(understand_dir),
+                env=cc_subprocess_env(),
                 readable_paths=(
                     [str(_RAPTOR_DIR)] + _readable_paths_for_cc_dispatch(claude_bin)
                 ),
@@ -485,7 +491,9 @@ def _run_validate_postpass_unsafe(
                                         allow_unreachable=allow_unreachable)
 
         try:
-            from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
+            from core.llm.cc_adapter import (
+                CCDispatchConfig, build_cc_command, cc_subprocess_env,
+            )
             postpass_config = CCDispatchConfig(
                 claude_bin=claude_bin,
                 tools=_VALIDATE_TOOLS,
@@ -504,11 +512,13 @@ def _run_validate_postpass_unsafe(
             # paths (when available) carry the per-binary install
             # layout; site-specific extras (RAPTOR_DIR, agentic_out_dir)
             # are prepended.
+            # env: backend overlay — see prepass dispatch above.
             proc = run_untrusted_networked(
                 build_cc_command(postpass_config),
                 input=prompt, text=True,
                 timeout=_POSTPASS_TIMEOUT_S,
                 target=str(target), output=str(validate_dir),
+                env=cc_subprocess_env(),
                 readable_paths=(
                     [str(_RAPTOR_DIR), str(agentic_out_dir)]
                     + _readable_paths_for_cc_dispatch(claude_bin)
