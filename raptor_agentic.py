@@ -801,7 +801,7 @@ def _replay_fuzz_crashes(*, binary_path: Path, crash_files: list[Path], out_dir:
 
 
 def _collect_crash_files(crashes_dir: Path) -> list[Path]:
-    if not crashes_dir or not crashes_dir.exists():
+    if not str(crashes_dir) or not crashes_dir.exists():
         return []
     prefixes = ("crash-", "timeout-", "oom-", "id:")
     return sorted(

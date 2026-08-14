@@ -579,6 +579,11 @@ Examples:
                 pass
             sys.exit(0)
 
+    except SandboxSetupError as e:
+        logger.error("Sandbox setup failed: %s", e)
+        print(f"\n✗ Sandbox setup failed: {e}", file=sys.stderr)
+        print("  Re-run without sandboxing or fix the sandbox configuration.", file=sys.stderr)
+        sys.exit(SANDBOX_ENGAGE_EXIT_CODE)
     except Exception as e:
         logger.error("Fuzzing failed: %s", e)
         print(f"\n✗ Fuzzing failed: {e}", file=sys.stderr)

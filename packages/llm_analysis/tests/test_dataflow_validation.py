@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from packages.llm_analysis.dataflow_dispatch_client import DispatchClient
 from packages.llm_analysis.dataflow_validation import (
+    _any_match_at_finding_location,
     _attach_result,
     _budget_exhausted,
     _build_hypothesis,
@@ -1415,6 +1416,23 @@ class TestFindingLanguageInference:
     def test_returns_none_when_unknown(self):
         assert _finding_language({"file_path": "x.unknown"}) is None
         assert _finding_language({}) is None
+
+    def test_hh_and_cxx_extensions(self):
+        assert _finding_language({"file_path": "util.hh"}) == "cpp"
+        assert _finding_language({"file_path": "core.c++"}) == "cpp"
+        assert _finding_language({"file_path": "tmpl.tcc"}) == "cpp"
+
+
+class TestMatchAtFindingLocation:
+    def test_unknown_match_line_still_accepted(self):
+        matches = [{"file": "vuln.c", "line": None}]
+        finding = {"file_path": "vuln.c", "start_line": 100}
+        assert _any_match_at_finding_location(matches, finding)
+
+    def test_unknown_match_line_zero_accepted(self):
+        matches = [{"file": "vuln.c", "line": 0}]
+        finding = {"file_path": "vuln.c", "start_line": 100}
+        assert _any_match_at_finding_location(matches, finding)
 
 
 class TestSpecializedPromptGuidance:
