@@ -380,12 +380,13 @@ def _build_claudecode_config() -> Optional['ModelConfig']:
     Slower (subprocess + ``--json-schema`` structured output for
     tool-use) but works for users who only have Claude Code installed.
 
-    ``timeout=300`` is calibrated from real-CC runs: simple turns are
-    5-15s, ``--json-schema`` against a rich tool catalog can push to
-    60-180s. 300s gives 2-3x headroom for worst case without letting
-    a single turn consume a whole ``ToolUseLoop.max_seconds`` budget.
-    Cloud APIs default to 120s in ``ModelConfig`` (well-tuned for
-    them); CC's subprocess + structured-output overhead needs more.
+    ``timeout=600`` is calibrated from real-CC runs: simple turns are
+    5-15s, ``--json-schema`` against a rich tool catalog 60-180s, and
+    audit-sized structured reviews (large system prompt + context
+    slice) measured 170s+ on Bedrock-backed CLIs — the previous 300s
+    ceiling killed the heaviest re-review calls after they had already
+    billed. Cloud APIs default to 120s in ``ModelConfig`` (well-tuned
+    for them); CC's subprocess + structured-output overhead needs more.
     """
     import shutil
     if not shutil.which("claude"):
@@ -400,7 +401,7 @@ def _build_claudecode_config() -> Optional['ModelConfig']:
         max_tokens=limits.get("max_output", 32000),
         max_context=limits.get("max_context", 1000000),
         temperature=0.7,
-        timeout=300,
+        timeout=600,
         cost_per_1k_tokens=0.0,
     )
 
