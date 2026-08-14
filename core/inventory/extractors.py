@@ -2844,33 +2844,46 @@ def _count_comment_lines_ts(node) -> int:
 
 
 def _collect_comment_lines(node, comment_lines: set, code_lines: set = None) -> None:
-    """Recursively collect line numbers that are comment-only.
+    """Collect line numbers that are comment-only.
 
     A line counts as comment-only if it contains a comment but no code.
     Lines like `int x = 1; // init` are code lines, not comment lines.
+
+    Iterative (explicit stack), not recursive: deeply nested ASTs —
+    e.g. openssl's ssl/s3_lib.c, whose giant static ciphersuite table
+    parses ~1000 levels deep — blow Python's recursion limit and got
+    the whole file silently dropped from the inventory.
     """
     if code_lines is None:
         code_lines = set()
         # First pass: collect all lines that have non-comment nodes
         _collect_code_lines(node, code_lines)
 
-    if node.type in ("comment", "line_comment", "block_comment"):
-        for line in range(node.start_point[0], node.end_point[0] + 1):
-            if line not in code_lines:
-                comment_lines.add(line)
-    for child in node.children:
-        _collect_comment_lines(child, comment_lines, code_lines)
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type in ("comment", "line_comment", "block_comment"):
+            for line in range(n.start_point[0], n.end_point[0] + 1):
+                if line not in code_lines:
+                    comment_lines.add(line)
+        stack.extend(n.children)
 
 
 def _collect_code_lines(node, code_lines: set) -> None:
-    """Collect line numbers that have non-comment, non-whitespace nodes."""
-    if node.type not in ("comment", "line_comment", "block_comment") and not node.children:
-        # Leaf node that isn't a comment — it's code
-        if node.text and node.text.strip():
-            for line in range(node.start_point[0], node.end_point[0] + 1):
-                code_lines.add(line)
-    for child in node.children:
-        _collect_code_lines(child, code_lines)
+    """Collect line numbers that have non-comment, non-whitespace nodes.
+
+    Iterative for the same deep-AST reason as _collect_comment_lines.
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if (n.type not in ("comment", "line_comment", "block_comment")
+                and not n.children):
+            # Leaf node that isn't a comment — it's code
+            if n.text and n.text.strip():
+                for line in range(n.start_point[0], n.end_point[0] + 1):
+                    code_lines.add(line)
+        stack.extend(n.children)
 
 
 def _count_comment_lines_regex(content: str, language: str) -> int:

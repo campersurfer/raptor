@@ -389,6 +389,36 @@ class FileCallGraph:
         )
 
 
+def _drive_visit(visitor, root) -> None:
+    """Explicit-stack driver for the generator-based tree-sitter walkers.
+
+    Each walker implements ``_visit(node)`` as a GENERATOR that yields
+    the child nodes to descend into (where the old recursive code
+    called ``self.walk(child)``). Pre-visit work runs before the
+    yields; post-visit work (scope pops in ``finally`` blocks) runs
+    when the generator resumes after its last yield — i.e. after the
+    subtree is fully processed — which reproduces recursive execution
+    order exactly while keeping all state on the heap. Real ASTs
+    (openssl's ssl/s3_lib.c parses >1000 levels deep) blew Python's
+    recursion limit in the old form and got whole files silently
+    dropped from the inventory.
+    """
+    stack = [visitor._visit(root)]
+    try:
+        while stack:
+            try:
+                child = next(stack[-1])
+            except StopIteration:
+                stack.pop()
+            else:
+                stack.append(visitor._visit(child))
+    finally:
+        # On exception, close inner-first so generator ``finally``
+        # blocks run in the same order recursive unwinding would.
+        while stack:
+            stack.pop().close()
+
+
 def extract_call_graph_python(content: str) -> FileCallGraph:
     """Walk a Python source string and return its
     :class:`FileCallGraph`.
@@ -829,11 +859,14 @@ class _JsCallGraph:
         self._local_types: Dict[str, str] = {}
 
     def walk(self, node) -> None:
-        """Recursive descent. We push/pop the enclosing-function
-        stack on the way down/up so the ``CallSite.caller`` field
-        is the innermost NAMED enclosing function — anonymous
-        functions / arrows are walked-through without affecting
-        the caller attribution."""
+        _drive_visit(self, node)
+
+    def _visit(self, node):
+        """Generator visitor (driven by ``_drive_visit``). We push/pop
+        the enclosing-function stack on the way down/up so the
+        ``CallSite.caller`` field is the innermost NAMED enclosing
+        function — anonymous functions / arrows are walked-through
+        without affecting the caller attribution."""
         if node.type in (self._CLASS_DECL, "abstract_class_declaration"):
             # TS class names are ``type_identifier`` (JS uses ``identifier``).
             # Without type_identifier the class was never pushed onto the
@@ -879,14 +912,14 @@ class _JsCallGraph:
                 self._field_types.append(self._collect_field_types(body))
                 try:
                     for child in node.children:
-                        self.walk(child)
+                        yield child
                 finally:
                     self._class_stack.pop()
                     self._field_types.pop()
                 return
             # Anon class — recurse without push.
             for child in node.children:
-                self.walk(child)
+                yield child
             return
 
         if node.type in self._FUNC_NODES:
@@ -913,7 +946,7 @@ class _JsCallGraph:
                 pushed = True
             try:
                 for child in node.children:
-                    self.walk(child)
+                    yield child
             finally:
                 if pushed:
                     self._enclosing.pop()
@@ -940,7 +973,7 @@ class _JsCallGraph:
             # Descend into args to capture nested calls.
 
         for child in node.children:
-            self.walk(child)
+            yield child
 
     # ------------------------------------------------------------------
     # Imports
@@ -1589,8 +1622,12 @@ class _GoCallGraph:
         self._enclosing: List[str] = []
 
     def walk(self, node) -> None:
-        """Recursive descent. Push/pop enclosing-function stack so
-        ``CallSite.caller`` carries the innermost named function."""
+        _drive_visit(self, node)
+
+    def _visit(self, node):
+        """Generator visitor (driven by ``_drive_visit``). Push/pop
+        enclosing-function stack so ``CallSite.caller`` carries the
+        innermost named function."""
         if node.type == self._FUNC_DECL_NODE:
             name = self._first_child_of_type(
                 node, (self._IDENT_NODE,),
@@ -1600,7 +1637,7 @@ class _GoCallGraph:
             )
             try:
                 for child in node.children:
-                    self.walk(child)
+                    yield child
             finally:
                 self._enclosing.pop()
             return
@@ -1616,7 +1653,7 @@ class _GoCallGraph:
             )
             try:
                 for child in node.children:
-                    self.walk(child)
+                    yield child
             finally:
                 self._enclosing.pop()
             return
@@ -1652,7 +1689,7 @@ class _GoCallGraph:
             # Continue recursion to capture nested calls in args.
 
         for child in node.children:
-            self.walk(child)
+            yield child
 
     # ------------------------------------------------------------------
     # Imports
@@ -1983,8 +2020,12 @@ class _JavaCallGraph:
         self._local_types: Dict[str, str] = {}
 
     def walk(self, node) -> None:
-        """Recursive descent. Push/pop enclosing-method stack so
-        ``CallSite.caller`` carries the innermost named method."""
+        _drive_visit(self, node)
+
+    def _visit(self, node):
+        """Generator visitor (driven by ``_drive_visit``). Push/pop
+        enclosing-method stack so ``CallSite.caller`` carries the
+        innermost named method."""
         if node.type == self._METHOD_DECL:
             name = self._first_child_of_type(node, (self._IDENT,))
             method_name = name.text.decode() if name else "<anon>"
@@ -2002,7 +2043,7 @@ class _JavaCallGraph:
                 self._first_child_of_type(node, (self._FORMAL_PARAMS,)))
             try:
                 for child in node.children:
-                    self.walk(child)
+                    yield child
             finally:
                 self._enclosing.pop()
                 self._local_types = saved_locals
@@ -2022,7 +2063,7 @@ class _JavaCallGraph:
                 self._first_child_of_type(node, (self._FORMAL_PARAMS,)))
             try:
                 for child in node.children:
-                    self.walk(child)
+                    yield child
             finally:
                 self._enclosing.pop()
                 self._local_types = saved_locals
@@ -2120,14 +2161,14 @@ class _JavaCallGraph:
                 self._field_types.append(field_types)
                 try:
                     for child in node.children:
-                        self.walk(child)
+                        yield child
                 finally:
                     self._class_stack.pop()
                     self._field_types.pop()
                 return
             # Anon / malformed — recurse without class push
             for child in node.children:
-                self.walk(child)
+                yield child
             return
 
         if node.type == self._LOCAL_VAR_DECL:
@@ -2135,7 +2176,7 @@ class _JavaCallGraph:
             # so a call earlier in the method correctly sees no binding.
             self._local_types.update(self._collect_decl_types(node))
             for child in node.children:
-                self.walk(child)
+                yield child
             return
 
         if node.type == self._METHOD_INVOCATION:
@@ -2143,7 +2184,7 @@ class _JavaCallGraph:
             # Continue recursion to capture nested calls in args.
 
         for child in node.children:
-            self.walk(child)
+            yield child
 
     # ------------------------------------------------------------------
     # Imports
@@ -2534,6 +2575,9 @@ class _RustCallGraph:
         self._mod_depth: int = 0
 
     def walk(self, node) -> None:
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         if node.type == self._FUNCTION_ITEM:
             name = self._first_child_of_type(node, (self._IDENT,))
             method_name = name.text.decode() if name else "<anon>"
@@ -2549,7 +2593,7 @@ class _RustCallGraph:
             self._enclosing.append(method_name)
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._enclosing.pop()
             return
@@ -2574,7 +2618,7 @@ class _RustCallGraph:
             self._mod_depth += 1
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._mod_depth -= 1
             return
@@ -2617,13 +2661,13 @@ class _RustCallGraph:
                 self._class_stack.append(cdef)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     self._class_stack.pop()
                 return
             # Anon — recurse without push.
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type == self._IMPL_ITEM:
@@ -2650,7 +2694,7 @@ class _RustCallGraph:
                 # Unsupported shape — skip class binding, still
                 # recurse so calls inside are still captured.
                 for c in node.children:
-                    self.walk(c)
+                    yield c
                 return
             target = target_names[-1]
             # ``impl Trait for Foo`` (a ``for`` keyword + >=2 type names) is a
@@ -2688,7 +2732,7 @@ class _RustCallGraph:
             self._class_stack.append(target_cls)
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._class_stack.pop()
             return
@@ -2723,11 +2767,11 @@ class _RustCallGraph:
             if self._callee_tail(node) in self._REFLECT_TAILS:
                 self.graph.indirection.add(INDIRECTION_REFLECT)
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         for c in node.children:
-            self.walk(c)
+            yield c
 
     # --- use ---
 
@@ -3013,6 +3057,9 @@ class _RubyCallGraph:
         self._mod_stack: List[str] = []
 
     def walk(self, node) -> None:
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         if node.type == self._MODULE_NODE:
             name_node = self._first_child_of_type(node, (
                 self._CONSTANT,
@@ -3028,12 +3075,12 @@ class _RubyCallGraph:
                 self.graph.package_name = ".".join(self._mod_stack)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     self._mod_stack.pop()
                 return
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type == self._CLASS_NODE:
@@ -3068,12 +3115,12 @@ class _RubyCallGraph:
                 self._class_stack.append(cdef)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     self._class_stack.pop()
                 return
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type in (self._METHOD, self._SINGLETON_METHOD):
@@ -3091,7 +3138,7 @@ class _RubyCallGraph:
             self._enclosing.append(method_name)
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._enclosing.pop()
             return
@@ -3109,11 +3156,11 @@ class _RubyCallGraph:
         if node.type == self._CALL:
             self._handle_call(node)
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         for c in node.children:
-            self.walk(c)
+            yield c
 
     def _handle_call(self, node) -> None:
         # ``call`` shape: receiver + . + method + arguments
@@ -3356,6 +3403,9 @@ class _CSharpCallGraph:
         self._local_types: Dict[str, str] = {}
 
     def walk(self, node) -> None:
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         if node.type == self._FILE_NAMESPACE_DECL:
             # C# 10's file-scoped namespace: ``namespace Foo.Bar;``
             # with no braces. The namespace applies to every
@@ -3391,13 +3441,13 @@ class _CSharpCallGraph:
                 self.graph.package_name = ".".join(self._ns_stack)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     for _ in parts:
                         self._ns_stack.pop()
                 return
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type in (self._CLASS_DECL, self._INTERFACE_DECL,
@@ -3435,13 +3485,13 @@ class _CSharpCallGraph:
                 self._field_types.append(field_types)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     self._class_stack.pop()
                     self._field_types.pop()
                 return
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type in (self._METHOD_DECL, self._CONSTRUCTOR_DECL):
@@ -3457,7 +3507,7 @@ class _CSharpCallGraph:
                 self._first_child_of_type(node, (self._PARAMETER_LIST,)))
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._enclosing.pop()
                 self._local_types = saved_locals
@@ -3468,7 +3518,7 @@ class _CSharpCallGraph:
             vd = self._first_child_of_type(node, (self._VAR_DECLARATION,))
             self._local_types.update(self._collect_decl_types(vd))
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type == self._USING:
@@ -3526,11 +3576,11 @@ class _CSharpCallGraph:
                 if tail_name in self._REFLECT_METHODS:
                     self.graph.indirection.add(INDIRECTION_REFLECT)
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         for c in node.children:
-            self.walk(c)
+            yield c
 
     # ------------------------------------------------------------------
     # Typed-dispatch scope (Tier 2)
@@ -3857,6 +3907,9 @@ class _PhpCallGraph:
         self._class_stack: List[ClassDef] = []
 
     def walk(self, node) -> None:
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         if node.type == self._NAMESPACE_DEF:
             # ``namespace Foo\Bar;`` — capture as dotted package
             # name. The namespace_name child carries the parts.
@@ -3870,7 +3923,7 @@ class _PhpCallGraph:
             # Descend into the namespace body (declarations live
             # inside compound_statement if braced, or as siblings).
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type in (self._CLASS_DECL, self._INTERFACE_DECL,
@@ -3910,12 +3963,12 @@ class _PhpCallGraph:
                 self._class_stack.append(cdef)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     self._class_stack.pop()
                 return
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type in (self._FUNCTION_DEF, self._METHOD_DECL):
@@ -3929,7 +3982,7 @@ class _PhpCallGraph:
             self._enclosing.append(method_name)
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._enclosing.pop()
             return
@@ -3943,7 +3996,7 @@ class _PhpCallGraph:
         ):
             self._handle_call(node)
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type in (
@@ -3952,11 +4005,11 @@ class _PhpCallGraph:
         ):
             self.graph.indirection.add(INDIRECTION_DYNAMIC_IMPORT)
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         for c in node.children:
-            self.walk(c)
+            yield c
 
     def _handle_use(self, node) -> None:
         for c in node.children:
@@ -4279,11 +4332,17 @@ class _CCallGraph:
 
         Matches patterns like ``void (*handler)(int)`` where a
         pointer_declarator wraps a function_declarator.
+
+        Iterative (explicit stack): deep ASTs — openssl's ssl/s3_lib.c
+        parses >1000 levels deep — blew Python's recursion limit here
+        and dropped the whole file from the inventory.
         """
-        if node.type == "declaration":
-            self._check_fn_ptr_decl(node)
-        for child in node.children:
-            self._collect_fn_ptr_declarations(child)
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.type == "declaration":
+                self._check_fn_ptr_decl(n)
+            stack.extend(n.children)
 
     def _check_fn_ptr_decl(self, decl_node) -> None:
         """Check if a declaration contains a function-pointer declarator."""
@@ -4324,9 +4383,16 @@ class _CCallGraph:
     # ------------------------------------------------------------------
 
     def walk(self, node) -> None:
+        # One-time pre-pass (was per-node inside the old recursive
+        # walk — O(n^2): the root call already collects every
+        # declaration in the file, so per-node re-collection was
+        # pure waste).
+        self._collect_fn_ptr_declarations(node)
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         """Pre-order traversal. Function definitions push their name
         before children are visited; pop on the way back up."""
-        self._collect_fn_ptr_declarations(node)
         t = node.type
         if t == self._PREPROC_INCLUDE:
             self._visit_include(node)
@@ -4338,7 +4404,7 @@ class _CCallGraph:
                 self._enclosing.append(name)
                 try:
                     for child in node.children:
-                        self.walk(child)
+                        yield child
                     return
                 finally:
                     self._enclosing.pop()
@@ -4346,7 +4412,7 @@ class _CCallGraph:
             self._visit_call(node)
             # Fall through so nested calls inside the arg list are visited.
         for child in node.children:
-            self.walk(child)
+            yield child
 
     # ------------------------------------------------------------------
     # Includes
@@ -4693,18 +4759,21 @@ class _CppCallGraph(_CCallGraph):
     # ------------------------------------------------------------------
 
     def walk(self, node) -> None:
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         t = node.type
         if t == self._PREPROC_INCLUDE:
             self._visit_include(node)
             return
         if t == self._NAMESPACE_DEFINITION:
-            self._visit_namespace_definition(node)
+            yield from self._visit_namespace_definition(node)
             return
         if t in (self._CLASS_SPECIFIER, self._STRUCT_SPECIFIER):
-            self._visit_class_specifier(node)
+            yield from self._visit_class_specifier(node)
             return  # children are visited inside _visit_class_specifier
         if t == self._FUNCTION_DEFINITION:
-            self._visit_function_definition(node)
+            yield from self._visit_function_definition(node)
             return
         if t == self._CALL_EXPRESSION:
             self._visit_call(node)
@@ -4714,13 +4783,13 @@ class _CppCallGraph(_CCallGraph):
             # Fall through — nested calls inside the argument_list
             # (e.g. ``Base(helper())``) still need to be walked.
         for child in node.children:
-            self.walk(child)
+            yield child
 
     # ------------------------------------------------------------------
     # Namespace
     # ------------------------------------------------------------------
 
-    def _visit_namespace_definition(self, node) -> None:
+    def _visit_namespace_definition(self, node):
         """``namespace ns { ... }`` / ``namespace a::b { ... }`` —
         push namespace segments and walk the body. Anonymous
         namespaces (``namespace { ... }`` with no name) push
@@ -4742,7 +4811,7 @@ class _CppCallGraph(_CCallGraph):
             self.graph.package_name = ".".join(self._ns_stack)
         try:
             for c in node.children:
-                self.walk(c)
+                yield c
         finally:
             for _ in parts:
                 self._ns_stack.pop()
@@ -4760,13 +4829,13 @@ class _CppCallGraph(_CCallGraph):
     # Class / struct
     # ------------------------------------------------------------------
 
-    def _visit_class_specifier(self, node) -> None:
+    def _visit_class_specifier(self, node):
         name = self._class_name(node)
         if name is None:
             # Anonymous struct/class — skip class-stack tracking but
             # still descend so inner calls aren't lost.
             for c in node.children:
-                self.walk(c)
+                yield c
             return
         bases = self._extract_bases(node)
         cdef = ClassDef(
@@ -4786,7 +4855,7 @@ class _CppCallGraph(_CCallGraph):
         self._class_stack.append(cdef)
         try:
             for child in node.children:
-                self.walk(child)
+                yield child
         finally:
             self._class_stack.pop()
 
@@ -4885,13 +4954,13 @@ class _CppCallGraph(_CCallGraph):
     # Function definitions
     # ------------------------------------------------------------------
 
-    def _visit_function_definition(self, node) -> None:
+    def _visit_function_definition(self, node):
         name = self._function_name(node)
         qualified_class = self._qualified_class_from_declarator(node)
         if name is None:
             # Couldn't resolve; still descend to catch nested calls.
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         # In-class inline method: record method on the current
@@ -4940,7 +5009,7 @@ class _CppCallGraph(_CCallGraph):
         self._enclosing.append(name)
         try:
             for c in node.children:
-                self.walk(c)
+                yield c
         finally:
             self._enclosing.pop()
             if synthetic_class is not None:
@@ -5367,18 +5436,21 @@ class _LuaCallGraph:
         self._enclosing: List[str] = []
 
     def walk(self, node) -> None:
+        _drive_visit(self, node)
+
+    def _visit(self, node):
         if node.type == self._FUNC_DECL:
             name = self._func_decl_name(node)
             if name:
                 self._enclosing.append(name)
                 try:
                     for c in node.children:
-                        self.walk(c)
+                        yield c
                 finally:
                     self._enclosing.pop()
                 return
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         if node.type == self._FUNC_DEF:
@@ -5387,7 +5459,7 @@ class _LuaCallGraph:
             self._enclosing.append(name)
             try:
                 for c in node.children:
-                    self.walk(c)
+                    yield c
             finally:
                 self._enclosing.pop()
             return
@@ -5395,11 +5467,11 @@ class _LuaCallGraph:
         if node.type == self._FUNC_CALL:
             self._handle_call(node)
             for c in node.children:
-                self.walk(c)
+                yield c
             return
 
         for c in node.children:
-            self.walk(c)
+            yield c
 
     def _func_decl_name(self, node) -> Optional[str]:
         """Extract the name from a function_declaration node."""
