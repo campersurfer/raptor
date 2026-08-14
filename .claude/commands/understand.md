@@ -1,6 +1,6 @@
 ---
 description: Map attack surface, trace data flows, hunt vulnerability variants
-dispatch: libexec/raptor-understand [args]
+dispatch: skill
 ---
 
 # /understand - RAPTOR Code Understanding
@@ -8,6 +8,16 @@ dispatch: libexec/raptor-understand [args]
 You cannot find bugs if you don't have a deep, adversarial code understanding and comprehension for said codebase. This helps map the attack surface, trace data flows, hunt for vulnerability variants and so much more.....
 
 It is a work in progress, remember that. 
+
+## Dispatch routing
+
+This command is mode-routed — there is no single CLI to call blindly:
+
+| Case | Route |
+|------|-------|
+| `<target>` is a compiled artefact (ELF/Mach-O/PE/JAR/APK/...) with `--map` | `libexec/raptor-understand --map --target <t> --out "$OUTPUT_DIR"` (mechanical, no LLM) |
+| `--model` passed with `--hunt` or `--trace` | `libexec/raptor-understand` (multi-model substrate) |
+| Everything else — source-tree `--map`, `--trace`, `--hunt`, `--teach`, `--study` | **In-session workflow below** (you are the LLM); `libexec/raptor-understand` rejects source-tree `--map` by design |
 
 ## Usage
 

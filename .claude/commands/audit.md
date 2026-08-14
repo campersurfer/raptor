@@ -72,6 +72,8 @@ Check whether `context-map.json` exists in `$OUTPUT_DIR`. If missing, run `/unde
 /understand --map "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
+Note: for a source-tree target this is the **in-session** `/understand` workflow (you perform the map following `.claude/skills/code-understanding/map.md`) — `libexec/raptor-understand --map` only accepts compiled artefacts. Since `--out` is already resolved, skip the understand lifecycle start and write into `$OUTPUT_DIR` directly.
+
 If the operator passed `--scope`, still map the full target (the map covers the whole codebase; the scope only filters gap selection).
 
 ### Step 3: Run the orchestrator
