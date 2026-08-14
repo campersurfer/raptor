@@ -163,6 +163,19 @@ MCP="$RAPTOR_DIR/.mcp.json"
 SETTINGS_LOCAL="$RAPTOR_DIR/.claude/settings.local.json"
 SAGE_URL="http://localhost:8090"
 
+# ─── proxy hygiene ──────────────────────────────────────────
+# In proxied environments (HTTP_PROXY/HTTPS_PROXY set) every localhost
+# call this script makes — the curl health probes, the seed/register
+# scripts, the MCP smoke test — would be routed through the proxy,
+# which cannot reach this machine's loopback. Corporate NO_PROXY
+# values rarely include loopback, so append it for our children.
+# Container-side passthrough lives in core/sage/docker-compose.yml.
+if [ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]; then
+    NO_PROXY="localhost,127.0.0.1${NO_PROXY:+,$NO_PROXY}"
+    no_proxy="$NO_PROXY"
+    export NO_PROXY no_proxy
+fi
+
 need() {
     command -v "$1" >/dev/null 2>&1 || {
         echo "raptor-sage-setup: missing prerequisite: $1" >&2
@@ -905,9 +918,15 @@ verify_embeddings() {
         printenv SAGE_EMBEDDING_MODEL 2>/dev/null || true)
     model=$(printf '%s' "$model" | tr -d '[:space:]')
     model="${model:-nomic-embed-text}"
+    # Ask the ollama container itself (same pattern as status_sage).
+    # Pre-fix this probed http://ollama:11434/api/tags with wget from
+    # INSIDE the sage container — but SAGE 11.17.11+ images ship neither
+    # wget nor curl (see the compose file's healthcheck comment), so the
+    # probe always failed and the "model not found" warning fired even
+    # on healthy installs.
     local models
-    models=$(docker compose -f "$COMPOSE_FILE" exec -T sage \
-        wget -qO- http://ollama:11434/api/tags 2>/dev/null || true)
+    models=$(docker compose -f "$COMPOSE_FILE" exec -T ollama \
+        ollama list 2>/dev/null || true)
     if printf '%s' "$models" | grep -q "${model%%:*}"; then
         echo "SAGE using $provider embeddings ($model)."
     else

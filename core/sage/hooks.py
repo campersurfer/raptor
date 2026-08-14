@@ -60,10 +60,25 @@ def _ollama_gpu_available() -> bool:
     try:
         import httpx
 
+        from .config import ensure_loopback_no_proxy
+
+        # Without this, a proxied shell routes the probe to the proxy and
+        # a GPU host silently misreports as CPU-only (halved recall
+        # workers, direct-embed path chosen on a wrong premise).
+        ensure_loopback_no_proxy()
         resp = httpx.get("http://localhost:11435/api/ps", timeout=5)
         if resp.status_code == 200:
             for model in resp.json().get("models", []):
-                if model.get("size_vram", 0) > 0:
+                # Full offload (size_vram >= size), not size_vram > 0:
+                # Ollama 0.32 reports a non-zero size_vram even when the
+                # model runs on pure CPU (server logs library=cpu,
+                # total_vram=0B), so the >0 test misdetects GPU and
+                # re-introduces the 30s SAGE-side embed ceiling. A truly
+                # GPU-resident model is fully offloaded; anything less
+                # falls back to the direct-embed path, which works on
+                # both CPU and GPU.
+                size = model.get("size", 0)
+                if size > 0 and model.get("size_vram", 0) >= size:
                     _ollama_has_gpu = True
                     return True
         _ollama_has_gpu = False

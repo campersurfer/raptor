@@ -67,6 +67,11 @@ def _get_client(timeout: float = 0):
             "  Or manually: pip install sage-agent-sdk httpx\n"
         )
         return None
+    # The SDK's httpx client honours proxy env but does not special-case
+    # loopback — without this, a proxied shell routes the localhost SAGE
+    # call to the proxy and every subcommand reports "not reachable".
+    from core.sage.config import ensure_loopback_no_proxy
+    ensure_loopback_no_proxy()
     cfg = SageConfig.from_env()
     identity_path = cfg.identity_path
     if identity_path and Path(identity_path).exists():

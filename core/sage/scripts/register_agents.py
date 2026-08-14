@@ -378,7 +378,11 @@ async def register_agents(sage_url: str, dry_run: bool = False, force: bool = Fa
             print()
         return
 
-    # Connect to SAGE
+    # Connect to SAGE. Loopback proxy exemption for standalone runs —
+    # raptor-sage-setup exports it for its children, but this script is
+    # also documented for direct invocation.
+    from core.sage.config import ensure_loopback_no_proxy
+    ensure_loopback_no_proxy()
     print(f"Connecting to SAGE at {sage_url}...")
     identity = AgentIdentity.default()
     client = AsyncSageClient(
