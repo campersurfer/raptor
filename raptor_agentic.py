@@ -1152,8 +1152,6 @@ Examples:
              "so CostTracker enforces the cap during LLM calls",
     )
     parser.add_argument("--out", help="Output directory")
-    parser.add_argument("--mode", choices=["fast", "thorough"], default="thorough",
-                       help="fast: quick scan, thorough: detailed analysis")
 
     # Sanitizer-cut value-bound suppression mode (review #4, PR #794).
     # Replaces the RAPTOR_SANITIZER_CUT* env vars. configure() below
@@ -1693,7 +1691,6 @@ Examples:
     logger.info("Output: %s", out_dir)
     logger.info("Policy groups: %s", args.policy_groups)
     logger.info("Max findings: %s", args.max_findings)
-    logger.info("Mode: %s", args.mode)
     if args.binary:
         logger.info("Target binary(s): %s", args.binary)
     # All ``--binary`` / ``--binary-auto`` / ``--binary-edges`` plumbing

@@ -318,7 +318,7 @@ def scan(
     return out
 
 
-_inventory_build_failed: bool = False
+_inventory_build_failed: set[str] = set()
 
 
 def _shared_inventory(target: Path, current: Any | None) -> Any:
@@ -341,8 +341,8 @@ def _shared_inventory(target: Path, current: Any | None) -> Any:
     inventory subdir; ``checklist.json`` regenerates from scratch
     on a missing file).
     """
-    global _inventory_build_failed
-    if _inventory_build_failed:
+    target_key = str(target)
+    if target_key in _inventory_build_failed:
         return None
     if current is not None:
         return current
@@ -357,7 +357,7 @@ def _shared_inventory(target: Path, current: Any | None) -> Any:
             "function-level tiers will skip",
             exc_info=True,
         )
-        _inventory_build_failed = True
+        _inventory_build_failed.add(target_key)
         return None
 
 
