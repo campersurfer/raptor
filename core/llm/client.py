@@ -517,15 +517,34 @@ class LLMClient:
                 "for this run.", e,
             )
 
-        # HEALTH CHECK: Warn if no API keys configured
+        # HEALTH CHECK: Warn if no API keys configured. When the
+        # claude CLI transport is the resolved primary (the claudecode
+        # fallback), calls will NOT "likely fail" — warning so said
+        # anyway and sent operators chasing API keys while dispatches
+        # were succeeding through the CLI. Say what is actually true.
         from .detection import detect_llm_availability
         availability = detect_llm_availability()
         if not availability.external_llm:
-            logger.warning(
-                "No external LLM available (no API keys, no config file, no Ollama). "
-                "LLMClient constructed but calls will likely fail. "
-                "For production use, configure at least one LLM provider."
-            )
+            primary = self.config.primary_model
+            if primary is not None and primary.provider.startswith("claudecode"):
+                logger.info(
+                    "No external LLM configured — using the claude CLI "
+                    "transport (provider %s). Slower than SDK access; "
+                    "configure models.json for direct API calls.",
+                    primary.provider,
+                )
+            elif availability.claude_code:
+                logger.info(
+                    "No external LLM configured; Claude Code is available "
+                    "and will do the reasoning for prep-only pipelines."
+                )
+            else:
+                logger.warning(
+                    "No external LLM available (no API keys, no config file, "
+                    "no Ollama, no claude CLI). LLMClient constructed but "
+                    "calls will likely fail. Configure at least one LLM "
+                    "provider."
+                )
 
         # Initialize cache
         if self.config.enable_caching:
