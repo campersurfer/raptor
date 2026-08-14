@@ -53,11 +53,31 @@ def _tuning_path() -> Path:
     return Path(__file__).resolve().parents[2] / "tuning.json"
 
 
+def _strip_json_line_comments(text: str) -> str:
+    """Strip ``//`` line comments while respecting double-quoted strings."""
+    lines = []
+    for line in text.split("\n"):
+        in_str = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == "\\" and in_str:
+                i += 2
+                continue
+            if c == '"':
+                in_str = not in_str
+            elif c == "/" and not in_str and i + 1 < len(line) and line[i + 1] == "/":
+                line = line[:i]
+                break
+            i += 1
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _read_tuning() -> dict:
     try:
-        import re
         text = _tuning_path().read_text()
-        clean = re.sub(r"(?<!:)//.*", "", text)
+        clean = _strip_json_line_comments(text)
         return json.loads(clean)
     except Exception:
         return {}

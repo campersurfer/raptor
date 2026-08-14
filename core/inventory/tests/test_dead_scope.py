@@ -511,3 +511,14 @@ def test_builder_tags_lexical_dead(tmp_path):
     # Unknown function / file → False (never claims dead when unsure).
     assert is_lexically_dead(inv, "mod.py", "ghost", 0) is False
     assert is_lexically_dead(inv, "nope.py", "dead_fn", 2) is False
+
+
+def test_ruby_hash_in_string_not_treated_as_comment():
+    src = (
+        'x = "has # in string"\n'
+        "if false\n"
+        "  dead_code\n"
+        "end\n"
+    )
+    ranges = detect_dead_scopes("ruby", src)
+    assert (3, 3) in ranges

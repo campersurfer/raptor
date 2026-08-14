@@ -200,6 +200,8 @@ def scan(
     # Inventory is built ONCE per run when at least one ecosystem
     # tier has work to do; subsequent tiers reuse it via the
     # ``inventory`` kwarg.
+    _inventory_build_failed.discard(str(target))
+
     if osv_results:
         shared_inventory = None
 

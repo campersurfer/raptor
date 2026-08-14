@@ -918,14 +918,14 @@ def _safe_int(value) -> int:
         return 0
 
 
-def _safe_float(value) -> float:
+def _safe_float(value) -> float | None:
     if value is None:
-        return 0.0
+        return None
     text = str(value).strip().replace(",", "").rstrip("%")
     try:
         return float(text)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _build_fuzz_phase_summary(fuzzing_result: dict | None, fuzz_out: Path | None) -> dict:
@@ -954,10 +954,13 @@ def _build_fuzz_phase_summary(fuzzing_result: dict | None, fuzz_out: Path | None
         _safe_int(stats.get("corpus_count")),
         _safe_int(telemetry.get("paths_found")),
     )
-    coverage_percent = (
-        _safe_float(telemetry.get("coverage_percent"))
-        or _safe_float(stats.get("bitmap_cvg"))
-        or _safe_float(stats.get("coverage_percent"))
+    coverage_percent = next(
+        (v for v in (
+            _safe_float(telemetry.get("coverage_percent")),
+            _safe_float(stats.get("bitmap_cvg")),
+            _safe_float(stats.get("coverage_percent")),
+        ) if v is not None),
+        0.0,
     )
     return {
         "completed": True,

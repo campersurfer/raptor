@@ -82,11 +82,7 @@ def _findings_for_tool(metrics: Dict, tool: str) -> int:
                         "rb", "ruby", "cs", "csharp"}:
                 total += count
         elif tool == "coccinelle":
-            # Cocci ids are typically a single snake_case token with
-            # no dots / slashes. Distinguish from Semgrep's dotted
-            # ids by absence of separators.
-            if "/" not in rule_id and "." not in rule_id:
-                total += count
+            total += count
     return total
 
 

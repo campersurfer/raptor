@@ -549,8 +549,28 @@ _RB_BRANCH_AT = re.compile(r"^(\s*)(?:else|elsif)\b")
 _RB_END_AT = re.compile(r"^(\s*)end\b")
 
 
+def _strip_ruby_comment(line: str) -> str:
+    """Strip ``#`` comments while respecting string literals."""
+    in_str: str | None = None
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and in_str:
+            i += 2
+            continue
+        if in_str:
+            if c == in_str:
+                in_str = None
+        elif c in ('"', "'"):
+            in_str = c
+        elif c == "#":
+            return line[:i]
+        i += 1
+    return line
+
+
 def _detect_ruby(content: str) -> List[DeadRange]:
-    lines = [re.sub(r"#.*$", "", ln) for ln in content.split("\n")]
+    lines = [_strip_ruby_comment(ln) for ln in content.split("\n")]
     ranges: List[DeadRange] = []
     for i, line in enumerate(lines):
         m = _RB_DEAD_IF.match(line)

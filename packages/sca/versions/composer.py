@@ -16,8 +16,11 @@ Reference: https://getcomposer.org/doc/articles/versions.md
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 _STABILITY_RANK = {
@@ -81,6 +84,7 @@ def _split(version: str) -> Tuple[List[int], int, int]:
         try:
             nums.append(int(piece))
         except ValueError:
+            logger.debug("composer: non-numeric segment %r in %r, treating as 0", piece, version)
             nums.append(0)
     stab_word = (m.group("stab") or "").lower()
     rank = _STABILITY_RANK.get(stab_word, _STABILITY_RANK["stable"])

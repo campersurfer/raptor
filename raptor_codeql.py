@@ -248,11 +248,12 @@ def run_autonomous_workflow(args):
     save_json(summary_file, summary)
     # Future-agent note: post-run reliability memory is additive only; failures
     # inside SAGE hooks must not fail the CodeQL workflow.
+    codeql_outcome = "success" if scan_result.total_findings > 0 else "no_findings"
     store_codeql_build_reliability(
         repo_path=args.repo,
         languages=languages or [],
         build_command=args.build_command or "auto",
-        auto_detect_outcome="success",
+        auto_detect_outcome=codeql_outcome,
         analyses_completed=total_analyzed,
     )
 
