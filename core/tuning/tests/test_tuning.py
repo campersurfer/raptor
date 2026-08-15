@@ -1,6 +1,7 @@
 """Tests for core.tuning — loader, auto-detection, validation."""
 
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from core.tuning import (
     Tuning,
     load_tuning,
+    _default_tuning_path,
     _detect_available_cpus,
     _detect_cgroup_cpu_quota,
     _detect_codeql_workers,
@@ -250,6 +252,16 @@ class TestLoadTuning(unittest.TestCase):
                 t = load_tuning()
             self.assertTrue(p.exists())
             self.assertEqual(t.max_semgrep_workers, 4)
+
+    def test_external_tuning_path_stays_outside_source_checkout(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "private" / "tuning.json"
+            path.parent.mkdir()
+            with patch.dict(os.environ, {"RAPTOR_TUNING_PATH": str(path)}):
+                with patch("core.tuning._TUNING_PATH", _default_tuning_path()):
+                    tuning = load_tuning()
+            self.assertTrue(path.exists())
+            self.assertEqual(tuning.max_semgrep_workers, 4)
 
 
 class TestAutoDetection(unittest.TestCase):

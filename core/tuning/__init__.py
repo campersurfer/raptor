@@ -2,7 +2,8 @@
 
 Reads ``tuning.json`` from the repo root, resolves ``"auto"`` values
 using hardware detection, validates per-key, and exposes resolved
-integers to consumers via ``get_tuning()``.
+integers to consumers via ``get_tuning()``. ``RAPTOR_TUNING_PATH`` moves
+the user-local generated file outside the source checkout.
 
 Invalid keys warn and fall back to defaults per-key — a single typo
 never blocks a session.
@@ -24,7 +25,14 @@ logger = logging.getLogger(__name__)
 
 # core/tuning/__init__.py → repo root
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # core/tuning/ → repo
-_TUNING_PATH = _REPO_ROOT / "tuning.json"
+
+
+def _default_tuning_path() -> Path:
+    configured = os.environ.get("RAPTOR_TUNING_PATH")
+    return Path(configured).expanduser() if configured else _REPO_ROOT / "tuning.json"
+
+
+_TUNING_PATH = _default_tuning_path()
 
 _VALID_KEYS = frozenset({
     "codeql_enabled",
