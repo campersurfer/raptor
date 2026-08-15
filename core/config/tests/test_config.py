@@ -91,6 +91,12 @@ class TestGetSafeEnv:
             env = RaptorConfig.get_safe_env()
             assert "TERM" in env
 
+    def test_preserves_external_tuning_path(self, tmp_path):
+        tuning_path = tmp_path / "private" / "tuning.json"
+        with patch.dict(os.environ, {"RAPTOR_TUNING_PATH": str(tuning_path)}):
+            env = RaptorConfig.get_safe_env()
+        assert env["RAPTOR_TUNING_PATH"] == str(tuning_path)
+
     def test_missing_dangerous_vars_handled_gracefully(self):
         """Should not raise if dangerous vars are absent."""
         cleaned = {var: None for var in RaptorConfig.DANGEROUS_ENV_VARS}

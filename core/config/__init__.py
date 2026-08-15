@@ -407,10 +407,11 @@ class RaptorConfig:
         #                    subprocess boundary).
         #   RAPTOR_DIR      installation root; libexec scripts derive
         #                    paths from it.
-        # Both are validated by get_out_dir() (refuses system paths)
-        # so an attacker setting them gains nothing beyond what they
-        # already had with same-UID write access to ~/raptor-out.
-        "RAPTOR_OUT_DIR", "RAPTOR_DIR",
+        #   RAPTOR_TUNING_PATH moves generated user-local tuning outside
+        #                    the attested runtime source checkout.
+        # The dispatcher owns its tuning path inside a private config
+        # directory. None of these values is executed.
+        "RAPTOR_OUT_DIR", "RAPTOR_DIR", "RAPTOR_TUNING_PATH",
         #   RAPTOR_TARGET_KIND  operator's target-classification override
         #                    (auto|library|hybrid|application). Must survive
         #                    the subprocess boundary so an inventory rebuilt in
