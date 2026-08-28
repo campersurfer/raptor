@@ -2345,20 +2345,21 @@ class GeminiProvider(LLMProvider):
     @staticmethod
     def _tool_response_schema(tools: Sequence[ToolDef]) -> dict[str, Any]:
         """Return Gemini's constrained form of the fallback wire protocol."""
+        tool_options = [
+            {
+                "properties": {
+                    "tool": {"type": "string", "enum": [tool.name]},
+                    "input": tool.input_schema,
+                },
+                "required": ["tool", "input"],
+                "additionalProperties": False,
+            }
+            for tool in tools
+        ]
         return {
             "type": "object",
             "anyOf": [
-                {
-                    "properties": {
-                        "tool": {
-                            "type": "string",
-                            "enum": [tool.name for tool in tools],
-                        },
-                        "input": {"type": "object"},
-                    },
-                    "required": ["tool", "input"],
-                    "additionalProperties": False,
-                },
+                *tool_options,
                 {
                     "properties": {"text": {"type": "string"}},
                     "required": ["text"],

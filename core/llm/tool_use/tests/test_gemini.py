@@ -156,7 +156,35 @@ def test_turn_native_json_response_emits_tool_call() -> None:
         if option["required"] == ["tool", "input"]
     )
     assert tool_option["properties"]["tool"]["enum"] == ["echo"]
-    assert tool_option["properties"]["input"]["type"] == "object"
+    assert tool_option["properties"]["input"] == _echo_tool().input_schema
+
+
+def test_native_json_schema_binds_each_tool_input() -> None:
+    other_tool = ToolDef(
+        name="count",
+        description="count input",
+        input_schema={
+            "type": "object",
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        },
+        handler=lambda inp: str(inp["count"]),
+    )
+
+    schema = GeminiProvider._tool_response_schema([_echo_tool(), other_tool])
+    tool_options = [
+        option for option in schema["anyOf"]
+        if option["required"] == ["tool", "input"]
+    ]
+    schemas_by_name = {
+        option["properties"]["tool"]["enum"][0]: option["properties"]["input"]
+        for option in tool_options
+    }
+
+    assert schemas_by_name == {
+        "echo": _echo_tool().input_schema,
+        "count": other_tool.input_schema,
+    }
 
 
 def test_turn_malformed_json_remains_an_ordinary_completion() -> None:

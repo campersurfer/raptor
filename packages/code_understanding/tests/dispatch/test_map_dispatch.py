@@ -372,6 +372,21 @@ def test_map_dispatch_rejects_missing_context_map_fields(tmp_path):
     assert "unchecked_flows" in result["error"]
 
 
+def test_map_dispatch_rejects_undeclared_context_map_fields(tmp_path):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    result_map = _context_map()
+    result_map["fixture_source_text"] = "do-not-emit"
+    with _patch_provider([
+        FakeTurn(tool_calls=[("submit_context_map", {"context_map": result_map})]),
+    ]):
+        result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"] == "submit_context_map context_map has unsupported fields"
+    assert "fixture_source_text" not in result["error"]
+    assert "do-not-emit" not in result["error"]
+
+
 def test_map_dispatch_bounds_terminal_payload_and_entries():
     from packages.code_understanding.dispatch import map_dispatch
 

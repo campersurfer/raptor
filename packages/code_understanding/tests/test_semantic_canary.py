@@ -19,7 +19,7 @@ def _context_map() -> dict:
         "sources": [],
         "sinks": [],
         "trust_boundaries": [],
-        "meta": {},
+        "meta": {"language": "C++"},
         "entry_points": [],
         "sink_details": [],
         "boundary_details": [],
@@ -81,15 +81,23 @@ class _Provider:
         )
 
 
-def _terminal_turns(count: int = 1) -> list[_Turn]:
-    return [_Turn([
-        ToolCall(
-            id=f"call-{index}",
-            name="submit_context_map",
-            input={"context_map": _context_map()},
-        )
-        for index in range(count)
-    ])]
+def _terminal_turns(
+    count: int = 1,
+    *,
+    context_map: dict | None = None,
+) -> list[_Turn]:
+    context_map = _context_map() if context_map is None else context_map
+    return [
+        _Turn([ToolCall(id="read", name="read_file", input={"path": "fixture.cpp"})]),
+        _Turn([
+            ToolCall(
+                id=f"call-{index}",
+                name="submit_context_map",
+                input={"context_map": context_map},
+            )
+            for index in range(count)
+        ]),
+    ]
 
 
 def test_canary_attests_without_exposing_fixture_or_model_data():
@@ -102,7 +110,9 @@ def test_canary_attests_without_exposing_fixture_or_model_data():
         "provider": "test",
         "model": "test-model",
         "terminal_calls": 1,
-        "attempts": 1,
+        "attempts": 2,
+        "fixture_read": True,
+        "language_evidence": True,
         "section_counts": {
             "sources": 0, "sinks": 0, "trust_boundaries": 0,
             "entry_points": 0, "sink_details": 0,
@@ -111,7 +121,50 @@ def test_canary_attests_without_exposing_fixture_or_model_data():
     }
     rendered = repr(result.attestation)
     assert "fixture.cpp" not in rendered
+    assert "handle_request" not in rendered
     assert "test-model" in rendered
+
+
+def test_canary_rejects_terminal_map_without_fixture_read():
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider([
+            _Turn([ToolCall(
+                id="terminal",
+                name="submit_context_map",
+                input={"context_map": _context_map()},
+            )]),
+        ]),
+    )
+
+    assert result.success is False
+    assert result.attestation == {"status": "failed", "reason": "semantic-evidence"}
+
+
+def test_canary_rejects_empty_language_evidence():
+    context_map = _context_map()
+    context_map["meta"] = {}
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    assert result.success is False
+    assert result.attestation == {"status": "failed", "reason": "semantic-evidence"}
+
+
+def test_canary_redacts_undeclared_context_map_fields():
+    context_map = _context_map()
+    context_map["fixture_source_text"] = "do-not-emit"
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    assert result.success is False
+    assert result.attestation == {"status": "failed", "reason": "map-validation"}
+    assert "fixture_source_text" not in repr(result.attestation)
+    assert "do-not-emit" not in repr(result.attestation)
 
 
 def test_canary_retries_once_without_a_provider_call():
@@ -123,8 +176,8 @@ def test_canary_retries_once_without_a_provider_call():
     )
 
     assert result.success is True
-    assert result.attestation["attempts"] == 2
-    assert provider.calls == 2
+    assert result.attestation["attempts"] == 3
+    assert provider.calls == 3
 
 
 def test_canary_does_not_retry_daily_quota_or_report_success():

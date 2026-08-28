@@ -20,9 +20,10 @@ from core.llm.tool_use import (
     CostBudgetExceeded,
     ToolUseLoop,
 )
-from core.llm.tool_use.types import ToolCallDispatched
+from core.llm.tool_use.types import ToolCallDispatched, ToolCallReturned
 from packages.code_understanding.dispatch.map_dispatch import (
     DEFAULT_MAX_TOKENS_PER_TURN,
+    _CONTEXT_MAP_LIST_FIELDS,
     _build_tools,
     _format_user_message,
     _validate_terminal_context_map,
@@ -95,17 +96,36 @@ def run_semantic_canary(
         fixture_root = Path(directory)
         (fixture_root / "fixture.cpp").write_text(_FIXTURE, encoding="utf-8")
         terminal_calls = 0
+        fixture_read_call_ids: set[str] = set()
+        fixture_read_succeeded = False
 
         def events(event: Any) -> None:
-            nonlocal terminal_calls
-            if isinstance(event, ToolCallDispatched) and event.call.name == "submit_context_map":
-                terminal_calls += 1
+            nonlocal terminal_calls, fixture_read_succeeded
+            if isinstance(event, ToolCallDispatched):
+                if event.call.name == "submit_context_map":
+                    terminal_calls += 1
+                elif (
+                    event.call.name == "read_file"
+                    and event.call.input.get("path") == "fixture.cpp"
+                ):
+                    fixture_read_call_ids.add(event.call.id)
+            elif (
+                isinstance(event, ToolCallReturned)
+                and event.call_id in fixture_read_call_ids
+                and not event.result.is_error
+            ):
+                fixture_read_succeeded = True
 
         try:
             loop = ToolUseLoop(
                 provider=provider,
                 tools=_build_tools(SandboxedTools.for_repo(fixture_root)),
-                system=MAP_SYSTEM_PROMPT,
+                system=MAP_SYSTEM_PROMPT + (
+                    "\n\nFor this isolated semantic canary, successfully read fixture.cpp "
+                    "before submitting the terminal map. Set context_map.meta.language to a "
+                    "concise non-empty observed language label. Do not include source text "
+                    "in the context map."
+                ),
                 terminal_tool="submit_context_map",
                 max_iterations=_MAX_ITERATIONS,
                 max_cost_usd=_MAX_COST_USD,
@@ -117,7 +137,13 @@ def run_semantic_canary(
                 terminate_on_handler_error=False,
                 events=events,
             )
-            result = loop.run(_format_user_message({"files": []}))
+            result = loop.run(_format_user_message({
+                "files": [{
+                    "path": "fixture.cpp",
+                    "language": "C++",
+                    "lines": _FIXTURE.count("\n"),
+                }],
+            }))
         except CostBudgetExceeded:
             return SemanticCanaryResult(False, {"status": "failed", "reason": "cost-limit"})
         except Exception:
@@ -128,6 +154,9 @@ def run_semantic_canary(
     context_map, error = _validate_terminal_context_map(result.terminal_tool_input)
     if error is not None or context_map is None:
         return SemanticCanaryResult(False, {"status": "failed", "reason": "map-validation"})
+    language = context_map["meta"].get("language")
+    if not fixture_read_succeeded or not isinstance(language, str) or not language.strip():
+        return SemanticCanaryResult(False, {"status": "failed", "reason": "semantic-evidence"})
     return SemanticCanaryResult(
         True,
         {
@@ -137,10 +166,11 @@ def run_semantic_canary(
             "model": model.model_name,
             "terminal_calls": terminal_calls,
             "attempts": provider.attempts,
+            "fixture_read": True,
+            "language_evidence": True,
             "section_counts": {
-                key: len(value) if isinstance(value, list) else 0
-                for key, value in context_map.items()
-                if key != "meta"
+                key: len(context_map[key])
+                for key in _CONTEXT_MAP_LIST_FIELDS
             },
         },
     )

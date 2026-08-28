@@ -52,6 +52,7 @@ _CONTEXT_MAP_LIST_FIELDS = (
     "boundary_details",
     "unchecked_flows",
 )
+_CONTEXT_MAP_FIELDS = frozenset((*_CONTEXT_MAP_LIST_FIELDS, "meta"))
 
 _TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 4.0)
 
@@ -90,6 +91,15 @@ def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None,
     context_map = payload.get("context_map")
     if not isinstance(context_map, dict):
         return None, "submit_context_map payload missing context_map object"
+    actual_fields = set(context_map)
+    missing_fields = _CONTEXT_MAP_FIELDS - actual_fields
+    if missing_fields:
+        return None, (
+            "submit_context_map context_map missing fields: "
+            + ", ".join(sorted(missing_fields))
+        )
+    if actual_fields != _CONTEXT_MAP_FIELDS:
+        return None, "submit_context_map context_map has unsupported fields"
     error = _validate_model_context_map(context_map)
     if error is not None:
         return None, f"invalid submit_context_map context_map: {error}"
