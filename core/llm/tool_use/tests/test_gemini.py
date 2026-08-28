@@ -104,6 +104,12 @@ def test_turn_json_text_response_returns_complete() -> None:
     assert isinstance(out.content[0], TextBlock)
     assert out.content[0].text == "just a plain answer"
     assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
+    schema = client.models.calls[0]["config"]["response_json_schema"]
+    assert schema["type"] == "object"
+    assert {tuple(option["required"]) for option in schema["anyOf"]} == {
+        ("tool", "input"),
+        ("text",),
+    }
 
 
 def test_turn_without_tools_preserves_text_transport() -> None:
@@ -144,6 +150,22 @@ def test_turn_native_json_response_emits_tool_call() -> None:
     assert out.output_tokens == 6
     assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
     assert client.models.calls[0]["config"]["thinking_config"] == {"thinking_budget": 0}
+    schema = client.models.calls[0]["config"]["response_json_schema"]
+    tool_option = next(
+        option for option in schema["anyOf"]
+        if option["required"] == ["tool", "input"]
+    )
+    assert tool_option["properties"]["tool"]["enum"] == ["echo"]
+    assert tool_option["properties"]["input"]["type"] == "object"
+
+
+def test_turn_malformed_json_remains_an_ordinary_completion() -> None:
+    p, _ = _provider_with_response("not JSON")
+    out = p.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
+    assert out.stop_reason is StopReason.COMPLETE
+    assert isinstance(out.content[0], TextBlock)
+    assert out.content[0].text == "not JSON"
 
 
 def test_turn_preserves_native_thinking_cost() -> None:

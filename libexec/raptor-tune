@@ -26,10 +26,14 @@ if not (os.environ.get("CLAUDECODE")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.json import load_json_with_comments
-from core.tuning import load_tuning, _DEFAULTS, _detect_available_cpus
+from core.tuning import (
+    _DEFAULTS,
+    _default_tuning_path,
+    _detect_available_cpus,
+    load_tuning,
+)
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_TUNING_PATH = _REPO_ROOT / "tuning.json"
+_TUNING_PATH = _default_tuning_path()
 
 
 def _system_info() -> dict:
@@ -135,6 +139,7 @@ def _write_tuning(values: dict) -> None:
         val_str = json.dumps(values[key])
         comma = "," if i < len(_KEY_ORDER) - 1 else ""
         entries.append((f'  "{key}": {val_str}{comma}', _COMMENTS[key]))
+    _TUNING_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     col = max(len(e) for e, _ in entries) + 2
     lines = ["{"]
     for entry, comment in entries:

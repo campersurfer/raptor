@@ -750,17 +750,18 @@ def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
             out["enum"] = prop["enum"]
         if "items" in prop:
             out["items"] = convert_property(prop["items"])
+        if "anyOf" in prop:
+            out["anyOf"] = [convert_property(option) for option in prop["anyOf"]]
+        if "additionalProperties" in prop:
+            out["additionalProperties"] = prop["additionalProperties"]
         if "properties" in prop:
             out["properties"] = {k: convert_property(v) for k, v in prop["properties"].items()}
             if "required" in prop:
                 out["required"] = prop["required"]
         return out
 
-    result = {"type": "OBJECT"}
-    if "properties" in schema:
-        result["properties"] = {k: convert_property(v) for k, v in schema["properties"].items()}
-    if "required" in schema:
-        result["required"] = schema["required"]
+    result = convert_property(schema)
+    result.setdefault("type", "OBJECT")
     return result
 
 
@@ -2341,6 +2342,30 @@ class GeminiProvider(LLMProvider):
     def supports_tool_use(self) -> bool: return True
     def supports_prompt_caching(self) -> bool: return False
     def supports_parallel_tools(self) -> bool: return False
+    @staticmethod
+    def _tool_response_schema(tools: Sequence[ToolDef]) -> dict[str, Any]:
+        """Return Gemini's constrained form of the fallback wire protocol."""
+        return {
+            "type": "object",
+            "anyOf": [
+                {
+                    "properties": {
+                        "tool": {
+                            "type": "string",
+                            "enum": [tool.name for tool in tools],
+                        },
+                        "input": {"type": "object"},
+                    },
+                    "required": ["tool", "input"],
+                    "additionalProperties": False,
+                },
+                {
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                    "additionalProperties": False,
+                },
+            ],
+        }
 
     def turn(
         self,
@@ -2373,6 +2398,7 @@ class GeminiProvider(LLMProvider):
             "temperature": self.config.temperature,
             "max_output_tokens": max_tokens,
             "response_mime_type": "application/json",
+            "response_json_schema": self._tool_response_schema(tools),
         }
         # Gemini 2.5 Flash otherwise spends the per-turn response budget on
         # hidden reasoning and truncates the terminal context-map payload.

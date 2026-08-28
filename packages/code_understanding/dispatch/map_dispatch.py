@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any, Optional
 
-from core.llm.client import _is_retryable_error
+from core.llm.client import _is_quota_error, _is_retryable_error
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
 from core.llm.tool_use import (
@@ -23,6 +23,8 @@ from core.llm.tool_use import (
     ToolDef,
     ToolUseLoop,
 )
+from core.llm.tool_use.types import ToolCallDispatched
+from core.orchestration.agentic_passes import _validate_model_context_map
 from packages.code_understanding.dispatch._tool_specs import build_shared_tools
 from packages.code_understanding.dispatch.hunt_dispatch import _make_event_callback
 from packages.code_understanding.dispatch.tools import SandboxedTools
@@ -39,6 +41,17 @@ DEFAULT_MAX_TOKENS_PER_TURN = 8192
 _MAX_INVENTORY_FILES = 250
 _MAX_ITEMS_PER_FILE = 50
 _MAX_METADATA_TEXT = 256
+_MAX_CONTEXT_MAP_PAYLOAD_BYTES = 512 * 1024
+_MAX_CONTEXT_MAP_ENTRY_BYTES = 16 * 1024
+_CONTEXT_MAP_LIST_FIELDS = (
+    "sources",
+    "sinks",
+    "trust_boundaries",
+    "entry_points",
+    "sink_details",
+    "boundary_details",
+    "unchecked_flows",
+)
 
 _TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 4.0)
 
@@ -57,7 +70,7 @@ class _RetryingMapProvider:
             try:
                 return self._provider.turn(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - provider boundary
-                if delay is None or not _is_retryable_error(exc):
+                if delay is None or _is_quota_error(exc) or not _is_retryable_error(exc):
                     raise
                 logger.warning(
                     "map: transient provider failure on attempt %d/%d; retrying in %.0fs",
@@ -68,6 +81,29 @@ class _RetryingMapProvider:
                 time.sleep(delay)
         raise AssertionError("map provider retry loop exhausted without a result")
 
+
+
+def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Apply the canonical map validator and terminal-size limits."""
+    if not isinstance(payload, dict):
+        return None, "submit_context_map payload must be an object"
+    context_map = payload.get("context_map")
+    if not isinstance(context_map, dict):
+        return None, "submit_context_map payload missing context_map object"
+    error = _validate_model_context_map(context_map)
+    if error is not None:
+        return None, f"invalid submit_context_map context_map: {error}"
+    try:
+        payload_bytes = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError):
+        return None, "submit_context_map payload is not JSON serializable"
+    if payload_bytes > _MAX_CONTEXT_MAP_PAYLOAD_BYTES:
+        return None, "submit_context_map payload exceeds size limit"
+    for key in _CONTEXT_MAP_LIST_FIELDS:
+        for entry in context_map[key]:
+            if len(json.dumps(entry, separators=(",", ":")).encode("utf-8")) > _MAX_CONTEXT_MAP_ENTRY_BYTES:
+                return None, f"submit_context_map {key} entry exceeds size limit"
+    return context_map, None
 
 def default_map_dispatch(
     model: ModelConfig,
@@ -107,6 +143,16 @@ def default_map_dispatch(
         )
         return {"error": f"provider construction failed: {type(exc).__name__}: {exc}"}
 
+    terminal_call_count = 0
+    verbose_events = _make_event_callback(model.model_name, "map", verbose_logger)
+
+    def _events(event: Any) -> None:
+        nonlocal terminal_call_count
+        if isinstance(event, ToolCallDispatched) and event.call.name == "submit_context_map":
+            terminal_call_count += 1
+        if verbose_events is not None:
+            verbose_events(event)
+
     loop = ToolUseLoop(
         provider=_RetryingMapProvider(provider),
         tools=_build_tools(sandbox),
@@ -120,7 +166,7 @@ def default_map_dispatch(
         context_policy=ContextPolicy.RAISE,
         cache_control=CacheControl(system=True, tools=True),
         terminate_on_handler_error=False,
-        events=_make_event_callback(model.model_name, "map", verbose_logger),
+        events=_events,
     )
 
     try:
@@ -137,16 +183,24 @@ def default_map_dispatch(
         )
         return {"error": f"{type(exc).__name__}: {exc}"}
 
+    if terminal_call_count != 1:
+        return {
+            "error": "submit_context_map must be invoked exactly once; "
+            f"observed {terminal_call_count}",
+        }
+
     if result.terminated_by != "terminal_tool":
         return {
             "error": "loop terminated without submit_context_map: "
             f"{result.terminated_by}",
         }
 
-    payload = result.terminal_tool_input or {}
-    context_map = payload.get("context_map")
-    if not isinstance(context_map, dict):
-        return {"error": "submit_context_map payload missing context_map object"}
+    context_map, validation_error = _validate_terminal_context_map(
+        result.terminal_tool_input
+    )
+    if validation_error is not None:
+        return {"error": validation_error}
+    assert context_map is not None
     return context_map
 
 

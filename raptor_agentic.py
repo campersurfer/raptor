@@ -55,6 +55,7 @@ def _materialise_threat_model_phase(
     summary = {
         "enabled": True,
         "completed": False,
+        "semantic_complete": False,
         "refresh": bool(refresh),
         "entry_points": 0,
         "trust_boundaries": 0,
@@ -231,6 +232,7 @@ def _materialise_threat_model_phase(
 
     summary.update({
         "completed": True,
+        "semantic_complete": True,
         "entry_points": len(context_map.get("entry_points") or context_map.get("sources") or []),
         "trust_boundaries": len(context_map.get("trust_boundaries") or []),
         "sinks": len(context_map.get("sink_details") or context_map.get("sinks") or []),
@@ -998,6 +1000,12 @@ def _build_completion_manifest(orch_meta, import_result, import_sarif_files,
     return manifest
 
 
+
+def _threat_model_only_exit_code(phase: dict) -> int:
+    """Return failure unless threat-model output is structurally complete."""
+    if phase.get("completed") is True and phase.get("semantic_complete", True) is True:
+        return 0
+    return 1
 def main():
     parser = argparse.ArgumentParser(
         description="RAPTOR Agentic Security Testing - Scan, Analyse, Exploit, Patch",
@@ -1843,7 +1851,7 @@ Examples:
             }
             save_json(report_file, final_report)
             try:
-                if threat_model_phase.get("completed"):
+                if _threat_model_only_exit_code(threat_model_phase) == 0:
                     from core.run import complete_run
                     complete_run(out_dir, extra={
                         "findings_count": threat_model_phase.get("generated_candidates", 0),
@@ -1852,7 +1860,7 @@ Examples:
                     })
                 else:
                     from core.run import fail_run
-                    fail_run(out_dir, threat_model_phase.get("skipped_reason") or "threat model phase did not complete")
+                    fail_run(out_dir, threat_model_phase.get("skipped_reason") or "threat model phase did not complete semantically")
             except Exception as e:
                 logger.debug(f"Run metadata: {e}")
             if _git_temp_dir and _git_temp_dir.exists():
@@ -1861,10 +1869,10 @@ Examples:
                     shutil.rmtree(str(_git_temp_dir))
                 except Exception as e:
                     logger.debug(f"Failed to clean temp git dir: {e}")
-            completed = threat_model_phase.get("completed", False)
-            print(f"\nThreat model only {'complete' if completed else 'skipped'}.")
+            exit_code = _threat_model_only_exit_code(threat_model_phase)
+            print(f"\nThreat model only {'complete' if exit_code == 0 else 'failed'}.")
             print(f"   Report: {report_file}")
-            return
+            return exit_code
 
     # ========================================================================
     # PRE-PASS: reachability — always-on companion to /understand.
@@ -3667,7 +3675,9 @@ def _postprocess_findings(results):
 
 if __name__ == "__main__":
     try:
-        main()
+        exit_code = main()
+        if exit_code:
+            raise SystemExit(exit_code)
     except SandboxSetupError as e:
         # Fail loud with the actionable message, not a traceback — the run
         # did NOT analyse anything, so never let it look like a clean pass.

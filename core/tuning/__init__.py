@@ -29,7 +29,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]  # core/tuning/ → repo
 
 def _default_tuning_path() -> Path:
     configured = os.environ.get("RAPTOR_TUNING_PATH")
-    return Path(configured).expanduser() if configured else _REPO_ROOT / "tuning.json"
+    if configured:
+        path = Path(configured).expanduser()
+    else:
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        path = config_home / "raptor" / "tuning.json"
+    try:
+        path.resolve(strict=False).relative_to(_REPO_ROOT.resolve())
+    except ValueError:
+        return path
+    raise ValueError("RAPTOR_TUNING_PATH must not point inside the RAPTOR source checkout")
 
 
 _TUNING_PATH = _default_tuning_path()
@@ -335,6 +344,7 @@ def _create_default_file(path: Path) -> None:
             lines.append(f"{entry:<{col}}// {comment}")
         lines.append("}")
         content = "\n".join(lines) + "\n"
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # pid+tid suffix — same-process threads can race on save().
         import threading
         tmp = path.with_name(

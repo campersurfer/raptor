@@ -9,7 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from core.llm.config import ModelConfig
-from core.llm.tool_use.types import StopReason, TextBlock, ToolCall, TurnResponse
+from core.llm.tool_use.types import (
+    StopReason,
+    TextBlock,
+    ToolCall,
+    ToolCallDispatched,
+    TurnResponse,
+)
 
 
 @dataclass
@@ -109,8 +115,17 @@ def test_map_dispatch_reserves_terminal_payload_budget(tmp_path, monkeypatch):
     class RecordingLoop:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self._events = kwargs["events"]
 
         def run(self, _prompt):
+            self._events(ToolCallDispatched(
+                iteration=0,
+                call=ToolCall(
+                    id="call_1",
+                    name="submit_context_map",
+                    input={"context_map": result_map},
+                ),
+            ))
             return type(
                 "LoopResult",
                 (),
@@ -245,6 +260,33 @@ def test_map_dispatch_does_not_retry_nontransient_provider_failure(tmp_path, mon
     result = default_map_dispatch(_model(), str(tmp_path))
     assert result["error"].startswith("RuntimeError: 401 unauthorized")
 
+def test_map_dispatch_does_not_retry_quota_failure(tmp_path, monkeypatch):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    class QuotaProvider(FakeProvider):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        def turn(self, messages, tools, **kwargs):
+            self.calls += 1
+            raise RuntimeError("429 rate limit exceeded")
+
+    provider = QuotaProvider()
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.create_provider",
+        lambda _model: provider,
+    )
+    monkeypatch.setattr(
+        "packages.code_understanding.dispatch.map_dispatch.time.sleep",
+        lambda _delay: pytest.fail("quota failure must not retry"),
+    )
+
+    result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"].startswith("RuntimeError: 429 rate limit exceeded")
+    assert provider.calls == 1
+
 
 def test_map_dispatch_stops_after_bounded_transient_retries(tmp_path, monkeypatch):
     from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
@@ -274,3 +316,71 @@ def test_map_dispatch_stops_after_bounded_transient_retries(tmp_path, monkeypatc
     assert provider.calls == 3
 
     assert result["error"].startswith("RuntimeError: 503 service unavailable")
+
+
+def test_map_dispatch_rejects_ordinary_completion(tmp_path):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    with _patch_provider([FakeTurn(text="ordinary completion")]):
+        result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"] == "submit_context_map must be invoked exactly once; observed 0"
+
+
+def test_map_dispatch_rejects_duplicate_terminal_calls(tmp_path):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    result_map = _context_map()
+    with _patch_provider([
+        FakeTurn(tool_calls=[
+            ("submit_context_map", {"context_map": result_map}),
+            ("submit_context_map", {"context_map": result_map}),
+        ]),
+    ]):
+        result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"] == "submit_context_map must be invoked exactly once; observed 2"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("sources", {}), ("meta", []), ("sinks", None)],
+)
+def test_map_dispatch_uses_strict_context_map_validator(tmp_path, field, value):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    result_map = _context_map()
+    result_map[field] = value
+    with _patch_provider([
+        FakeTurn(tool_calls=[("submit_context_map", {"context_map": result_map})]),
+    ]):
+        result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert result["error"].startswith("invalid submit_context_map context_map:")
+
+
+def test_map_dispatch_rejects_missing_context_map_fields(tmp_path):
+    from packages.code_understanding.dispatch.map_dispatch import default_map_dispatch
+
+    result_map = _context_map()
+    del result_map["unchecked_flows"]
+    with _patch_provider([
+        FakeTurn(tool_calls=[("submit_context_map", {"context_map": result_map})]),
+    ]):
+        result = default_map_dispatch(_model(), str(tmp_path))
+
+    assert "unchecked_flows" in result["error"]
+
+
+def test_map_dispatch_bounds_terminal_payload_and_entries():
+    from packages.code_understanding.dispatch import map_dispatch
+
+    result_map = _context_map()
+    result_map["sources"] = [{"detail": "x" * map_dispatch._MAX_CONTEXT_MAP_ENTRY_BYTES}]
+    _, error = map_dispatch._validate_terminal_context_map({"context_map": result_map})
+    assert error == "submit_context_map sources entry exceeds size limit"
+
+    result_map = _context_map()
+    result_map["meta"] = {"detail": "x" * map_dispatch._MAX_CONTEXT_MAP_PAYLOAD_BYTES}
+    _, error = map_dispatch._validate_terminal_context_map({"context_map": result_map})
+    assert error == "submit_context_map payload exceeds size limit"

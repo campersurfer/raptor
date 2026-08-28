@@ -292,3 +292,12 @@ def test_threat_model_phase_can_reuse_stale_fallback_when_allowed(tmp_path, monk
     assert summary["completed"] is True
     assert summary["reused_context_map"] is True
     assert summary["stale_files"] == ["bad/app.py"]
+
+
+def test_threat_model_only_semantic_failure_returns_nonzero():
+    import raptor_agentic
+
+    assert raptor_agentic._threat_model_only_exit_code({"completed": False}) == 1
+    assert raptor_agentic._threat_model_only_exit_code(
+        {"completed": True, "semantic_complete": False}
+    ) == 1

@@ -18,6 +18,7 @@ from core.tuning import (
     _detect_ram_mb,
     _detect_semgrep_workers,
     _detect_threads,
+    _REPO_ROOT,
 )
 
 
@@ -256,12 +257,26 @@ class TestLoadTuning(unittest.TestCase):
     def test_external_tuning_path_stays_outside_source_checkout(self):
         with TemporaryDirectory() as d:
             path = Path(d) / "private" / "tuning.json"
-            path.parent.mkdir()
             with patch.dict(os.environ, {"RAPTOR_TUNING_PATH": str(path)}):
                 with patch("core.tuning._TUNING_PATH", _default_tuning_path()):
                     tuning = load_tuning()
             self.assertTrue(path.exists())
             self.assertEqual(tuning.max_semgrep_workers, 4)
+
+    def test_default_tuning_path_uses_external_config_home(self):
+        with TemporaryDirectory() as d:
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": d}, clear=False):
+                path = _default_tuning_path()
+        self.assertEqual(path, Path(d) / "raptor" / "tuning.json")
+
+    def test_source_checkout_tuning_override_is_rejected(self):
+        with patch.dict(
+            os.environ,
+            {"RAPTOR_TUNING_PATH": str(_REPO_ROOT / "tuning.json")},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "must not point inside"):
+                _default_tuning_path()
 
 
 class TestAutoDetection(unittest.TestCase):
