@@ -104,8 +104,10 @@ def test_turn_json_text_response_returns_complete() -> None:
     assert isinstance(out.content[0], TextBlock)
     assert out.content[0].text == "just a plain answer"
     assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
-    schema = client.models.calls[0]["config"]["response_json_schema"]
-    assert schema["type"] == "object"
+    config = client.models.calls[0]["config"]
+    assert "response_json_schema" not in config
+    schema = config["response_schema"]
+    assert schema["type"] == "OBJECT"
     assert {tuple(option["required"]) for option in schema["anyOf"]} == {
         ("tool", "input"),
         ("text",),
@@ -150,13 +152,18 @@ def test_turn_native_json_response_emits_tool_call() -> None:
     assert out.output_tokens == 6
     assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
     assert client.models.calls[0]["config"]["thinking_config"] == {"thinking_budget": 0}
-    schema = client.models.calls[0]["config"]["response_json_schema"]
+    config = client.models.calls[0]["config"]
+    assert "response_json_schema" not in config
+    schema = config["response_schema"]
     tool_option = next(
         option for option in schema["anyOf"]
         if option["required"] == ["tool", "input"]
     )
     assert tool_option["properties"]["tool"]["enum"] == ["echo"]
-    assert tool_option["properties"]["input"] == _echo_tool().input_schema
+    assert tool_option["properties"]["input"] == {
+        "type": "OBJECT",
+        "properties": {"q": {"type": "STRING"}},
+    }
 
 
 def test_native_json_schema_binds_each_tool_input() -> None:
@@ -187,6 +194,55 @@ def test_native_json_schema_binds_each_tool_input() -> None:
     }
 
 
+def test_turn_serializes_terminal_map_input_without_response_json_schema() -> None:
+    terminal_map = ToolDef(
+        name="submit_context_map",
+        description="terminal map",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "context_map": {
+                    "type": "object",
+                    "properties": {
+                        "sources": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "required": ["sources"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["context_map"],
+            "additionalProperties": False,
+        },
+        handler=lambda _input: "received",
+    )
+    provider, client = _provider_with_response(
+        '{"tool": "submit_context_map", "input": {"context_map": {"sources": []}}}',
+    )
+
+    result = provider.turn(messages=[_user("map")], tools=[terminal_map])
+
+    assert isinstance(result.content[0], ToolCall)
+    config = client.models.calls[0]["config"]
+    assert "response_json_schema" not in config
+    option = next(
+        item for item in config["response_schema"]["anyOf"]
+        if item["properties"]["tool"]["enum"] == ["submit_context_map"]
+    )
+    assert option["properties"]["input"] == {
+        "type": "OBJECT",
+        "properties": {
+            "context_map": {
+                "type": "OBJECT",
+                "properties": {
+                    "sources": {"type": "ARRAY", "items": {"type": "OBJECT"}},
+                },
+                "required": ["sources"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["context_map"],
+        "additionalProperties": False,
+    }
 def test_turn_malformed_json_remains_an_ordinary_completion() -> None:
     p, _ = _provider_with_response("not JSON")
     out = p.turn(messages=[_user("hi")], tools=[_echo_tool()])
