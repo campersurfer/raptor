@@ -8,6 +8,7 @@ import pytest
 
 # google-genai SDK gate — CI runs without it skip cleanly.
 pytest.importorskip("google.genai")
+from google.genai import types
 
 from core.llm.config import ModelConfig
 from core.llm.providers import GeminiProvider, LLMResponse
@@ -223,6 +224,12 @@ def test_turn_serializes_terminal_map_input_without_response_json_schema() -> No
 
     assert isinstance(result.content[0], ToolCall)
     config = client.models.calls[0]["config"]
+    wire_config = types.GenerateContentConfig.model_validate(config).model_dump(
+        by_alias=True,
+        exclude_none=True,
+    )
+    assert "responseJsonSchema" not in wire_config
+    assert wire_config["responseSchema"] == config["response_schema"]
     assert "response_json_schema" not in config
     option = next(
         item for item in config["response_schema"]["anyOf"]
