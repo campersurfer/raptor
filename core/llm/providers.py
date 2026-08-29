@@ -925,6 +925,8 @@ def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
             out["description"] = prop["description"]
         if "enum" in prop:
             out["enum"] = prop["enum"]
+        if "additionalProperties" in prop:
+            out["additionalProperties"] = prop["additionalProperties"]
         if "items" in prop:
             out["items"] = convert_property(prop["items"])
         if "properties" in prop:
@@ -938,6 +940,8 @@ def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
         result["properties"] = {k: convert_property(v) for k, v in schema["properties"].items()}
     if "required" in schema:
         result["required"] = schema["required"]
+    if "additionalProperties" in schema:
+        result["additionalProperties"] = schema["additionalProperties"]
     return result
 
 
