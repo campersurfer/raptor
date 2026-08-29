@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core.json import dumps_display
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
 from core.llm.tool_use import CacheControl, ContextPolicy, ToolDef, ToolUseLoop
@@ -156,7 +155,7 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
     def submit(payload: dict[str, Any]) -> str:
         if _validate_terminal_context_map(payload) is None:
             raise ValueError("invalid semantic canary terminal contract")
-        return dumps_display({"received": True}, indent=None)
+        return '{"received":true}'
 
     return [
         ToolDef(

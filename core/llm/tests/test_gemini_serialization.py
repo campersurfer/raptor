@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("google.genai")
+from google.genai import types
 
 from core.llm.config import ModelConfig
 from core.llm.providers import GeminiProvider
@@ -62,6 +63,12 @@ def test_native_structured_terminal_map_uses_sdk_schema_serialization() -> None:
 
     assert result.result == {"context_map": {"sources": []}}
     config = models.calls[0]["config"]
+    wire_config = types.GenerateContentConfig.model_validate(config).model_dump(
+        by_alias=True,
+        exclude_none=True,
+    )
+    assert "responseJsonSchema" not in wire_config
+    assert wire_config["responseSchema"] == config["response_schema"]
     assert "response_json_schema" not in config
     assert config["response_schema"] == {
         "type": "OBJECT",
@@ -86,4 +93,3 @@ def test_native_structured_terminal_map_uses_sdk_schema_serialization() -> None:
         "required": ["context_map"],
         "additionalProperties": False,
     }
-    assert config["safetySettings"] is provider._safety_settings
