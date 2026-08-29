@@ -2347,6 +2347,7 @@ class GeminiProvider(LLMProvider):
         """Return Gemini's constrained form of the fallback wire protocol."""
         tool_options = [
             {
+                "type": "object",
                 "properties": {
                     "tool": {"type": "string", "enum": [tool.name]},
                     "input": tool.input_schema,
@@ -2361,6 +2362,7 @@ class GeminiProvider(LLMProvider):
             "anyOf": [
                 *tool_options,
                 {
+                    "type": "object",
                     "properties": {"text": {"type": "string"}},
                     "required": ["text"],
                     "additionalProperties": False,
@@ -2399,7 +2401,11 @@ class GeminiProvider(LLMProvider):
             "temperature": self.config.temperature,
             "max_output_tokens": max_tokens,
             "response_mime_type": "application/json",
-            "response_json_schema": self._tool_response_schema(tools),
+            # The task reports two prior HTTP 400 outcomes, but local/redacted records
+            # do not preserve a rejected-field detail; that cause is UNVERIFIED. Use the
+            # established native-SDK Schema serialization path rather than infer an
+            # undocumented JSON-Schema capability.
+            "response_schema": _schema_to_gemini(self._tool_response_schema(tools)),
         }
         # Gemini 2.5 Flash otherwise spends the per-turn response budget on
         # hidden reasoning and truncates the terminal context-map payload.
