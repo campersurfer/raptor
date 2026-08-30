@@ -100,6 +100,40 @@ class TestSemgrepRunSummary:
         assert summary["all_semgrep_failed"] is True
         assert summary["aggregate_exit_code"] == 4
 
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_default_schema_fully_validates_valid_sarif(self, _identity, tmp_path):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        valid_sarif = json.dumps(
+            {
+                "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+                "version": "2.1.0",
+                "runs": [{"tool": {"driver": {"name": "semgrep"}}}],
+            }
+        )
+        _write_pack(tmp_path, "category_auth", 0)
+        (tmp_path / "semgrep_category_auth.sarif").write_text(
+            valid_sarif, encoding="utf-8",
+        )
+        (tmp_path / "combined.sarif").write_text(valid_sarif, encoding="utf-8")
+
+        assert _scanner_mod.validate_sarif(
+            tmp_path / "semgrep_category_auth.sarif",
+        ) is True
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["failure_class"] is None
+        assert summary["packs"][0]["sarif_valid"] is True
+        assert summary["combined_sarif_valid"] is True
+        assert summary["all_semgrep_failed"] is False
+        assert summary["aggregate_exit_code"] == 0
+
     @patch.object(_scanner_mod, "validate_sarif", return_value=True)
     @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
     def test_missing_binary_is_not_misclassified_as_config_error(self, _identity, _validate, tmp_path):
