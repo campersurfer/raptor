@@ -283,6 +283,7 @@ def persist_agentic_semgrep_failure(
     all_semgrep_failed = False
     aggregate_exit_code = return_code
     failure_class = "scanner_failure"
+    scanner_failure_class: Optional[str] = None
     if timeout:
         failure_class = "phase_timeout"
     elif return_code == SANDBOX_ENGAGE_EXIT_CODE:
@@ -291,6 +292,9 @@ def persist_agentic_semgrep_failure(
         failure_class = "scanner_summary_invalid"
     else:
         all_semgrep_failed = bool(summary["all_semgrep_failed"])
+        candidate_failure_class = summary.get("failure_class")
+        if isinstance(candidate_failure_class, str) and candidate_failure_class:
+            scanner_failure_class = candidate_failure_class
         aggregate_exit_code = summary["aggregate_exit_code"]
         sandbox = summary.get("sandbox_engagement") or {}
         sandbox_denial_count = int(sandbox.get("denial_count") or 0)
@@ -312,12 +316,15 @@ def persist_agentic_semgrep_failure(
                 )
         if all_semgrep_failed:
             failure_class = "aggregate_all_packs_failed"
+        elif scanner_failure_class is not None:
+            failure_class = scanner_failure_class
         elif not combined_valid or not metrics_valid:
             failure_class = "scanner_artifact_invalid"
     payload = {
         "schema_version": _QUALIFICATION_SUMMARY_SCHEMA_VERSION,
         "failure_stage": "semgrep_scan",
         "failure_class": failure_class,
+        "scanner_failure_class": scanner_failure_class,
         "return_code": return_code,
         "aggregate_exit_code": aggregate_exit_code,
         "all_semgrep_failed": all_semgrep_failed,
@@ -342,6 +349,30 @@ def persist_agentic_semgrep_failure(
     return payload
 
 
+def print_agentic_semgrep_failure(failure: dict) -> None:
+    """Render only the bounded scanner failure contract for operators."""
+    print(
+        f"❌ Semgrep scan failed: {failure.get('failure_class', 'scanner_failure')}",
+        file=sys.stderr,
+    )
+    print(
+        f"   Structured summary: {failure.get('summary_path', 'scan/semgrep-run-summary.json')}",
+        file=sys.stderr,
+    )
+    failed_packs = failure.get("failed_packs")
+    if isinstance(failed_packs, list):
+        for pack in failed_packs[:32]:
+            if not isinstance(pack, dict):
+                continue
+            name = pack.get("pack_name")
+            failure_class = pack.get("failure_class")
+            if isinstance(name, str) and isinstance(failure_class, str):
+                print(f"   Failed pack: {name}:{failure_class}", file=sys.stderr)
+    stderr_tail = _bounded_qualification_diagnostic(failure.get("stderr_tail"))
+    if stderr_tail:
+        print(f"   Scanner stderr tail: {stderr_tail}", file=sys.stderr)
+
+
 def validate_agentic_semgrep_success(out_dir: Path) -> tuple[Optional[dict], Optional[str]]:
     """Require complete scanner evidence even when its child exits zero."""
     scan_dir = out_dir / "scan"
@@ -350,7 +381,7 @@ def validate_agentic_semgrep_success(out_dir: Path) -> tuple[Optional[dict], Opt
         return None, error or "summary_invalid"
     if summary["all_semgrep_failed"]:
         return None, "all_semgrep_failed"
-    if summary["aggregate_exit_code"] not in (0, 1):
+    if summary["aggregate_exit_code"] != 0:
         return None, "aggregate_exit_nonzero"
     combined_valid, metrics_valid = _semgrep_artifact_state(scan_dir)
     if not combined_valid or not metrics_valid:
@@ -2457,7 +2488,7 @@ Examples:
                 logger.warning("Semgrep child did not drain after kill")
             rc = -1
 
-        if rc not in (0, 1):
+        if rc != 0:
             if codeql_proc and codeql_proc.poll() is None:
                 codeql_proc.kill()
             failure = persist_agentic_semgrep_failure(
@@ -2467,12 +2498,7 @@ Examples:
                 stderr=semgrep_stderr,
                 timeout=semgrep_timed_out,
             )
-            print(
-                "❌ Semgrep scan failed: "
-                f"{failure['failure_class']} "
-                "(diagnostics: scan/semgrep-agentic-failure.json)",
-                file=sys.stderr,
-            )
+            print_agentic_semgrep_failure(failure)
             logger.error("Semgrep scan failed with %s", failure["failure_class"])
             return 1
 
@@ -2484,12 +2510,7 @@ Examples:
                 stdout=semgrep_stdout,
                 stderr=semgrep_stderr,
             )
-            print(
-                "❌ Semgrep scan contract failed: "
-                f"{failure['failure_class']} "
-                "(diagnostics: scan/semgrep-agentic-failure.json)",
-                file=sys.stderr,
-            )
+            print_agentic_semgrep_failure(failure)
             logger.error("Semgrep output contract failed: %s", semgrep_contract_error)
             return 1
 

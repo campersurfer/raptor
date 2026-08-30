@@ -308,3 +308,100 @@ def test_agentic_semgrep_success_rejects_skipped_sarif_validation(tmp_path):
 
     assert summary is None
     assert error == "scanner_artifact_invalid"
+def test_agentic_semgrep_success_rejects_nonzero_aggregate_exit(tmp_path):
+    out_dir = tmp_path / "out"
+    scan_dir = out_dir / "scan"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "semgrep-run-summary.json").write_text(json.dumps({
+        "schema_version": 1,
+        "scanner": {},
+        "packs_dispatched": 1,
+        "packs_succeeded": 1,
+        "packs_failed": 0,
+        "all_semgrep_failed": False,
+        "aggregate_exit_code": 1,
+        "failure_class": None,
+        "packs": [{
+            "pack_name": "category_auth",
+            "config_kind": "local_directory",
+            "config_sha256": None,
+            "raw_exit_code": 1,
+            "sarif_exists": True,
+            "sarif_valid": True,
+            "stderr_class": "none",
+            "failure_class": None,
+            "bounded_stderr_tail": "",
+            "sandbox_denial_count": 0,
+            "proxy_event_count": 0,
+        }],
+        "combined_sarif_exists": True,
+        "combined_sarif_valid": True,
+        "sandbox_engagement": {"state": "engaged", "denial_count": 0},
+    }), encoding="utf-8")
+    (scan_dir / "combined.sarif").write_text(
+        '{"version":"2.1.0","runs":[]}', encoding="utf-8",
+    )
+    (scan_dir / "scan_metrics.json").write_text("{}", encoding="utf-8")
+
+    with patch("core.sarif.parser.validate_sarif", return_value=True):
+        summary, error = raptor_agentic.validate_agentic_semgrep_success(out_dir)
+
+    assert summary is None
+    assert error == "aggregate_exit_nonzero"
+
+
+def test_agentic_semgrep_failure_retains_scanner_fallback_class(tmp_path):
+    out_dir = tmp_path / "out"
+    scan_dir = out_dir / "scan"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "semgrep-run-summary.json").write_text(json.dumps({
+        "schema_version": 1,
+        "scanner": {},
+        "packs_dispatched": 1,
+        "packs_succeeded": 1,
+        "packs_failed": 0,
+        "all_semgrep_failed": False,
+        "aggregate_exit_code": 1,
+        "failure_class": "internal_scanner_exception",
+        "packs": [{
+            "pack_name": "category_auth",
+            "config_kind": "local_directory",
+            "config_sha256": None,
+            "raw_exit_code": 1,
+            "sarif_exists": False,
+            "sarif_valid": False,
+            "stderr_class": "none",
+            "failure_class": None,
+            "bounded_stderr_tail": "",
+            "sandbox_denial_count": 0,
+            "proxy_event_count": 0,
+        }],
+        "combined_sarif_exists": False,
+        "combined_sarif_valid": False,
+        "sandbox_engagement": {"state": "engaged", "denial_count": 0},
+    }), encoding="utf-8")
+
+    with patch.object(raptor_agentic, "_semgrep_artifact_state", return_value=(False, False)), patch("core.run.fail_run"):
+        payload = raptor_agentic.persist_agentic_semgrep_failure(
+            out_dir=out_dir, return_code=1, stdout="", stderr="",
+        )
+
+    assert payload["failure_class"] == "internal_scanner_exception"
+    assert payload["scanner_failure_class"] == "internal_scanner_exception"
+
+
+def test_agentic_semgrep_failure_prints_bounded_diagnostics(capsys):
+    raptor_agentic.print_agentic_semgrep_failure({
+        "failure_class": "aggregate_all_packs_failed",
+        "summary_path": "scan/semgrep-run-summary.json",
+        "failed_packs": [{
+            "pack_name": "category_auth",
+            "failure_class": "invalid_config",
+        }],
+        "stderr_tail": "bounded scanner stderr",
+    })
+
+    rendered = capsys.readouterr().err
+    assert "scan/semgrep-run-summary.json" in rendered
+    assert "category_auth:invalid_config" in rendered
+    assert "bounded scanner stderr" in rendered

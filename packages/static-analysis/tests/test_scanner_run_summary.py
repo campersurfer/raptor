@@ -161,3 +161,32 @@ class TestSemgrepRunSummary:
             configs,
             ["category_auth"],
         )
+    @patch.object(_scanner_mod, "validate_sarif", return_value=True)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_operator_pack_name_is_redacted_and_findings_exit_is_accepted(
+        self, _identity, _validate, tmp_path,
+    ):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        unsafe_name = "extra_opaque-fixture-api-key=top-secret.yml"
+        _write_pack(tmp_path, unsafe_name, 1)
+        (tmp_path / "combined.sarif").write_text(
+            '{"version":"2.1.0","runs":[]}', encoding="utf-8",
+        )
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[(unsafe_name, str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        pack = summary["packs"][0]
+        assert pack["raw_exit_code"] == 1
+        assert pack["failure_class"] is None
+        assert summary["aggregate_exit_code"] == 0
+        assert pack["pack_name"].startswith("custom_")
+        rendered = json.dumps(summary)
+        assert "top-secret" not in rendered
+        assert "api-key" not in rendered
+        assert "opaque-fixture" not in rendered

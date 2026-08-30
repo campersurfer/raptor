@@ -42,6 +42,12 @@ logger = get_logger()
 
 _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 1
 _MAX_SEMGREP_DIAGNOSTIC_CHARS = 800
+
+_PUBLIC_SEMGREP_PACK_NAMES = frozenset(
+    [name for name, _ in RaptorConfig.BASELINE_SEMGREP_PACKS]
+    + [name for name, _ in RaptorConfig.POLICY_GROUP_TO_SEMGREP_PACK.values()]
+    + [f"category_{name}" for name in RaptorConfig.POLICY_GROUP_TO_SEMGREP_PACK]
+)
 _SENSITIVE_DIAGNOSTIC_VALUE = re.compile(
     r"(?i)\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|"
     r"cookie|password|secret|session(?:_id)?|token)\b\s*(?:=|:)\s*[^\s,;]+"
@@ -217,7 +223,7 @@ def build_semgrep_run_summary(
             config_kind=config_kind,
         )
         packs.append({
-            "pack_name": name,
+            "pack_name": _summary_pack_name(name),
             "config_kind": config_kind,
             "config_sha256": config_sha256,
             "raw_exit_code": raw_exit_code,
@@ -804,6 +810,13 @@ def _sanitize_pack_name(name: str) -> str:
     mapping (both in the disallowed set, so they get replaced anyway).
     """
     return re.sub(r'[^A-Za-z0-9._-]', '_', name)
+
+
+def _summary_pack_name(name: str) -> str:
+    """Keep catalog labels, but fingerprint operator-provided pack names."""
+    if name in _PUBLIC_SEMGREP_PACK_NAMES:
+        return name
+    return f"custom_{sha256_bytes(name.encode('utf-8', errors='replace'))[:16]}"
 
 
 def _build_semgrep_configs(
