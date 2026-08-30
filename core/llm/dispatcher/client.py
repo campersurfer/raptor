@@ -296,15 +296,14 @@ def relay_for_grandchild() -> tuple[str, int]:
 
 
 def make_gemini_base_url(*, socket_path: Optional[str] = None,
-                          token: Optional[str] = None) -> tuple[str, httpx.Client]:
-    """Gemini's Python SDK (``google-genai``) doesn't take a custom
-    httpx client through its top-level ``Client`` constructor in all
-    versions, so callers wire the base URL + httpx client themselves.
+                          token: Optional[str] = None,
+                          timeout: Optional[float] = None) -> tuple[str, httpx.Client]:
+    """Return Gemini's dispatcher URL plus a bounded UDS httpx client.
 
-    Returns a tuple ``(base_url, http_client)`` the caller passes to
-    whichever Gemini client wrapper they use. Same socket/token
-    resolution as the other factories.
+    ``timeout`` is seconds and configures httpx read, write, and pool
+    timeouts through :func:`_make_httpx_client`; this path never falls
+    back to an ambient direct client.
     """
     socket_path, token = _resolve_socket_and_token(socket_path, token)
-    http = _make_httpx_client(socket_path, token)
+    http = _make_httpx_client(socket_path, token, timeout=timeout)
     return "http://_/gemini", http

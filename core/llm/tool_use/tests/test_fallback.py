@@ -16,7 +16,12 @@ from typing import Any, Dict, Optional, Tuple
 import pytest
 
 from core.llm.config import ModelConfig
-from core.llm.providers import LLMProvider, LLMResponse
+from core.llm.providers import (
+    LLMProvider,
+    LLMResponse,
+    LocalToolSchemaDependencyMissing,
+    LocalToolSchemaInvalid,
+)
 from core.llm.tool_use import (
     Message,
     StopReason,
@@ -420,3 +425,41 @@ def test_fallback_default_turn_still_raises_when_not_overridden() -> None:
     p = _RecordingProvider(["x"])
     with pytest.raises(NotImplementedError):
         p.turn(messages=[_user("hi")], tools=[])
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["not-an-object", {"type": "definitely-not-a-jsonschema-type"}],
+)
+def test_parse_invalid_tool_schema_is_explicit(schema) -> None:
+    malformed = ToolDef(
+        name="search",
+        description="malformed schema",
+        input_schema=schema,
+        handler=lambda _input: "unreachable",
+    )
+
+    with pytest.raises(LocalToolSchemaInvalid):
+        LLMProvider._parse_fallback_response(
+            '{"tool": "search", "input": {"q": "x"}}',
+            [malformed],
+        )
+
+
+def test_parse_missing_jsonschema_dependency_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    original_import = builtins.__import__
+
+    def import_without_jsonschema(name, *args, **kwargs):
+        if name == "jsonschema":
+            raise ImportError("jsonschema removed for isolated test")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_jsonschema)
+
+    with pytest.raises(LocalToolSchemaDependencyMissing):
+        LLMProvider._parse_fallback_response(
+            '{"tool": "search", "input": {"q": "x"}}',
+            [_tool("search")],
+        )

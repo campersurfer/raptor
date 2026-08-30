@@ -9,12 +9,14 @@ JSON-in-prompt fallback for providers that lack native structured support.
 """
 
 import json
+import math
 import os
 import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from inspect import isclass
+from numbers import Real
 from typing import Dict, Optional, Any, Tuple, Type, Union, TYPE_CHECKING
 from dataclasses import dataclass
 
@@ -38,6 +40,15 @@ from .tool_use.types import (
 )
 
 logger = get_logger()
+
+
+class LocalToolSchemaDependencyMissing(RuntimeError):
+    """The required local jsonschema runtime dependency is unavailable."""
+
+
+class LocalToolSchemaInvalid(ValueError):
+    """A ToolDef supplied an invalid JSON Schema."""
+
 
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
 _CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)-(\d+)")
@@ -594,11 +605,23 @@ class LLMProvider(ABC):
             return TextBlock(text=text), StopReason.COMPLETE
         try:
             import jsonschema
+        except ImportError as exc:
+            raise LocalToolSchemaDependencyMissing(
+                "jsonschema is required for local tool-input validation"
+            ) from exc
 
-            jsonschema.validate(instance=inp, schema=tool.input_schema)
-        except Exception:
-            # SDK schema conformance is advisory. Reject malformed inputs
-            # locally before they can reach a tool handler.
+        schema = tool.input_schema
+        if not isinstance(schema, dict):
+            raise LocalToolSchemaInvalid("ToolDef input_schema must be a JSON object")
+        try:
+            validator_class = jsonschema.validators.validator_for(schema)
+            validator_class.check_schema(schema)
+        except jsonschema.SchemaError as exc:
+            raise LocalToolSchemaInvalid("ToolDef input_schema is invalid") from exc
+        try:
+            validator_class(schema).validate(inp)
+        except jsonschema.ValidationError:
+            # Model input failed conformance. Never dispatch it.
             return TextBlock(text=text), StopReason.COMPLETE
 
         import uuid as _uuid
@@ -2159,28 +2182,49 @@ class GeminiProvider(LLMProvider):
         self._local = threading.local()
         logger.debug(f"Initialized GeminiProvider: {config.model_name}")
 
+    @staticmethod
+    def _request_timeout_milliseconds(value: Any) -> int:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError("Gemini ModelConfig.timeout must be a positive finite number")
+        timeout_milliseconds = int(value * 1000)
+        if timeout_milliseconds <= 0:
+            raise ValueError("Gemini ModelConfig.timeout must resolve to at least one millisecond")
+        return timeout_milliseconds
+
     @property
     def client(self):
         """Per-thread client — google-genai is not guaranteed thread-safe."""
         if not hasattr(self._local, 'client'):
+            from google.genai.types import HttpOptions
+
+            timeout_milliseconds = self._request_timeout_milliseconds(self.config.timeout)
             # Phase B: dispatcher-route when ``RAPTOR_LLM_SOCKET`` set.
-            # google-genai 1.70+ accepts a custom ``base_url`` and
-            # ``httpx_client`` via ``HttpOptions`` — :func:`make_gemini_base_url`
-            # returns the (base_url, http_client) pair the SDK needs.
+            # The custom UDS client owns the same finite read/write/pool bound.
             if os.environ.get("RAPTOR_LLM_SOCKET"):
                 from core.llm.dispatcher.client import make_gemini_base_url
-                from google.genai.types import HttpOptions
-                base_url, http_client = make_gemini_base_url()
+
+                base_url, http_client = make_gemini_base_url(
+                    timeout=timeout_milliseconds / 1000.0,
+                )
                 self._local.client = _genai_module.Client(
                     api_key="dummy-not-used",
                     http_options=HttpOptions(
                         base_url=base_url,
                         httpx_client=http_client,
+                        timeout=timeout_milliseconds,
                     ),
                 )
                 logger.debug("GeminiProvider: routing via credential-isolation dispatcher")
             else:
-                self._local.client = _genai_module.Client(api_key=self.config.api_key)
+                self._local.client = _genai_module.Client(
+                    api_key=self.config.api_key,
+                    http_options=HttpOptions(timeout=timeout_milliseconds),
+                )
                 logger.debug("GeminiProvider: direct SDK (no dispatcher)")
         return self._local.client
 
@@ -2332,7 +2376,13 @@ class GeminiProvider(LLMProvider):
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # Schema/parsing error — native mode incompatible, fall back to JSON-in-prompt
-            logger.warning(f"Gemini native structured generation failed (falling back): {e}")
+            from core.security.log_sanitisation import escape_nonprintable
+            from core.security.redaction import redact_secrets
+
+            logger.warning(
+                "Gemini native structured generation failed (falling back): %s",
+                escape_nonprintable(redact_secrets(str(e)))[:1024],
+            )
             return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
         except Exception:
             # Auth, network, quota — don't waste a second call

@@ -43,6 +43,24 @@ _SUCCESS_FIELDS = {
     "semantic_relation_verified",
     "section_counts",
 }
+_CLI_FAILURE_FIELDS = {
+    "schema_version",
+    "status",
+    "provider",
+    "model",
+    "sdk_version",
+    "provider_turns_started",
+    "provider_turns_completed",
+    "terminal_call_count",
+    "fixture_read",
+    "source_verified",
+    "sink_verified",
+    "language_verified",
+    "semantic_relation_verified",
+    "worker_cleanup_verified",
+    "failure_class",
+    "failure_stage",
+}
 
 
 def _model() -> ModelConfig:
@@ -477,7 +495,7 @@ def test_canary_rejects_terminal_map_without_fixture_read():
         ])]),
     )
 
-    _assert_failure(result, "semantic_evidence")
+    _assert_failure(result, "terminal_contract")
     assert result.attestation["fixture_read"] is False
     assert result.attestation["language_verified"] is False
     assert result.attestation["source_verified"] is False
@@ -786,7 +804,7 @@ def test_canary_enforces_iteration_limit():
     result = run_semantic_canary(_model(), provider_factory=lambda _: provider)
 
     _assert_failure(result, "terminal_contract")
-    assert provider.calls == 3
+    assert provider.calls == 2
 
 
 def test_canary_enforces_wall_clock_limit(monkeypatch: pytest.MonkeyPatch):
@@ -837,32 +855,62 @@ def test_semantic_canary_cli_rejects_unapproved_model_as_bounded_json(capsys):
 
     assert exit_code == 1
     attestation = json.loads(capsys.readouterr().out)
-    assert set(attestation) == _SUCCESS_FIELDS | {"failure_class"}
+    assert set(attestation) == _CLI_FAILURE_FIELDS
+    assert attestation["schema_version"] == 3
     assert attestation["failure_class"] == "unsupported_model"
+    assert attestation["failure_stage"] == "provider_init"
+    assert attestation["worker_cleanup_verified"] is True
 
 
 def test_semantic_canary_cli_uses_resolved_model(monkeypatch: pytest.MonkeyPatch, capsys):
+    from packages.code_understanding import semantic_canary_controller
+
+    resolved = _model()
     expected = semantic_canary.SemanticCanaryResult(True, {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "passed",
-        "fixture_sha256": "f" * 64,
         "provider": "gemini",
         "model": "gemini-2.5-flash",
         "sdk_version": "test",
         "request_schema_sha256": "s" * 64,
+        "provider_turns_started": 2,
+        "provider_turns_completed": 2,
         "terminal_call_count": 1,
-        "provider_turn_count": 2,
         "fixture_read": True,
         "language_verified": True,
         "source_verified": True,
         "sink_verified": True,
         "semantic_relation_verified": True,
-        "section_counts": {key: 0 for key in semantic_canary._SECTION_KEYS},
+        "worker_cleanup_verified": True,
     })
-    monkeypatch.setattr(semantic_canary, "resolve_semantic_canary_model", lambda _: _model())
-    monkeypatch.setattr(semantic_canary, "run_semantic_canary", lambda _: expected)
+    seen: list[ModelConfig] = []
+    monkeypatch.setattr(semantic_canary, "resolve_semantic_canary_model", lambda _: resolved)
+    monkeypatch.setattr(
+        semantic_canary_controller,
+        "run_semantic_canary_controller",
+        lambda model: seen.append(model) or expected,
+    )
 
     exit_code = semantic_canary.main(["--model", "gemini-2.5-flash", "--format", "json"])
 
     assert exit_code == 0
+    assert seen == [resolved]
     assert json.loads(capsys.readouterr().out) == expected.attestation
+
+
+
+def test_canary_preserves_explicit_local_jsonschema_failures():
+    from core.llm.providers import (
+        LocalToolSchemaDependencyMissing,
+        LocalToolSchemaInvalid,
+    )
+
+    for error, failure_class in (
+        (LocalToolSchemaDependencyMissing("missing"), "local_dependency_missing"),
+        (LocalToolSchemaInvalid("invalid"), "local_schema_invalid"),
+    ):
+        provider = _Provider(_terminal_turns(), first_error=error)
+        result = run_semantic_canary(_model(), provider_factory=lambda _: provider)
+
+        _assert_failure(result, failure_class)
+        assert provider.calls == 1

@@ -338,3 +338,136 @@ def test_terminal_tool_prose_cannot_masquerade_as_a_call() -> None:
 
     assert response.stop_reason is StopReason.COMPLETE
     assert isinstance(response.content[0], TextBlock)
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [0, -1, True, float("nan"), "NaN", None],
+)
+def test_direct_client_rejects_invalid_timeout_values(monkeypatch, timeout) -> None:
+    import core.llm.providers as providers_module
+
+    monkeypatch.setattr(providers_module._genai_module, "Client", lambda **_kwargs: object())
+    provider = GeminiProvider(
+        ModelConfig(
+            provider="gemini",
+            model_name="gemini-2.5-flash",
+            api_key="test-key",
+            timeout=timeout,
+        )
+    )
+
+    with pytest.raises(ValueError, match="positive finite"):
+        _ = provider.client
+
+
+def test_direct_client_uses_model_timeout_in_milliseconds(monkeypatch, caplog) -> None:
+    import core.llm.providers as providers_module
+
+    captured = {}
+    secret = "gemini-direct-client-test-secret"
+
+    def build_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(providers_module._genai_module, "Client", build_client)
+    provider = GeminiProvider(
+        ModelConfig(
+            provider="gemini",
+            model_name="gemini-2.5-flash",
+            api_key=secret,
+            timeout=1.234,
+        )
+    )
+
+    _ = provider.client
+
+    assert captured["api_key"] == secret
+    assert captured["http_options"].timeout == 1234
+    assert secret not in caplog.text
+
+
+def test_dispatcher_client_preserves_isolated_transport_and_timeout(monkeypatch) -> None:
+    import httpx
+    import core.llm.dispatcher.client as dispatcher_client
+    import core.llm.providers as providers_module
+
+    captured = {}
+    client_kwargs = {}
+    custom_client = httpx.Client()
+
+    def make_gemini_base_url(**kwargs):
+        captured.update(kwargs)
+        return "http://_/gemini", custom_client
+
+    def build_client(**kwargs):
+        client_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("RAPTOR_LLM_SOCKET", "/tmp/raptor-test.sock")
+    monkeypatch.setattr(dispatcher_client, "make_gemini_base_url", make_gemini_base_url)
+    monkeypatch.setattr(providers_module._genai_module, "Client", build_client)
+    provider = GeminiProvider(
+        ModelConfig(
+            provider="gemini",
+            model_name="gemini-2.5-flash",
+            api_key="must-not-reach-dispatcher-client",
+            timeout=1.234,
+        )
+    )
+    try:
+        _ = provider.client
+    finally:
+        custom_client.close()
+
+    assert captured == {"timeout": pytest.approx(1.234)}
+    assert client_kwargs["api_key"] == "dummy-not-used"
+    assert client_kwargs["http_options"].base_url == "http://_/gemini"
+    assert client_kwargs["http_options"].httpx_client is custom_client
+    assert client_kwargs["http_options"].timeout == 1234
+
+
+def test_dispatcher_factory_passes_timeout_to_custom_httpx_client(monkeypatch) -> None:
+    import core.llm.dispatcher.client as dispatcher_client
+
+    captured = {}
+    custom_client = object()
+
+    monkeypatch.setattr(
+        dispatcher_client,
+        "_resolve_socket_and_token",
+        lambda _socket, _token: ("/tmp/raptor-test.sock", "test-token"),
+    )
+    monkeypatch.setattr(
+        dispatcher_client,
+        "_make_httpx_client",
+        lambda socket, token, *, timeout: captured.update(
+            socket=socket,
+            token=token,
+            timeout=timeout,
+        ) or custom_client,
+    )
+
+    base_url, returned_client = dispatcher_client.make_gemini_base_url(timeout=1.234)
+
+    assert base_url == "http://_/gemini"
+    assert returned_client is custom_client
+    assert captured == {
+        "socket": "/tmp/raptor-test.sock",
+        "token": "test-token",
+        "timeout": pytest.approx(1.234),
+    }
+def test_dispatcher_httpx_client_bounds_all_request_phases() -> None:
+    from core.llm.dispatcher.client import _make_httpx_client
+
+    client = _make_httpx_client(
+        "/tmp/raptor-test.sock", "test-token", timeout=1.234
+    )
+    try:
+        assert client.timeout.connect == pytest.approx(5.0)
+        assert client.timeout.read == pytest.approx(1.234)
+        assert client.timeout.write == pytest.approx(1.234)
+        assert client.timeout.pool == pytest.approx(1.234)
+    finally:
+        client.close()

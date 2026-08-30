@@ -7,13 +7,19 @@ import hashlib
 import json
 import secrets
 import tempfile
+from contextlib import nullcontext
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.llm.config import ModelConfig
-from core.llm.providers import GeminiProvider, create_provider
+from core.llm.providers import (
+    GeminiProvider,
+    LocalToolSchemaDependencyMissing,
+    LocalToolSchemaInvalid,
+    create_provider,
+)
 from core.llm.tool_use import (
     CacheControl,
     ContextPolicy,
@@ -30,7 +36,7 @@ from packages.code_understanding.dispatch.map_dispatch import (
 from packages.code_understanding.dispatch.tools import SandboxedTools
 from packages.code_understanding.prompts import MAP_SYSTEM_PROMPT
 
-_MAX_ITERATIONS = 3
+_MAX_ITERATIONS = 2
 _MAX_COST_USD = 0.05
 _MAX_SECONDS = 30.0
 _TOOL_TIMEOUT_S = 5.0
@@ -69,16 +75,52 @@ class SemanticCanaryResult:
 class _CountingCanaryProvider:
     """Count turns without replaying a transport request."""
 
-    def __init__(self, provider: Any) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        lifecycle_events: Callable[..., None] | None = None,
+        request_schema_sha256: str = "",
+    ) -> None:
         self._provider = provider
         self.turn_count = 0
+        self._lifecycle_events = lifecycle_events
+        self._request_schema_sha256 = request_schema_sha256
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._provider, name)
 
+    def _validate_turn_contract(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> None:
+        if self.turn_count >= _MAX_ITERATIONS:
+            raise RuntimeError("semantic canary exceeded two provider turns")
+        if "response_schema" in kwargs:
+            raise RuntimeError("semantic canary tool turns must not use response_schema")
+        tool_definitions = kwargs.get("tools")
+        if tool_definitions is None and len(args) > 1:
+            tool_definitions = args[1]
+        if (
+            not isinstance(tool_definitions, list)
+            or _request_schema_sha256(tool_definitions) != self._request_schema_sha256
+        ):
+            raise RuntimeError("semantic canary tool response_json_schema changed")
+
     def turn(self, *args: Any, **kwargs: Any) -> Any:
+        # GeminiProvider derives response_json_schema from these exact ToolDefs.
+        self._validate_turn_contract(args, kwargs)
         self.turn_count += 1
-        return self._provider.turn(*args, **kwargs)
+        if self._lifecycle_events is not None:
+            metadata = (
+                {"request_schema_sha256": self._request_schema_sha256}
+                if self.turn_count == 1
+                else {}
+            )
+            self._lifecycle_events("provider_turn_started", **metadata)
+        result = self._provider.turn(*args, **kwargs)
+        if self._lifecycle_events is not None:
+            self._lifecycle_events("provider_turn_completed")
+        return result
 
 
 def _fresh_identifier() -> str:
@@ -388,6 +430,10 @@ def _failed_result(
 
 def _normalise_provider_failure(exc: Exception) -> str:
     """Classify failures without retaining provider content or headers."""
+    if isinstance(exc, LocalToolSchemaDependencyMissing):
+        return "local_dependency_missing"
+    if isinstance(exc, LocalToolSchemaInvalid):
+        return "local_schema_invalid"
     name = type(exc).__name__.casefold()
     text = str(exc).casefold()[:512]
     if "429" in text or "quota" in text or "rate limit" in text:
@@ -422,6 +468,8 @@ def run_semantic_canary(
     model: ModelConfig,
     *,
     provider_factory: Any = create_provider,
+    fixture_root: Path | None = None,
+    lifecycle_events: Callable[..., None] | None = None,
 ) -> SemanticCanaryResult:
     """Exercise one isolated map turn without automatic transport retries."""
     if not isinstance(model, ModelConfig):
@@ -433,13 +481,18 @@ def run_semantic_canary(
             failure_class="invalid_model",
         )
 
-    with tempfile.TemporaryDirectory(prefix="raptor-semantic-canary-") as directory:
-        fixture_root = Path(directory)
+    directory_context = (
+        tempfile.TemporaryDirectory(prefix="raptor-semantic-canary-")
+        if fixture_root is None
+        else nullcontext(fixture_root)
+    )
+    with directory_context as directory:
+        active_fixture_root = Path(directory)
         fixture = _fresh_fixture()
         fixture_sha256 = hashlib.sha256(fixture.content.encode("utf-8")).hexdigest()
         fixture_path = "fixture.cpp"
-        (fixture_root / fixture_path).write_text(fixture.content, encoding="utf-8")
-        tools = _build_tools(SandboxedTools.for_repo(fixture_root))
+        (active_fixture_root / fixture_path).write_text(fixture.content, encoding="utf-8")
+        tools = _build_tools(SandboxedTools.for_repo(active_fixture_root))
         request_schema_sha256 = _request_schema_sha256(tools)
         terminal_calls = 0
         fixture_read_call_ids: list[str] = []
@@ -450,14 +503,19 @@ def run_semantic_canary(
         def events(event: Any) -> None:
             nonlocal terminal_calls, tool_handler_error, invalid_fixture_read
             if isinstance(event, ToolCallDispatched):
+                if lifecycle_events is not None:
+                    lifecycle_events("tool_call_dispatched")
                 if event.call.name == "submit_context_map":
                     terminal_calls += 1
+                    if lifecycle_events is not None:
+                        lifecycle_events("terminal_call_dispatched")
                 elif event.call.name == "read_file":
                     if event.call.input.get("path") == fixture_path:
                         fixture_read_call_ids.append(event.call.id)
                     else:
                         invalid_fixture_read = True
             elif isinstance(event, ToolCallReturned):
+                fixture_read_completed = False
                 if event.result.is_error:
                     tool_handler_error = True
                 if (
@@ -469,9 +527,19 @@ def run_semantic_canary(
                     )
                 ):
                     successful_fixture_read_call_ids.add(event.call_id)
+                    fixture_read_completed = True
+                if lifecycle_events is not None:
+                    lifecycle_events(
+                        "tool_call_completed",
+                        fixture_read=fixture_read_completed,
+                    )
 
         try:
-            provider = _CountingCanaryProvider(provider_factory(model))
+            provider = _CountingCanaryProvider(
+                provider_factory(model),
+                lifecycle_events=lifecycle_events,
+                request_schema_sha256=request_schema_sha256,
+            )
         except Exception as exc:
             return _failed_result(
                 model=model,
@@ -537,7 +605,8 @@ def run_semantic_canary(
             and successful_fixture_read_call_ids == set(fixture_read_call_ids)
         )
         if (
-            terminal_calls != 1
+            provider.turn_count != _MAX_ITERATIONS
+            or terminal_calls != 1
             or result.terminated_by != "terminal_tool"
             or tool_handler_error
             or invalid_fixture_read
@@ -611,30 +680,25 @@ def run_semantic_canary(
         )
 
 
-def _cli_failure(model_name: str, failure_class: str) -> SemanticCanaryResult:
-    model = ModelConfig(provider="gemini", model_name=model_name)
-    return _failed_result(
-        model=model,
-        fixture_sha256="",
-        request_schema_sha256="",
-        failure_class=failure_class,
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run RAPTOR semantic map preflight")
     parser.add_argument("--model", required=True)
     parser.add_argument("--format", choices=("json",), default="json")
     args = parser.parse_args(argv)
+    from packages.code_understanding.semantic_canary_controller import (
+        failed_semantic_canary_cli_result,
+        run_semantic_canary_controller,
+    )
+
     if args.model != _QUALIFICATION_MODEL:
-        result = _cli_failure(args.model, "unsupported_model")
+        result = failed_semantic_canary_cli_result(args.model, "unsupported_model")
     else:
         try:
             model = resolve_semantic_canary_model(args.model)
         except Exception:
-            result = _cli_failure(args.model, "model_resolution")
+            result = failed_semantic_canary_cli_result(args.model, "model_resolution")
         else:
-            result = run_semantic_canary(model)
+            result = run_semantic_canary_controller(model)
     print(json.dumps(result.attestation, sort_keys=True, separators=(",", ":")))
     return 0 if result.success else 1
 
