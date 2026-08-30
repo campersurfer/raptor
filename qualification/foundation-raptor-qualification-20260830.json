@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "record_kind": "foundation_raptor_qualification",
+  "immutable": true,
+  "qualified_candidate": {
+    "branch": "repair/minimal-cpp-qualification-20260830",
+    "commit": "8f994e155085bfe2a24f8f0babc1c89c97484eb9",
+    "tree": "143099fe756af75cfe11d25dbda29b4437881974",
+    "base_commit": "21df56c74857ba86a68338ef58e54af4861ad2f7"
+  },
+  "canary_binding": {
+    "commit": "21df56c74857ba86a68338ef58e54af4861ad2f7",
+    "standalone_live_canary_rerun": false,
+    "files": {
+      "core/llm/providers.py": "0bb43b73f8b0c65b6ba02acede687a212f2a3483d0e553d2075df3bdf9fbb229",
+      "core/llm/dispatcher/client.py": "f1178ca9048523aa94ae38a84092a5a601b67574ddee669485cc0068b602098a",
+      "packages/code_understanding/semantic_canary.py": "1bc8a372466b89bed8a48fe877b309f4b2c5e1382693e31667f19e3871f75306",
+      "packages/code_understanding/dispatch/map_dispatch.py": "cb5deb7139311aee45b3ab83f1368bbcea32507243fa91a7965e6e66be5159c7",
+      "raptor.py": "50d96a48ba78a2735576890b8d6caa3d0c51a2b8dc2e17ce1c8c69cc21db0b78",
+      "requirements.txt": "2774f439bc7f472194644c8391594dc8da4d9be1395cbf468c4ce55a498746c8"
+    }
+  },
+  "historical_failure_retention": {
+    "artifact": "qualification/minimal-cpp-semgrep-diagnostic.json",
+    "packs_recorded": 16,
+    "aggregate_exit_code": 4,
+    "root_cause_class": "target_staging_error"
+  },
+  "direct_semgrep_qualification": {
+    "artifact": "qualification/minimal-cpp-direct-semgrep-qualification.json",
+    "fixture_source_tree_sha256": "956058c3311d45e43a18a7bb45e0b5c7e6eee163f8b336f00b14185558669117",
+    "sandbox": "strict",
+    "codeql": false,
+    "policy_groups": [
+      "all"
+    ],
+    "scanner_exit_code": 0,
+    "packs_dispatched": 16,
+    "packs_succeeded": 16,
+    "packs_failed": 0,
+    "combined_sarif_valid": true,
+    "sandbox_engagement": "engaged"
+  },
+  "integrated_agentic_qualification": {
+    "provider_backed_command_count": 1,
+    "provider": "gemini",
+    "model": "gemini-2.5-flash",
+    "fixture_source_tree_sha256": "6715be9142c2d5a21e7ee172e9d7e539f682e05a4a8e7c1f0b548c7bf4275135",
+    "sandbox": "strict",
+    "codeql": false,
+    "threat_model": true,
+    "validate": true,
+    "max_findings": 1,
+    "no_exploits": true,
+    "no_patches": true,
+    "phase_timeout_seconds": 180,
+    "agentic_exit_code": 0,
+    "understand_prepass": {
+      "artifact": "understand-prepass-summary.json",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash",
+      "ran": true,
+      "terminal_call_count": 1,
+      "context_map_valid": true,
+      "semantic_complete": true
+    },
+    "semgrep": {
+      "artifact": "scan/semgrep-run-summary.json",
+      "packs_dispatched": 16,
+      "packs_succeeded": 16,
+      "packs_failed": 0,
+      "aggregate_exit_code": 0,
+      "combined_sarif_valid": true,
+      "sandbox_engagement": "engaged"
+    },
+    "validated_artifacts": {
+      "understand-prepass-summary.json": "09e187097d37a18b6493a248d101b9bd7ffbcde1123355847bee4f27a4b180d6",
+      "raptor_agentic_report.json": "cd9b46ac9623f6460d11051bdd03b55c13e6535100ad2b4e19a888f5423f7221",
+      "scan/scan-manifest.json": "5c266e59e69204af24cc46ad62a63c90233acc776cd6456beca69925ac7bb5e6",
+      "scan/semgrep-run-summary.json": "ca1fc4a345cc573285a73ef1c299925d66e4bc2530688f4e667d2cd1a7bf9965",
+      "scan/scan_metrics.json": "6924c2e36150a0caa6dba290798265b8ba2d2f8d1d579563ae593fa6759a0995",
+      "scan/combined.sarif": "5489840cafea2572880474104a55a229d8cd928b18df9535dc38e8bd9f6a84a4"
+    },
+    "report_path_policy": "run-relative outputs only"
+  },
+  "offline_verification": {
+    "qualification_contract_tests": {
+      "passed": 10
+    },
+    "static_analysis_tests": {
+      "passed": 196,
+      "skipped": 1
+    },
+    "agentic_prepass_and_bridge_tests": {
+      "passed": 175,
+      "deselected": 1,
+      "subtests_passed": 42
+    },
+    "source_compilation": "passed",
+    "independent_repair_review": "approved"
+  }
+}
