@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "record_kind": "minimal_cpp_agentic_qualification_failure",
+  "raptor_commit": "8cbce213b412e8673c250a1b09006d5d3767ae98",
+  "raptor_tree": "c99773f7b757db0ccd242bda7e6e69a0bee192c9",
+  "parent_lineage": [
+    "8b38d72dd5670fcaeaf229e588ce84bdd76415c3",
+    "21df56c74857ba86a68338ef58e54af4861ad2f7"
+  ],
+  "requested_provider": "gemini",
+  "requested_model": "gemini-2.5-flash",
+  "integrated_command": {
+    "argv_recorded_before_execution": true,
+    "sha256": "2e6a32250c53d0c818e6c9ed037a6b8fc833fb857118852c2ffaabc60d409e1d",
+    "additional_flags": []
+  },
+  "runtime": {
+    "python_version": "3.13.15",
+    "semgrep_version": "1.174.0",
+    "semgrep_sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
+    "google_genai_version": "1.65.0",
+    "jsonschema_version": "4.26.0"
+  },
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "3f47a88c0664926b92de8058f24411c39638e0d401ed41182466ffe1f517f096"
+  },
+  "result": {
+    "process_exit_code": 1,
+    "provider_turn_count": 0,
+    "scanner_started": false,
+    "final_failure_stage": "controller",
+    "controller_failure_class": "credential_isolation_socket_path_too_long",
+    "understand_prepass": {
+      "provider": null,
+      "model": "gemini-2.5-flash",
+      "ran": false,
+      "terminal_call_count": 0,
+      "context_map_valid": false,
+      "semantic_complete": false,
+      "failure_class": "model_resolution_failed",
+      "failure_stage": "model_resolution"
+    }
+  },
+  "artifacts": {
+    "integrated_command_sha256": "7a67cf9bd48c4cc767d9ab435bbf0d7b46c3cb89b07705d626f08828955631ad",
+    "stdout_sha256": "e2a449e3b222ed81172237cdb7637978c7a6088fc2cc19a8fbbbca8086307ba4",
+    "stderr_sha256": "991c85f749779d721f1165f5d82a3c57e93ff33be7874c465ca23510de60a4a6",
+    "run_metadata_sha256": "41e354ed888b2d6efe9442c96aa1705224cadb6c9037ce827509051e277b1409",
+    "agentic_report_sha256": "1c33dca4b6a5ea7c8193260e50edcedf0740336660de4e34aba867ce27e5e257",
+    "understand_prepass_summary_sha256": "052aba5b63d442616d9a7b7e0a0ed26522fafb1c643e97d15e9d5afdeeecc3ad",
+    "checklist_sha256": "03513dc228e6738d7f991c2f5d7a5e5f5229c159d6f212e40a1b8c5553a71188"
+  },
+  "retention": {
+    "raw_output": "ephemeral_local_qualification_workspace",
+    "committed_fields": "bounded_metadata_and_hashes_only",
+    "credentials_prompts_provider_responses_fixture_identifiers_and_absolute_paths": "not_persisted"
+  }
+}
