@@ -4,7 +4,7 @@
   "status": "revoked",
   "promotable": false,
   "invalidation_reason": "The claimed execution predates canonical SARIF schema 8cbce213b412e8673c250a1b09006d5d3767ae98 and lacks execution-tree and per-artifact hash bindings.",
-  "invalidated_by_commit": null,
+  "invalidated_by_commit": "392a72f653f3f959f156fdad14352ae8ceb9efb8",
   "superseded_by": null,
   "candidate_branch": "repair/minimal-cpp-qualification-20260830",
   "raptor_commit": "21df56c74857ba86a68338ef58e54af4861ad2f7",

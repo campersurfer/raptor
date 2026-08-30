@@ -5,7 +5,7 @@
   "status": "revoked",
   "promotable": false,
   "invalidation_reason": "The claimed integrated success predates the fail-closed SARIF repair in 66698406db0cb441a8ce09e6ec59c85ec7ec9ec9 and is not bound to the frozen execution commit.",
-  "invalidated_by_commit": null,
+  "invalidated_by_commit": "392a72f653f3f959f156fdad14352ae8ceb9efb8",
   "superseded_by": null,
   "qualified_candidate": {
     "branch": "repair/minimal-cpp-qualification-20260830",
