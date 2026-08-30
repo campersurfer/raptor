@@ -94,9 +94,10 @@
   "semgrep": {
     "aggregate_exit_code": 0,
     "identity": {
-      "executable_basename": null,
+      "executable_basename": "semgrep",
       "executable_sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
-      "path_sha256": null,
+      "path_kind": "system",
+      "path_sha256": "1c301023dd00329b9be1475aff62a72002716d29707c3c3428f73e8c8a64d04a",
       "version": "1.174.0"
     },
     "packs_dispatched": 16,
