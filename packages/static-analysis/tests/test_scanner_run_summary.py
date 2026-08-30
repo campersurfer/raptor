@@ -190,3 +190,29 @@ class TestSemgrepRunSummary:
         assert "top-secret" not in rendered
         assert "api-key" not in rendered
         assert "opaque-fixture" not in rendered
+
+    @patch.object(_scanner_mod, "validate_sarif", return_value=True)
+    def test_identity_probe_does_not_block_summary_when_isolation_is_invalid(
+        self, _validate, tmp_path,
+    ):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        executable = tmp_path / "semgrep"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        _write_pack(tmp_path, "category_auth", 1)
+
+        with patch.object(_scanner_mod.shutil, "which", return_value=str(executable)), patch.object(
+            _scanner_mod.RaptorConfig,
+            "get_safe_env",
+            side_effect=RuntimeError("invalid isolated temp"),
+        ):
+            summary = _scanner_mod.write_semgrep_run_summary(
+                out_dir=tmp_path,
+                configs=[("category_auth", str(config))],
+                aggregate_exit_code=0,
+                sandbox_engagement_state="engaged",
+            )
+
+        assert summary["scanner"]["version"] is None
+        assert (tmp_path / "semgrep-run-summary.json").is_file()

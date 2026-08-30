@@ -82,18 +82,23 @@ def _semgrep_executable_identity() -> dict[str, object]:
     version = None
     if executable:
         try:
-            proc = subprocess.run(
-                [str(path), "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=RaptorConfig.get_safe_env(),
-            )
-            version = _bounded_diagnostic_tail(
-                proc.stdout or proc.stderr, limit=160
-            ).strip() or None
-        except (OSError, subprocess.SubprocessError):
-            version = None
+            safe_env = RaptorConfig.get_safe_env()
+        except Exception:  # noqa: BLE001 - identity capture cannot block summary persistence
+            safe_env = None
+        if safe_env is not None:
+            try:
+                proc = subprocess.run(
+                    [str(path), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=safe_env,
+                )
+                version = _bounded_diagnostic_tail(
+                    proc.stdout or proc.stderr, limit=160
+                ).strip() or None
+            except (OSError, subprocess.SubprocessError):
+                version = None
     digest = None
     if exists:
         try:
@@ -2478,7 +2483,7 @@ def main():
             save_json(out_dir / "scan_metrics.json", metrics)
             semgrep_summary_written = True
         except Exception:
-            logger.exception("scanner: failed to persist Semgrep diagnostic summary")
+            logger.error("scanner: failed to persist Semgrep diagnostic summary")
             raise
         try:
             cleanup_per_pack_artifacts(out_dir)
@@ -2562,7 +2567,7 @@ def main():
                     failure_class="sandbox_exec_denied",
                 )
             except Exception:
-                logger.exception("scanner: failed to persist sandbox diagnostic summary")
+                logger.error("scanner: failed to persist sandbox diagnostic summary")
         raise
     except Exception:
         if out_dir is not None and not semgrep_summary_written:
@@ -2575,7 +2580,7 @@ def main():
                     failure_class="internal_scanner_exception",
                 )
             except Exception:
-                logger.exception("scanner: failed to persist exception diagnostic summary")
+                logger.error("scanner: failed to persist exception diagnostic summary")
         raise
     finally:
         if not args.keep:
