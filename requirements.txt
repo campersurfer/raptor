@@ -12,6 +12,8 @@ requests==2.34.2
 # here too because we depend on it directly.
 urllib3==2.7.0
 pydantic==2.13.4
+# Required to validate Gemini tool inputs and terminal context maps locally.
+jsonschema==4.26.0
 typer==0.25.1
 
 # Structured output (works with both OpenAI and Anthropic SDKs).

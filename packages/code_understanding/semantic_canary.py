@@ -35,7 +35,8 @@ _MAX_COST_USD = 0.05
 _MAX_SECONDS = 30.0
 _TOOL_TIMEOUT_S = 5.0
 _ATTESTATION_ID_MAX_CHARS = 128
-_ATTESTATION_SCHEMA_VERSION = 1
+_ATTESTATION_SCHEMA_VERSION = 2
+_MAX_ATTESTATION_SECTION_COUNT = 1_024
 _QUALIFICATION_MODEL = "gemini-2.5-flash"
 _SECTION_KEYS = (
     "sources",
@@ -53,6 +54,9 @@ class _Fixture:
     source: str
     sink: str
     relation: str
+    source_line: int
+    sink_line: int
+    relation_line: int
     content: str
 
 
@@ -82,7 +86,7 @@ def _fresh_identifier() -> str:
 
 
 def _fresh_fixture() -> _Fixture:
-    """Build opaque per-run C++ markers that are never attested."""
+    """Build an inert, opaque C++ CLI-input-to-shell-exec fixture."""
     identifier = _fresh_identifier()
     source = f"canary_source_{identifier}"
     sink = f"canary_sink_{identifier}"
@@ -91,39 +95,199 @@ def _fresh_fixture() -> _Fixture:
         source=source,
         sink=sink,
         relation=relation,
+        source_line=5,
+        sink_line=9,
+        relation_line=12,
         content=(
+            "#include <cstdlib>\n"
             "#include <string>\n\n"
-            f"std::string {source}(const std::string& input) {{\n"
-            "    return input;\n"
+            f"std::string {source}(int argc, char** argv) {{\n"
+            "    return argc > 1 ? argv[1] : \"\";\n"
             "}\n\n"
-            f"void {sink}(const std::string& value) {{\n"
-            "    (void)value;\n"
+            f"void {sink}(const std::string& command) {{\n"
+            "    std::system(command.c_str());\n"
             "}\n\n"
-            f"void {relation}(const std::string& input) {{\n"
-            f"    {sink}({source}(input));\n"
+            f"void {relation}(int argc, char** argv) {{\n"
+            f"    {sink}({source}(argc, argv));\n"
+            "}\n\n"
+            "int main(int argc, char** argv) {\n"
+            f"    {relation}(argc, argv);\n"
+            "    return 0;\n"
             "}\n"
         ),
     )
 
 
-def _has_exact_semantic_evidence(context_map: dict[str, Any], fixture: _Fixture) -> bool:
-    """Require map claims to use the exact opaque identifiers in source."""
+_CPP_LABELS = frozenset({"c++", "cpp", "cxx"})
+_CLI_SOURCE_TYPES = frozenset({"cli_arg", "argv", "command_line", "command_line_argument"})
+_SHELL_EXEC_TYPES = frozenset({"shell_exec", "command_exec", "command_execution", "system_call"})
+
+
+def _is_cpp_label(value: Any) -> bool:
     return (
-        any(entry.get("name") == fixture.source for entry in context_map["sources"])
-        and any(entry.get("name") == fixture.sink for entry in context_map["sinks"])
+        isinstance(value, list)
         and any(
-            entry.get("source") == fixture.source
-            and entry.get("sink") == fixture.sink
-            and entry.get("relation") == fixture.relation
-            for entry in context_map["unchecked_flows"]
+            isinstance(label, str) and label.strip().casefold() in _CPP_LABELS
+            for label in value
         )
     )
 
 
-def _is_cpp_label(value: Any) -> bool:
-    return isinstance(value, str) and value.strip().casefold() in {"c++", "cpp", "cxx"}
+def _contains_fixture_location(value: Any, line: int) -> bool:
+    return isinstance(value, str) and f"fixture.cpp:{line}" in value
 
 
+def _details_match_fixture_line(entry: dict[str, Any], line: int) -> bool:
+    return entry.get("file") == "fixture.cpp" and entry.get("line") == line
+
+
+def _entry_contains_identifier(
+    entry: dict[str, Any], identifier: str, fields: tuple[str, ...]
+) -> bool:
+    return any(
+        isinstance(value := entry.get(field), str) and identifier in value
+        for field in fields
+    )
+
+
+def _reference_ids(value: Any) -> set[str] | None:
+    if isinstance(value, str) and value:
+        return {value}
+    if (
+        isinstance(value, list)
+        and 1 <= len(value) <= 32
+        and all(isinstance(item, str) and item for item in value)
+    ):
+        return set(value)
+    return None
+
+
+def _matching_entry_point_ids(
+    context_map: dict[str, Any], fixture: _Fixture
+) -> set[str]:
+    return {
+        entry["id"]
+        for entry in context_map["entry_points"]
+        if isinstance(entry.get("id"), str)
+        and _details_match_fixture_line(entry, fixture.relation_line)
+        and _entry_contains_identifier(entry, fixture.relation, ("name", "notes"))
+    }
+
+
+def _matching_sink_detail_ids(
+    context_map: dict[str, Any], fixture: _Fixture
+) -> set[str]:
+    return {
+        entry["id"]
+        for entry in context_map["sink_details"]
+        if isinstance(entry.get("id"), str)
+        and isinstance(entry.get("type"), str)
+        and entry["type"].casefold() in _SHELL_EXEC_TYPES
+        and _details_match_fixture_line(entry, fixture.sink_line)
+        and _entry_contains_identifier(entry, fixture.sink, ("name", "notes", "operation"))
+    }
+
+
+def _source_is_verified(context_map: dict[str, Any], fixture: _Fixture) -> bool:
+    return any(
+        isinstance(entry.get("type"), str)
+        and entry["type"].casefold() in _CLI_SOURCE_TYPES
+        and entry.get("trust_level") == "attacker_controlled"
+        and _contains_fixture_location(entry.get("entry"), fixture.source_line)
+        and _entry_contains_identifier(entry, fixture.source, ("entry",))
+        for entry in context_map["sources"]
+    )
+
+
+def _sink_is_verified(context_map: dict[str, Any], fixture: _Fixture) -> bool:
+    top_level_sink = any(
+        isinstance(entry.get("type"), str)
+        and entry["type"].casefold() in _SHELL_EXEC_TYPES
+        and _contains_fixture_location(entry.get("location"), fixture.sink_line)
+        for entry in context_map["sinks"]
+    )
+    return top_level_sink and bool(_matching_sink_detail_ids(context_map, fixture))
+
+
+def _flow_references_are_known(context_map: dict[str, Any]) -> bool:
+    entry_ids = {
+        entry["id"]
+        for entry in context_map["entry_points"]
+        if isinstance(entry.get("id"), str) and entry["id"]
+    }
+    sink_ids = {
+        entry["id"]
+        for entry in context_map["sink_details"]
+        if isinstance(entry.get("id"), str) and entry["id"]
+    }
+    for flow in context_map["unchecked_flows"]:
+        entry_refs = _reference_ids(flow.get("entry_point"))
+        sink_refs = _reference_ids(flow.get("sink"))
+        if (
+            not entry_refs
+            or not sink_refs
+            or not entry_refs.issubset(entry_ids)
+            or not sink_refs.issubset(sink_ids)
+        ):
+            return False
+    return True
+
+
+def _flow_has_no_declared_boundary(
+    context_map: dict[str, Any], entry_ids: set[str], sink_ids: set[str]
+) -> bool:
+    if context_map["trust_boundaries"] or context_map["boundary_details"]:
+        return False
+    for entry in context_map["entry_points"]:
+        if entry.get("id") in entry_ids and entry.get("auth_required") is True:
+            return False
+    for entry in context_map["sink_details"]:
+        if entry.get("id") in sink_ids and entry.get("trust_boundaries_crossed"):
+            return False
+    return True
+
+
+def _has_canonical_semantic_evidence(
+    context_map: dict[str, Any], fixture: _Fixture
+) -> tuple[bool, bool, bool]:
+    source_verified = _source_is_verified(context_map, fixture)
+    sink_verified = _sink_is_verified(context_map, fixture)
+    entry_ids = _matching_entry_point_ids(context_map, fixture)
+    sink_ids = _matching_sink_detail_ids(context_map, fixture)
+    linked_flow = any(
+        (entry_refs := _reference_ids(flow.get("entry_point")))
+        and (sink_refs := _reference_ids(flow.get("sink")))
+        and bool(entry_refs & entry_ids)
+        and bool(sink_refs & sink_ids)
+        for flow in context_map["unchecked_flows"]
+    )
+    semantic_relation_verified = (
+        source_verified
+        and sink_verified
+        and bool(entry_ids)
+        and bool(sink_ids)
+        and linked_flow
+        and _flow_references_are_known(context_map)
+        and _flow_has_no_declared_boundary(context_map, entry_ids, sink_ids)
+    )
+    return source_verified, sink_verified, semantic_relation_verified
+
+
+def _matches_fixture_read_result(
+    result: Any, fixture_path: str, fixture_content: str
+) -> bool:
+    if result.is_error:
+        return False
+    try:
+        payload = json.loads(result.content)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("path") == fixture_path
+        and payload.get("content") == fixture_content
+        and payload.get("truncated") is False
+    )
 def _bounded_attestation_identity(value: Any) -> str:
     return str(value)[:_ATTESTATION_ID_MAX_CHARS]
 
@@ -145,7 +309,10 @@ def _section_counts(context_map: dict[str, Any] | None) -> dict[str, int]:
     if context_map is None:
         return {key: 0 for key in _SECTION_KEYS}
     return {
-        key: len(value) if isinstance(value := context_map.get(key), list) else 0
+        key: min(
+            len(value) if isinstance(value := context_map.get(key), list) else 0,
+            _MAX_ATTESTATION_SECTION_COUNT,
+        )
         for key in _SECTION_KEYS
     }
 
@@ -159,6 +326,8 @@ def _attestation(
     provider_turn_count: int,
     fixture_read: bool,
     language_verified: bool,
+    source_verified: bool,
+    sink_verified: bool,
     semantic_relation_verified: bool,
     section_counts: dict[str, int],
     failure_class: str | None = None,
@@ -175,6 +344,8 @@ def _attestation(
         "provider_turn_count": provider_turn_count,
         "fixture_read": fixture_read,
         "language_verified": language_verified,
+        "source_verified": source_verified,
+        "sink_verified": sink_verified,
         "semantic_relation_verified": semantic_relation_verified,
         "section_counts": section_counts,
     }
@@ -192,6 +363,8 @@ def _failed_result(
     provider_turn_count: int = 0,
     fixture_read: bool = False,
     language_verified: bool = False,
+    source_verified: bool = False,
+    sink_verified: bool = False,
     semantic_relation_verified: bool = False,
     section_counts: dict[str, int] | None = None,
     failure_class: str,
@@ -206,6 +379,8 @@ def _failed_result(
             provider_turn_count=provider_turn_count,
             fixture_read=fixture_read,
             language_verified=language_verified,
+            source_verified=source_verified,
+            sink_verified=sink_verified,
             semantic_relation_verified=semantic_relation_verified,
             section_counts=_section_counts(None) if section_counts is None else section_counts,
             failure_class=failure_class,
@@ -269,25 +444,33 @@ def run_semantic_canary(
         tools = _build_tools(SandboxedTools.for_repo(fixture_root))
         request_schema_sha256 = _request_schema_sha256(tools)
         terminal_calls = 0
-        fixture_read_call_ids: set[str] = set()
+        fixture_read_call_ids: list[str] = []
         successful_fixture_read_call_ids: set[str] = set()
+        tool_handler_error = False
+        invalid_fixture_read = False
 
         def events(event: Any) -> None:
-            nonlocal terminal_calls
+            nonlocal terminal_calls, tool_handler_error, invalid_fixture_read
             if isinstance(event, ToolCallDispatched):
                 if event.call.name == "submit_context_map":
                     terminal_calls += 1
-                elif (
-                    event.call.name == "read_file"
-                    and event.call.input.get("path") == fixture_path
+                elif event.call.name == "read_file":
+                    if event.call.input.get("path") == fixture_path:
+                        fixture_read_call_ids.append(event.call.id)
+                    else:
+                        invalid_fixture_read = True
+            elif isinstance(event, ToolCallReturned):
+                if event.result.is_error:
+                    tool_handler_error = True
+                if (
+                    event.call_id in fixture_read_call_ids
+                    and _matches_fixture_read_result(
+                        event.result,
+                        fixture_path,
+                        fixture.content,
+                    )
                 ):
-                    fixture_read_call_ids.add(event.call.id)
-            elif (
-                isinstance(event, ToolCallReturned)
-                and event.call_id in fixture_read_call_ids
-                and not event.result.is_error
-            ):
-                successful_fixture_read_call_ids.add(event.call_id)
+                    successful_fixture_read_call_ids.add(event.call_id)
 
         try:
             provider = _CountingCanaryProvider(provider_factory(model))
@@ -305,10 +488,12 @@ def run_semantic_canary(
                 tools=tools,
                 system=MAP_SYSTEM_PROMPT + (
                     "\n\nFor this isolated semantic canary, successfully read fixture.cpp "
-                    "before submitting the terminal map. Derive one source name, one "
-                    "sink name, and their relation name exactly from the fixture source; "
-                    "place them in sources, sinks, and unchecked_flows. Infer the language "
-                    "from the file before setting context_map.meta.language. Do not include "
+                    "before submitting the terminal map. Emit only canonical evidence: an "
+                    "attacker-controlled cli_arg source, a relation entry point, a shell_exec "
+                    "sink, and an ID-linked unchecked flow. Include exact identifiers discovered "
+                    "after the read in sources.entry, entry_points.name, and sink_details.name. "
+                    "Use repository-relative fixture locations and real source lines. Set "
+                    "context_map.meta.language to an array inferred from source. Do not include "
                     "source text in the context map."
                 ),
                 terminal_tool="submit_context_map",
@@ -349,9 +534,15 @@ def run_semantic_canary(
 
         fixture_read = (
             len(fixture_read_call_ids) == 1
-            and successful_fixture_read_call_ids == fixture_read_call_ids
+            and len(successful_fixture_read_call_ids) == 1
+            and successful_fixture_read_call_ids == set(fixture_read_call_ids)
         )
-        if terminal_calls != 1 or result.terminated_by != "terminal_tool":
+        if (
+            terminal_calls != 1
+            or result.terminated_by != "terminal_tool"
+            or tool_handler_error
+            or invalid_fixture_read
+        ):
             return _failed_result(
                 model=model,
                 fixture_sha256=fixture_sha256,
@@ -373,9 +564,22 @@ def run_semantic_canary(
                 failure_class="map_validation",
             )
         language_verified = fixture_read and _is_cpp_label(context_map["meta"].get("language"))
-        semantic_relation_verified = fixture_read and _has_exact_semantic_evidence(context_map, fixture)
+        source_verified = False
+        sink_verified = False
+        semantic_relation_verified = False
+        if fixture_read:
+            (
+                source_verified,
+                sink_verified,
+                semantic_relation_verified,
+            ) = _has_canonical_semantic_evidence(context_map, fixture)
         section_counts = _section_counts(context_map)
-        if not language_verified or not semantic_relation_verified:
+        if not (
+            language_verified
+            and source_verified
+            and sink_verified
+            and semantic_relation_verified
+        ):
             return _failed_result(
                 model=model,
                 fixture_sha256=fixture_sha256,
@@ -384,6 +588,8 @@ def run_semantic_canary(
                 provider_turn_count=provider.turn_count,
                 fixture_read=fixture_read,
                 language_verified=language_verified,
+                source_verified=source_verified,
+                sink_verified=sink_verified,
                 semantic_relation_verified=semantic_relation_verified,
                 section_counts=section_counts,
                 failure_class="semantic_evidence",
@@ -398,6 +604,8 @@ def run_semantic_canary(
                 provider_turn_count=provider.turn_count,
                 fixture_read=fixture_read,
                 language_verified=language_verified,
+                source_verified=source_verified,
+                sink_verified=sink_verified,
                 semantic_relation_verified=semantic_relation_verified,
                 section_counts=section_counts,
             ),

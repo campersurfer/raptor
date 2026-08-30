@@ -70,7 +70,7 @@ def _context_map() -> dict:
         "sources": [],
         "sinks": [],
         "trust_boundaries": [],
-        "meta": {"app_type": "library"},
+        "meta": {"app_type": "library", "language": ["python"]},
         "entry_points": [],
         "sink_details": [],
         "boundary_details": [],
@@ -178,25 +178,157 @@ def test_map_dispatch_rejects_missing_context_map(tmp_path):
 
     assert result["error"] == "submit_context_map payload missing context_map object"
 
-def test_map_submission_schema_requires_object_entries(tmp_path):
-    from packages.code_understanding.dispatch.map_dispatch import _build_tools
+def test_map_submission_schema_requires_canonical_evidence_fields(tmp_path):
+    from packages.code_understanding.dispatch.map_dispatch import (
+        _build_tools,
+        build_context_map_schema,
+    )
     from packages.code_understanding.dispatch.tools import SandboxedTools
 
+    schema = build_context_map_schema()
     tools = _build_tools(SandboxedTools.for_repo(tmp_path))
     submit_tool = next(tool for tool in tools if tool.name == "submit_context_map")
-    fields = submit_tool.input_schema["properties"]["context_map"]["properties"]
-    for name in (
+
+    assert submit_tool.input_schema["properties"]["context_map"] == schema
+    assert submit_tool.input_schema["additionalProperties"] is False
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
         "sources",
         "sinks",
         "trust_boundaries",
+        "meta",
         "entry_points",
         "sink_details",
         "boundary_details",
         "unchecked_flows",
-    ):
-        assert fields[name] == {"type": "array", "items": {"type": "object"}}
+    }
+    assert set(schema["properties"]["sources"]["items"]["required"]) == {
+        "type", "entry", "trust_level"
+    }
+    assert set(schema["properties"]["sinks"]["items"]["required"]) == {
+        "type", "location"
+    }
+    assert schema["properties"]["meta"]["properties"]["language"]["type"] == "array"
+    assert set(schema["properties"]["entry_points"]["items"]["required"]) == {
+        "id", "type", "file", "line"
+    }
+    assert set(schema["properties"]["sink_details"]["items"]["required"]) == {
+        "id", "type", "operation", "file", "line"
+    }
+    assert set(schema["properties"]["boundary_details"]["items"]["required"]) == {
+        "id", "type", "file", "line"
+    }
+    assert set(schema["properties"]["unchecked_flows"]["items"]["required"]) == {
+        "entry_point", "sink", "missing_boundary"
+    }
 
 
+def test_terminal_validator_accepts_canonical_extensions():
+    from packages.code_understanding.dispatch.map_dispatch import _validate_terminal_context_map
+
+    context_map = _context_map()
+    context_map["sources"] = [{
+        "type": "cli_arg",
+        "entry": "fixture.cpp:4",
+        "trust_level": "attacker_controlled",
+    }]
+    context_map["sinks"] = [{
+        "type": "shell_exec",
+        "location": "fixture.cpp:8",
+    }]
+    context_map["entry_points"] = [{
+        "id": "EP-1",
+        "type": "cli_arg",
+        "file": "fixture.cpp",
+        "line": 4,
+        "name": "entry",
+        "reachable_sinks": ["SINK-1"],
+        "ast_view": {"function": "entry"},
+    }]
+    context_map["sink_details"] = [{
+        "id": "SINK-1",
+        "type": "shell_exec",
+        "operation": "std::system",
+        "file": "fixture.cpp",
+        "line": 8,
+        "path_conditions": [],
+        "path_profile": "uint64",
+        "runtime_confirmed": False,
+        "ast_view": {"function": "sink"},
+    }]
+    context_map["unchecked_flows"] = [{
+        "entry_point": "EP-1",
+        "sink": "SINK-1",
+        "missing_boundary": "No command validation",
+    }]
+
+    accepted, error = _validate_terminal_context_map({"context_map": context_map})
+
+    assert error is None
+    assert accepted == context_map
+
+
+def test_terminal_validator_rejects_private_canary_shape():
+    from packages.code_understanding.dispatch.map_dispatch import _validate_terminal_context_map
+
+    context_map = _context_map()
+    context_map.update({
+        "sources": [{"name": "private-source"}],
+        "sinks": [{"name": "private-sink"}],
+        "meta": {"language": "C++"},
+        "unchecked_flows": [{
+            "source": "private-source",
+            "sink": "private-sink",
+            "relation": "private-relation",
+        }],
+    })
+
+    accepted, error = _validate_terminal_context_map({"context_map": context_map})
+
+    assert accepted is None
+    assert error == "invalid submit_context_map context_map: canonical schema"
+
+
+def test_semantic_canary_and_production_tool_share_schema_builder(tmp_path):
+    import packages.code_understanding.dispatch.map_dispatch as dispatch
+    from packages.code_understanding import semantic_canary
+    from packages.code_understanding.dispatch.tools import SandboxedTools
+
+    production_tools = dispatch._build_tools(SandboxedTools.for_repo(tmp_path))
+    canary_tools = semantic_canary._build_tools(SandboxedTools.for_repo(tmp_path))
+    production_submit = next(tool for tool in production_tools if tool.name == "submit_context_map")
+    canary_submit = next(tool for tool in canary_tools if tool.name == "submit_context_map")
+
+    assert semantic_canary._build_tools is dispatch._build_tools
+    assert production_submit.input_schema == canary_submit.input_schema
+    assert production_submit.input_schema["properties"]["context_map"] == dispatch.build_context_map_schema()
+
+def test_gemini_envelope_binds_every_map_tool_to_its_exact_input_schema(tmp_path):
+    from core.llm.providers import GeminiProvider
+    from packages.code_understanding.dispatch.map_dispatch import _build_tools
+    from packages.code_understanding.dispatch.tools import SandboxedTools
+
+    tools = _build_tools(SandboxedTools.for_repo(tmp_path))
+    schema = GeminiProvider._tool_response_schema(tools)
+    tool_options = {
+        option["properties"]["tool"]["enum"][0]: option
+        for option in schema["anyOf"]
+        if option["required"] == ["tool", "input"]
+    }
+
+    assert set(schema) == {"anyOf"}
+    assert "type" not in schema
+    assert set(tool_options) == {tool.name for tool in tools}
+    for tool in tools:
+        option = tool_options[tool.name]
+        assert option["properties"]["input"] == tool.input_schema
+        assert option["additionalProperties"] is False
+    assert {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": False,
+    } in schema["anyOf"]
 def test_model_context_map_rejects_scalar_entries():
     from core.orchestration.agentic_passes import _validate_model_context_map
 
@@ -387,15 +519,44 @@ def test_map_dispatch_rejects_undeclared_context_map_fields(tmp_path):
     assert "do-not-emit" not in result["error"]
 
 
+def test_terminal_validator_rejects_scalar_meta_language():
+    from packages.code_understanding.dispatch.map_dispatch import _validate_terminal_context_map
+
+    context_map = _context_map()
+    context_map["meta"]["language"] = "python"
+
+    accepted, error = _validate_terminal_context_map({"context_map": context_map})
+
+    assert accepted is None
+    assert error == "invalid submit_context_map context_map: canonical schema"
+
+
+def test_terminal_validator_rejects_undeclared_tool_input_fields():
+    from packages.code_understanding.dispatch.map_dispatch import _validate_terminal_context_map
+
+    accepted, error = _validate_terminal_context_map({
+        "context_map": _context_map(),
+        "extra": "rejected",
+    })
+
+    assert accepted is None
+    assert error == "submit_context_map payload has unsupported fields"
 def test_map_dispatch_bounds_terminal_payload_and_entries():
     from packages.code_understanding.dispatch import map_dispatch
 
     result_map = _context_map()
-    result_map["sources"] = [{"detail": "x" * map_dispatch._MAX_CONTEXT_MAP_ENTRY_BYTES}]
+    result_map["sources"] = [{
+        "type": "cli_arg",
+        "entry": "x" * map_dispatch._MAX_CONTEXT_MAP_ENTRY_BYTES,
+        "trust_level": "attacker_controlled",
+    }]
     _, error = map_dispatch._validate_terminal_context_map({"context_map": result_map})
     assert error == "submit_context_map sources entry exceeds size limit"
 
     result_map = _context_map()
-    result_map["meta"] = {"detail": "x" * map_dispatch._MAX_CONTEXT_MAP_PAYLOAD_BYTES}
+    result_map["meta"] = {
+        "language": ["python"],
+        "detail": "x" * map_dispatch._MAX_CONTEXT_MAP_PAYLOAD_BYTES,
+    }
     _, error = map_dispatch._validate_terminal_context_map({"context_map": result_map})
     assert error == "submit_context_map payload exceeds size limit"

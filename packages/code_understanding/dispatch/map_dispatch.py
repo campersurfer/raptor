@@ -55,6 +55,153 @@ _CONTEXT_MAP_LIST_FIELDS = (
 _CONTEXT_MAP_FIELDS = frozenset((*_CONTEXT_MAP_LIST_FIELDS, "meta"))
 
 _TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 4.0)
+def build_context_map_schema() -> dict[str, Any]:
+    """Build the canonical terminal ``context_map`` JSON schema.
+
+    The top-level map is closed so a tool turn cannot smuggle unrelated data.
+    Evidence objects intentionally stay extensible: normalizers and enrichers
+    attach machine-derived fields after terminal submission.
+    """
+    text = {"type": "string", "minLength": 1}
+    text_list = {
+        "type": "array",
+        "items": text,
+        "minItems": 1,
+        "maxItems": 32,
+    }
+    id_or_ids = {"oneOf": [text, text_list]}
+    sources = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "type": text,
+                "entry": text,
+                "trust_level": {
+                    "type": "string",
+                    "enum": [
+                        "attacker_controlled",
+                        "persistent_store",
+                        "internal_value",
+                        "runtime_constant",
+                    ],
+                },
+            },
+            "required": ["type", "entry", "trust_level"],
+        },
+    }
+    sinks = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"type": text, "location": text},
+            "required": ["type", "location"],
+        },
+    }
+    trust_boundaries = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"boundary": text, "check": text},
+            "required": ["boundary", "check"],
+        },
+    }
+    meta = {
+        "type": "object",
+        "properties": {
+            "language": text_list,
+            "app_type": text,
+            "frameworks": {"type": "array", "items": text},
+            "auth_model": text,
+        },
+        "required": ["language"],
+    }
+    entry_points = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": text,
+                "type": text,
+                "file": text,
+                "line": {"type": "integer", "minimum": 1},
+                "name": text,
+                "accepts": text,
+                "auth_required": {"type": "boolean"},
+                "notes": text,
+            },
+            "required": ["id", "type", "file", "line"],
+        },
+    }
+    sink_details = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": text,
+                "type": text,
+                "operation": text,
+                "file": text,
+                "line": {"type": "integer", "minimum": 1},
+                "name": text,
+                "reaches_from": {"type": "array", "items": text},
+                "trust_boundaries_crossed": {"type": "array", "items": text},
+                "notes": text,
+            },
+            "required": ["id", "type", "operation", "file", "line"],
+        },
+    }
+    boundary_details = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": text,
+                "type": text,
+                "file": text,
+                "line": {"type": "integer", "minimum": 1},
+                "covers": {"type": "array", "items": text},
+                "gaps": text,
+            },
+            "required": ["id", "type", "file", "line"],
+        },
+    }
+    unchecked_flows = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "entry_point": id_or_ids,
+                "sink": id_or_ids,
+                "missing_boundary": text,
+            },
+            "required": ["entry_point", "sink", "missing_boundary"],
+        },
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "sources": sources,
+            "sinks": sinks,
+            "trust_boundaries": trust_boundaries,
+            "meta": meta,
+            "entry_points": entry_points,
+            "sink_details": sink_details,
+            "boundary_details": boundary_details,
+            "unchecked_flows": unchecked_flows,
+        },
+        "required": [
+            "sources",
+            "sinks",
+            "trust_boundaries",
+            "meta",
+            "entry_points",
+            "sink_details",
+            "boundary_details",
+            "unchecked_flows",
+        ],
+        "additionalProperties": False,
+    }
 
 
 class _RetryingMapProvider:
@@ -85,12 +232,14 @@ class _RetryingMapProvider:
 
 
 def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None, str | None]:
-    """Apply the canonical map validator and terminal-size limits."""
+    """Apply canonical schema validation and terminal-size limits."""
     if not isinstance(payload, dict):
         return None, "submit_context_map payload must be an object"
     context_map = payload.get("context_map")
     if not isinstance(context_map, dict):
         return None, "submit_context_map payload missing context_map object"
+    if set(payload) != {"context_map"}:
+        return None, "submit_context_map payload has unsupported fields"
     actual_fields = set(context_map)
     missing_fields = _CONTEXT_MAP_FIELDS - actual_fields
     if missing_fields:
@@ -100,6 +249,16 @@ def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None,
         )
     if actual_fields != _CONTEXT_MAP_FIELDS:
         return None, "submit_context_map context_map has unsupported fields"
+    try:
+        import jsonschema
+    except ImportError:
+        return None, "submit_context_map JSON schema validator unavailable"
+    try:
+        jsonschema.validate(instance=context_map, schema=build_context_map_schema())
+    except jsonschema.ValidationError:
+        return None, "invalid submit_context_map context_map: canonical schema"
+    except jsonschema.SchemaError:
+        return None, "invalid submit_context_map canonical schema"
     error = _validate_model_context_map(context_map)
     if error is not None:
         return None, f"invalid submit_context_map context_map: {error}"
@@ -111,7 +270,8 @@ def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None,
         return None, "submit_context_map payload exceeds size limit"
     for key in _CONTEXT_MAP_LIST_FIELDS:
         for entry in context_map[key]:
-            if len(json.dumps(entry, separators=(",", ":")).encode("utf-8")) > _MAX_CONTEXT_MAP_ENTRY_BYTES:
+            entry_bytes = len(json.dumps(entry, separators=(",", ":")).encode("utf-8"))
+            if entry_bytes > _MAX_CONTEXT_MAP_ENTRY_BYTES:
                 return None, f"submit_context_map {key} entry exceeds size limit"
     return context_map, None
 
@@ -226,53 +386,9 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
             ),
             input_schema={
                 "type": "object",
-                "properties": {
-                    "context_map": {
-                        "type": "object",
-                        "properties": {
-                            "sources": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                            "sinks": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                            "trust_boundaries": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                            "meta": {"type": "object"},
-                            "entry_points": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                            "sink_details": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                            "boundary_details": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                            "unchecked_flows": {
-                                "type": "array",
-                                "items": {"type": "object"},
-                            },
-                        },
-                        "required": [
-                            "sources",
-                            "sinks",
-                            "trust_boundaries",
-                            "meta",
-                            "entry_points",
-                            "sink_details",
-                            "boundary_details",
-                            "unchecked_flows",
-                        ],
-                    },
-                },
+                "properties": {"context_map": build_context_map_schema()},
                 "required": ["context_map"],
+                "additionalProperties": False,
             },
             handler=lambda args: json.dumps({"received": bool(args)}),
         ),
