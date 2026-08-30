@@ -1,6 +1,9 @@
 {
   "schema_version": 1,
   "record_kind": "minimal_cpp_agentic_qualification_failure",
+  "status": "failed",
+  "promotable": false,
+  "historical": true,
   "raptor_commit": "8cbce213b412e8673c250a1b09006d5d3767ae98",
   "raptor_tree": "c99773f7b757db0ccd242bda7e6e69a0bee192c9",
   "parent_lineage": [
@@ -29,8 +32,10 @@
     "process_exit_code": 1,
     "provider_turn_count": 0,
     "scanner_started": false,
-    "final_failure_stage": "controller",
-    "controller_failure_class": "credential_isolation_socket_path_too_long",
+    "failure_stage": "credential_isolation_startup",
+    "failure_class": "credential_isolation_socket_path_invalid",
+    "final_failure_stage": "credential_isolation_startup",
+    "controller_failure_class": "credential_isolation_socket_path_invalid",
     "understand_prepass": {
       "provider": null,
       "model": "gemini-2.5-flash",
@@ -38,8 +43,8 @@
       "terminal_call_count": 0,
       "context_map_valid": false,
       "semantic_complete": false,
-      "failure_class": "model_resolution_failed",
-      "failure_stage": "model_resolution"
+      "failure_class": "credential_isolation_socket_path_invalid",
+      "failure_stage": "credential_isolation_startup"
     }
   },
   "artifacts": {

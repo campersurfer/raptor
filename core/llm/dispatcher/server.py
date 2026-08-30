@@ -39,6 +39,7 @@ import os
 import secrets
 import socket
 import socketserver
+import stat
 import struct
 import sys
 import tempfile
@@ -106,6 +107,105 @@ _TOKEN_DEFAULT_BUDGET = 10_000       # requests per worker run — agentic
                                      # workflows over many findings can
                                      # easily clear 1k LLM calls.
 _TOKEN_HEADER = "X-Raptor-Token"
+
+# Darwin's sockaddr_un reserves 104 bytes including the terminating NUL.
+# A 100-byte encoded-path ceiling is portable to Linux and leaves margin for
+# the terminator and platform bookkeeping.
+_MAX_UDS_PATH_BYTES = 100
+_SOCKET_DIRECTORY_PREFIX = "raptor-llm-"
+_SOCKET_FILE_NAME = "llm.sock"
+_SOCKET_ROOT_FAILURE = "credential_isolation_socket_root_invalid"
+_SOCKET_PATH_FAILURE = "credential_isolation_socket_path_invalid"
+_SOCKET_BIND_FAILURE = "credential_isolation_socket_bind_failed"
+_SOCKET_STARTUP_FAILURE = "credential_isolation_startup_failed"
+
+
+class CredentialIsolationSetupError(RuntimeError):
+    """Bounded, typed failure while building the isolated UDS endpoint."""
+
+    def __init__(self, failure_class: str) -> None:
+        self.failure_stage = "credential_isolation_startup"
+        self.failure_class = failure_class
+        super().__init__(f"credential isolation setup failed: {failure_class}")
+
+
+def _controlled_socket_root() -> Path:
+    """Return the short system temporary root, never ambient TMPDIR."""
+    return Path(os.path.realpath("/tmp"))
+
+
+def _validated_socket_root() -> Path:
+    """Return a safe parent for a fresh owner-only socket directory."""
+    root = _controlled_socket_root()
+    try:
+        root_stat = os.lstat(root)
+    except OSError as exc:
+        raise CredentialIsolationSetupError(_SOCKET_ROOT_FAILURE) from exc
+
+    mode = stat.S_IMODE(root_stat.st_mode)
+    if not stat.S_ISDIR(root_stat.st_mode):
+        raise CredentialIsolationSetupError(_SOCKET_ROOT_FAILURE)
+    if root_stat.st_uid == os.getuid():
+        owner_safe = mode == 0o700
+    else:
+        owner_safe = (
+            root_stat.st_uid == 0
+            and bool(root_stat.st_mode & stat.S_ISVTX)
+            and (mode & 0o777) == 0o777
+        )
+    if not owner_safe or not os.access(root, os.W_OK | os.X_OK):
+        raise CredentialIsolationSetupError(_SOCKET_ROOT_FAILURE)
+    return root
+
+
+def _socket_path_bytes(path: Path) -> int:
+    """Measure the OS-facing pathname, not Python code points."""
+    return len(os.fsencode(path))
+
+
+def _cleanup_socket_location(sock_dir: Optional[Path]) -> None:
+    """Best-effort cleanup for a locally-created partial UDS location."""
+    if sock_dir is None:
+        return
+    try:
+        (sock_dir / _SOCKET_FILE_NAME).unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        sock_dir.rmdir()
+    except OSError:
+        pass
+
+
+def _new_socket_location() -> tuple[Path, Path]:
+    """Make a short, opaque, owner-only location for one dispatcher."""
+    root = _validated_socket_root()
+    sock_dir: Optional[Path] = None
+    try:
+        # tempfile supplies collision-safe randomness; the separate secrets
+        # tag keeps the name unpredictable even before tempfile's suffix.
+        sock_dir = Path(tempfile.mkdtemp(
+            dir=root,
+            prefix=f"{_SOCKET_DIRECTORY_PREFIX}{secrets.token_hex(8)}-",
+        ))
+        os.chmod(sock_dir, 0o700)
+        sock_dir_stat = os.lstat(sock_dir)
+        if (
+            not stat.S_ISDIR(sock_dir_stat.st_mode)
+            or sock_dir_stat.st_uid != os.getuid()
+            or stat.S_IMODE(sock_dir_stat.st_mode) != 0o700
+        ):
+            raise CredentialIsolationSetupError(_SOCKET_ROOT_FAILURE)
+        socket_path = sock_dir / _SOCKET_FILE_NAME
+        if _socket_path_bytes(socket_path) > _MAX_UDS_PATH_BYTES:
+            raise CredentialIsolationSetupError(_SOCKET_PATH_FAILURE)
+        return sock_dir, socket_path
+    except CredentialIsolationSetupError:
+        _cleanup_socket_location(sock_dir)
+        raise
+    except OSError as exc:
+        _cleanup_socket_location(sock_dir)
+        raise CredentialIsolationSetupError(_SOCKET_ROOT_FAILURE) from exc
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -220,11 +320,6 @@ class LLMDispatcher:
         creds: Optional[CredentialStore] = None,
     ) -> None:
         self.run_id = run_id
-        # TTL/budget resolution order: explicit caller arg →
-        # ``RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S`` / ``..._BUDGET`` env →
-        # module default. Operators on long kernel-scale runs can
-        # bump TTL without code edits; tests can pass a tiny value
-        # via the call site.
         self._token_ttl_s = (
             token_ttl_s
             if token_ttl_s is not None
@@ -241,52 +336,48 @@ class LLMDispatcher:
                 _TOKEN_DEFAULT_BUDGET,
             )
         )
-
         self._creds = creds or CredentialStore()
         self._rules: dict[str, ProviderRule] = build_rules(self._creds)
-
         self._tokens: dict[str, _TokenRecord] = {}
         self._tokens_lock = threading.Lock()
 
-        # L1 — filesystem isolation.
-        self._sock_dir = Path(tempfile.mkdtemp(prefix=f"raptor-llm-{run_id}-"))
-        # nosemgrep: python.lang.security.audit.insecure-file-permissions
-        # 0o700 = owner-only — the socket lives here and must not be
-        # group/other-readable on a multi-user host.
-        os.chmod(self._sock_dir, 0o700)
-        self.socket_path = self._sock_dir / "llm.sock"
-
-        # Audit log
         self._audit_path = audit_path
         self._audit_lock = threading.Lock()
-
-        # Shutdown is wired to BOTH the context-manager exit / explicit
-        # ``shutdown()`` call AND an ``atexit`` hook (see lifecycle.py).
-        # The atexit hook fires at interpreter teardown — under pytest,
-        # after the capture streams are already closed — so a second
-        # ``shutdown()`` that did real work (rmdir on the already-removed
-        # dir, plus an audit log line) raised FileNotFoundError and then
-        # cascaded into "I/O operation on closed file" logging errors.
-        # Guard makes shutdown idempotent: the second call is a no-op.
         self._shutdown_lock = threading.Lock()
         self._shutdown_done = False
+        self._sock_dir: Optional[Path] = None
+        self.socket_path: Optional[Path] = None
+        self._server = None
+        self._thread = None
 
-        # Init may fail past this point (bind error, thread start
-        # failure). On failure the tempdir would otherwise leak.
         try:
+            self._sock_dir, self.socket_path = _new_socket_location()
             self._init_server(run_id)
-        except Exception:
-            # Best-effort cleanup so /tmp/raptor-llm-* doesn't
-            # accumulate after init failures.
-            try:
-                self.socket_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            try:
-                self._sock_dir.rmdir()
-            except OSError:
-                pass
+        except CredentialIsolationSetupError:
+            self._cleanup_partial_initialization()
             raise
+        except OSError as exc:
+            self._cleanup_partial_initialization()
+            raise CredentialIsolationSetupError(_SOCKET_BIND_FAILURE) from exc
+        except Exception as exc:
+            self._cleanup_partial_initialization()
+            raise CredentialIsolationSetupError(_SOCKET_STARTUP_FAILURE) from exc
+
+    def _cleanup_partial_initialization(self) -> None:
+        """Close a partially bound server before removing its private directory."""
+        server = self._server
+        thread = self._thread
+        if server is not None:
+            if thread is not None and thread.is_alive():
+                try:
+                    server.shutdown()
+                except Exception:
+                    pass
+            try:
+                server.server_close()
+            except Exception:
+                pass
+        _cleanup_socket_location(self._sock_dir)
 
     def _init_server(self, run_id: str) -> None:
         # The body below was inlined in __init__ pre-cleanup-fix; lifted
@@ -363,7 +454,11 @@ class LLMDispatcher:
             peer_pid=None, peer_uid=None,
             token_id=None, worker_label=None,
             status="ok",
-            extra={"socket": str(self.socket_path), "providers": sorted(self._rules)},
+            extra={
+                "run_id": self.run_id,
+                "socket_path_bytes": _socket_path_bytes(self.socket_path),
+                "providers": sorted(self._rules),
+            },
         ))
 
     # ---- public API ----

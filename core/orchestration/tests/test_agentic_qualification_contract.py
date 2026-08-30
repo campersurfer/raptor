@@ -14,6 +14,10 @@ import pytest
 import raptor_agentic
 from core.llm.config import ModelConfig
 from core.orchestration.agentic_passes import PrepassResult
+from core.orchestration.qualification import (
+    discover_active_foundation_qualifications,
+    select_active_foundation_qualification,
+)
 
 
 _MODEL = ModelConfig(provider="gemini", model_name="gemini-2.5-flash")
@@ -44,6 +48,130 @@ def _main_patches(out_dir: Path):
         patch("core.sage.hooks.recall_context_for_scan", return_value=[]),
         patch("packages.llm_analysis.detect_llm_availability", return_value={}),
     ]
+
+
+def _qualified_foundation_record() -> dict:
+    commit = "a" * 40
+    tree = "b" * 40
+    digest = "c" * 64
+    semgrep = {
+        "scanner_exit_code": 0,
+        "packs_dispatched": 16,
+        "packs_succeeded": 16,
+        "packs_failed": 0,
+        "combined_sarif_valid": True,
+        "sandbox_engagement": "engaged",
+    }
+    return {
+        "schema_version": 1,
+        "record_kind": "foundation_raptor_qualification",
+        "immutable": True,
+        "status": "qualified",
+        "promotable": True,
+        "superseded_by": None,
+        "qualified_candidate": {
+            "branch": "repair/minimal-cpp-qualification-20260830",
+            "commit": commit,
+            "tree": tree,
+        },
+        "execution": {"commit": commit, "tree": tree},
+        "direct_semgrep_qualification": {
+            "artifact": "direct.json",
+            "artifact_sha256": digest,
+            "execution_commit": commit,
+            "execution_tree": tree,
+            **semgrep,
+        },
+        "integrated_agentic_qualification": {
+            "artifact": "integrated.json",
+            "artifact_sha256": digest,
+            "execution_commit": commit,
+            "execution_tree": tree,
+            "agentic_exit_code": 0,
+            "provider": "gemini",
+            "model": "gemini-2.5-flash",
+            "provider_turn_count": 1,
+            "scanner_started": True,
+            "understand_prepass": {
+                "ran": True,
+                "terminal_call_count": 1,
+                "context_map_valid": True,
+                "semantic_complete": True,
+            },
+            "semgrep": semgrep,
+        },
+        "consumed_artifact_hashes": {
+            "direct.json": digest,
+            "integrated.json": digest,
+        },
+    }
+
+
+def _write_qualification(path: Path, record: dict) -> Path:
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+def test_historical_qualification_records_are_not_discoverable(tmp_path):
+    source_dir = Path(__file__).resolve().parents[3] / "qualification"
+    names = (
+        "foundation-raptor-qualification-20260830.json",
+        "minimal-cpp-direct-semgrep-qualification.json",
+        "minimal-cpp-agentic-qualification-failure-20260830.json",
+        "minimal-cpp-semgrep-diagnostic.json",
+    )
+    for name in names:
+        (tmp_path / name).write_text((source_dir / name).read_text(), encoding="utf-8")
+
+    assert discover_active_foundation_qualifications(tmp_path) == ()
+    assert select_active_foundation_qualification(tmp_path) is None
+
+
+def test_exactly_one_active_foundation_qualification_is_discoverable(tmp_path):
+    record = _qualified_foundation_record()
+    path = _write_qualification(tmp_path / "active.json", record)
+
+    assert discover_active_foundation_qualifications(tmp_path) == (path,)
+    assert select_active_foundation_qualification(tmp_path) == path
+
+
+def test_revoked_failed_incomplete_and_misbound_records_are_unselectable(tmp_path):
+    revoked = _qualified_foundation_record()
+    revoked.update({
+        "status": "revoked",
+        "promotable": False,
+        "invalidation_reason": "stale",
+        "invalidated_by_commit": "d" * 40,
+    })
+    failed = {
+        "schema_version": 1,
+        "record_kind": "minimal_cpp_agentic_qualification_failure",
+        "status": "failed",
+        "promotable": False,
+    }
+    incomplete = _qualified_foundation_record()
+    incomplete["direct_semgrep_qualification"]["packs_succeeded"] = 15
+    misbound = _qualified_foundation_record()
+    misbound["integrated_agentic_qualification"]["execution_tree"] = "d" * 40
+
+    for name, record in (
+        ("revoked.json", revoked),
+        ("failed.json", failed),
+        ("incomplete.json", incomplete),
+        ("misbound.json", misbound),
+    ):
+        _write_qualification(tmp_path / name, record)
+
+    assert discover_active_foundation_qualifications(tmp_path) == ()
+    assert select_active_foundation_qualification(tmp_path) is None
+
+
+def test_multiple_active_foundation_qualifications_fail_closed(tmp_path):
+    _write_qualification(tmp_path / "first.json", _qualified_foundation_record())
+    _write_qualification(tmp_path / "second.json", _qualified_foundation_record())
+
+    assert len(discover_active_foundation_qualifications(tmp_path)) == 2
+    assert select_active_foundation_qualification(tmp_path) is None
 
 
 def test_threat_model_requires_explicit_model(tmp_path):
@@ -106,6 +234,19 @@ def test_zero_terminal_context_map_fails_before_scanner(tmp_path):
         "failure_stage": "understand_prepass",
     }
     assert not popen.called
+
+
+def test_model_resolution_failure_remains_distinct_from_isolation_startup():
+    summary = raptor_agentic.build_understand_prepass_summary(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        prepass_result=PrepassResult(ran=False),
+        model_resolved=False,
+    )
+
+    assert summary["failure_stage"] == "model_resolution"
+    assert summary["failure_class"] == "model_resolution_failed"
+    assert summary["failure_class"] != "credential_isolation_socket_path_invalid"
 
 
 def test_successful_canonical_prepass_enters_materialization(tmp_path):

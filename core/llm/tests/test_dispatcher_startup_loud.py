@@ -19,6 +19,7 @@ happens.
 
 from __future__ import annotations
 
+import json
 import importlib
 import io
 import sys
@@ -152,3 +153,44 @@ def test_dispatcher_failure_is_idempotent_within_one_process(
 
     assert first is None
     assert second is None
+
+def test_required_isolation_persists_bounded_socket_startup_failure(
+    fresh_raptor_module, monkeypatch, tmp_path,
+):
+    """A dispatcher setup failure must not look like model resolution."""
+    from core.llm.dispatcher.server import CredentialIsolationSetupError
+
+    raptor = fresh_raptor_module
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION", "1")
+
+    with mock.patch(
+        "core.llm.dispatcher.server.LLMDispatcher",
+        side_effect=CredentialIsolationSetupError(
+            "credential_isolation_socket_path_invalid",
+        ),
+    ), mock.patch.object(raptor.subprocess, "run") as direct_run:
+        assert raptor._run_script(
+            Path("raptor_agentic.py"),
+            [
+                "--repo", "opaque-fixture",
+                "--out", str(out_dir),
+                "--model", "gemini-2.5-flash",
+            ],
+        ) == 2
+
+    assert not direct_run.called
+    payload = json.loads((out_dir / "credential-isolation-startup.json").read_text())
+    assert payload == {
+        "schema_version": 1,
+        "record_kind": "credential_isolation_startup_failure",
+        "requested_provider": "gemini",
+        "requested_model": "gemini-2.5-flash",
+        "provider_turn_count": 0,
+        "scanner_started": False,
+        "failure_stage": "credential_isolation_startup",
+        "failure_class": "credential_isolation_socket_path_invalid",
+    }
+    rendered = json.dumps(payload, sort_keys=True)
+    assert str(out_dir) not in rendered
+    assert "opaque-fixture" not in rendered

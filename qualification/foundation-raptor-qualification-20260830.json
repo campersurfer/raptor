@@ -2,6 +2,11 @@
   "schema_version": 1,
   "record_kind": "foundation_raptor_qualification",
   "immutable": true,
+  "status": "revoked",
+  "promotable": false,
+  "invalidation_reason": "The claimed integrated success predates the fail-closed SARIF repair in 66698406db0cb441a8ce09e6ec59c85ec7ec9ec9 and is not bound to the frozen execution commit.",
+  "invalidated_by_commit": null,
+  "superseded_by": null,
   "qualified_candidate": {
     "branch": "repair/minimal-cpp-qualification-20260830",
     "commit": "8f994e155085bfe2a24f8f0babc1c89c97484eb9",

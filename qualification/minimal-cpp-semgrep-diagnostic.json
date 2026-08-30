@@ -1,6 +1,9 @@
 {
   "schema_version": 1,
   "record_kind": "historical_minimal_cpp_semgrep_diagnostic",
+  "status": "historical_failure",
+  "promotable": false,
+  "historical": true,
   "raptor_commit": "21df56c74857ba86a68338ef58e54af4861ad2f7",
   "prior_output_status": "not_retained",
   "prior_full_redacted_argv_status": "not_retained",

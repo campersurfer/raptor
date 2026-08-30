@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "record_kind": "historical_uds_socket_path_red_reproduction",
+  "status": "historical_failure",
+  "promotable": false,
+  "execution": {
+    "commit": "8b6d1f2624b428adfa8e4330b12b5285bf9680ab",
+    "tree": "e540295782026c56258e3ae2110c8f9fdf7c2f93"
+  },
+  "test": "core/llm/dispatcher/tests/test_dispatcher.py::TestE2ECredentialIsolation::test_long_ambient_tmpdir_and_multibyte_run_id_bind_uds",
+  "inputs": {
+    "long_nested_run_directory": true,
+    "long_run_directory_basename": true,
+    "long_ambient_tmpdir": true,
+    "encoded_byte_boundary": true,
+    "multibyte_run_id": true,
+    "actual_dispatcher_bind": true,
+    "platform_contract": "darwin-compatible AF_UNIX"
+  },
+  "result": {
+    "exit_code": 1,
+    "failure_class": "af_unix_socket_path_too_long"
+  },
+  "retention": {
+    "absolute_paths": "not_persisted",
+    "raw_output": "not_persisted"
+  }
+}

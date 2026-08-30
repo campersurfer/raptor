@@ -16,6 +16,8 @@ import os
 import socket
 import stat
 import sys
+import tempfile
+from pathlib import Path
 import threading
 import time
 
@@ -24,7 +26,9 @@ import pytest
 
 from core.llm.dispatcher.auth import CredentialStore
 from core.llm.dispatcher.server import (
+    CredentialIsolationSetupError,
     LLMDispatcher,
+    _MAX_UDS_PATH_BYTES,
     _TOKEN_HEADER,
     _peer_uid,
 )
@@ -101,13 +105,56 @@ class TestLayer1FilesystemIsolation:
         assert mode & (stat.S_IRGRP | stat.S_IROTH | stat.S_IWGRP | stat.S_IWOTH) == 0
 
     def test_socket_dir_is_inside_a_per_run_tempdir(self, dispatcher):
-        assert dispatcher._sock_dir.name.startswith("raptor-llm-test-")
+        assert dispatcher._sock_dir.name.startswith("raptor-llm-")
+        assert dispatcher.run_id not in dispatcher._sock_dir.name
 
     def test_shutdown_removes_socket_dir(self, fake_creds):
         d = LLMDispatcher(run_id="ephemeral", creds=fake_creds, token_ttl_s=60)
         sock_dir = d._sock_dir
         d.shutdown()
         assert not sock_dir.exists()
+
+
+class TestCredentialIsolationSocketSetup:
+
+    def test_untrusted_socket_root_fails_closed(self, fake_creds, monkeypatch, tmp_path):
+        root = tmp_path / "untrusted-root"
+        root.mkdir(mode=0o755)
+        root.chmod(0o755)
+        monkeypatch.setattr(
+            "core.llm.dispatcher.server._controlled_socket_root",
+            lambda: root,
+        )
+
+        with pytest.raises(CredentialIsolationSetupError) as exc:
+            LLMDispatcher(run_id="root-rejection", creds=fake_creds)
+
+        assert exc.value.failure_stage == "credential_isolation_startup"
+        assert exc.value.failure_class == "credential_isolation_socket_root_invalid"
+        assert str(root) not in str(exc.value)
+        assert list(root.iterdir()) == []
+
+    def test_partial_initialization_removes_socket_directory(
+        self, fake_creds, monkeypatch,
+    ):
+        root = Path(tempfile.mkdtemp(prefix="raptor-test-", dir="/tmp"))
+        try:
+            monkeypatch.setattr(
+                "core.llm.dispatcher.server._controlled_socket_root",
+                lambda: root,
+            )
+
+            def fail_thread_start(_self):
+                raise RuntimeError("test-only thread-start failure")
+
+            monkeypatch.setattr(threading.Thread, "start", fail_thread_start)
+            with pytest.raises(CredentialIsolationSetupError) as exc:
+                LLMDispatcher(run_id="partial-init", creds=fake_creds)
+
+            assert exc.value.failure_class == "credential_isolation_startup_failed"
+            assert list(root.iterdir()) == []
+        finally:
+            root.rmdir()
 
 
 # ---------------------------------------------------------------------------
@@ -387,14 +434,15 @@ class TestE2ECredentialIsolation:
     assert (a) the request reaches the upstream, (b) the worker's
     dummy auth header is stripped, (c) the parent's real key is
     injected, (d) the response streams back unchanged."""
-
-    def _setup(self, fake_creds, tmp_path):
+    def _setup(self, fake_creds, tmp_path, *, run_id: str = "e2e"):
         upstream = _CaptiveUpstream()
-        d = LLMDispatcher(
-            run_id="e2e", creds=fake_creds,
+        try:
+            d = LLMDispatcher(run_id=run_id, creds=fake_creds,
             audit_path=tmp_path / "audit.jsonl",
-            token_ttl_s=3600, token_budget=100,
-        )
+            token_ttl_s=3600, token_budget=100,)
+        except Exception:
+            upstream.shutdown()
+            raise
         # Rewrite the rule to point at our captive server. The rule
         # is a frozen dataclass, so swap the whole entry.
         from core.llm.dispatcher.auth import ProviderRule
@@ -406,6 +454,66 @@ class TestE2ECredentialIsolation:
             strip_request_headers=original.strip_request_headers,
         )
         return d, upstream
+    def test_long_ambient_tmpdir_and_multibyte_run_id_bind_uds(
+        self, fake_creds, monkeypatch, tmp_path,
+    ):
+        """Bind and use the actual UDS despite hostile-looking path inputs."""
+        ambient_tmp = tmp_path
+        for component in (
+            "ambient-" + "a" * 72,
+            "nested-" + "b" * 72,
+        ):
+            ambient_tmp /= component
+        ambient_tmp.mkdir(parents=True)
+
+        run_parent = tmp_path / "runs" / ("segment-" + "c" * 72)
+        run_name = "run-" + "d" * 128 + "-\N{ROCKET}"
+        run_dir = run_parent / run_name
+        run_dir.mkdir(parents=True)
+        assert len(os.fsencode(run_dir.name)) > len(run_dir.name)
+
+        monkeypatch.setenv("TMPDIR", str(ambient_tmp))
+        monkeypatch.setattr(tempfile, "tempdir", None)
+
+        try:
+            dispatcher, upstream = self._setup(
+                fake_creds, tmp_path, run_id=run_dir.name,
+            )
+        except OSError as exc:
+            if exc.errno is None and "AF_UNIX path too long" not in str(exc):
+                raise
+            pytest.fail("dispatcher rejected the constructed AF_UNIX socket path")
+
+        sock_dir = dispatcher._sock_dir
+        try:
+            assert len(os.fsencode(dispatcher.socket_path)) <= _MAX_UDS_PATH_BYTES
+            assert run_dir.name not in str(dispatcher.socket_path)
+            assert dispatcher.run_id == run_dir.name
+            assert stat.S_IMODE(sock_dir.stat().st_mode) == 0o700
+            assert stat.S_IMODE(dispatcher.socket_path.stat().st_mode) == 0o600
+            assert dispatcher._server.address_family == socket.AF_UNIX
+
+            _, token_fd = dispatcher.allocate_worker(label="long-path-worker")
+            try:
+                token = os.read(token_fd, 128).decode().strip()
+            finally:
+                os.close(token_fd)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with httpx.Client(transport=transport, timeout=10.0) as client:
+                response = client.post(
+                    "http://_/anthropic/v1/messages",
+                    headers={_TOKEN_HEADER: token, "Content-Type": "application/json"},
+                    content=b'{"model":"claude-3-haiku","messages":[]}',
+                )
+            assert response.status_code == 200
+            start_event = next(event for event in _read_audit(dispatcher) if event["event"] == "server.start")
+            assert start_event["run_id"] == run_dir.name
+            assert start_event["socket_path_bytes"] == len(os.fsencode(dispatcher.socket_path))
+            assert "socket" not in start_event
+        finally:
+            dispatcher.shutdown()
+            upstream.shutdown()
+        assert not sock_dir.exists()
 
     def test_e2e_credentials_injected_dummy_stripped(self, fake_creds, tmp_path):
         d, upstream = self._setup(fake_creds, tmp_path)

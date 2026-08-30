@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 # raptor.py -> repo root.
 # Belt + braces against subprocess invocation under a sandboxed env
@@ -626,6 +627,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
 _TRUST_REPO_SEEN = False
 
 _active_dispatcher = None
+_last_dispatcher_startup_failure = None
 
 
 def _get_or_start_dispatcher():
@@ -636,7 +638,7 @@ def _get_or_start_dispatcher():
     callers may opt into an environment-key fallback, but callers that set
     ``RAPTOR_REQUIRE_CREDENTIAL_ISOLATION=1`` fail closed instead.
     """
-    global _active_dispatcher
+    global _active_dispatcher, _last_dispatcher_startup_failure
     if _active_dispatcher is not None:
         return _active_dispatcher
     try:
@@ -668,8 +670,16 @@ def _get_or_start_dispatcher():
             creds=creds,
         )
         atexit.register(_active_dispatcher.shutdown)
+        _last_dispatcher_startup_failure = None
         return _active_dispatcher
     except Exception as exc:
+        failure_class = getattr(exc, "failure_class", None)
+        if not (
+            isinstance(failure_class, str)
+            and failure_class.startswith("credential_isolation_")
+        ):
+            failure_class = "credential_isolation_startup_failed"
+        _last_dispatcher_startup_failure = failure_class
         # Callers that request credential isolation treat this as a hard
         # failure in _run_script. Legacy callers retain their documented
         # fallback, so keep the failure visible either way.
@@ -677,7 +687,8 @@ def _get_or_start_dispatcher():
         import sys as _sys
         msg = (
             f"raptor.py: credential-isolation dispatcher failed to "
-            f"start ({type(exc).__name__}: {exc})."
+            f"start ({type(exc).__name__}: {exc}). Phase C requires dispatcher auth; "
+            "credential-isolated workers will not receive direct provider credentials."
         )
         _sys.stderr.write(msg + "\n")
         _sys.stderr.flush()
@@ -686,6 +697,53 @@ def _get_or_start_dispatcher():
             exc,
         )
         return None
+
+
+def _argument_value(args: list, name: str) -> Optional[str]:
+    """Read one bounded CLI value without persisting its source path."""
+    prefix = f"{name}="
+    for index, arg in enumerate(args):
+        if arg == name and index + 1 < len(args):
+            value = args[index + 1]
+            return value if isinstance(value, str) and value else None
+        if isinstance(arg, str) and arg.startswith(prefix):
+            value = arg[len(prefix):]
+            return value or None
+    return None
+
+
+def _requested_provider_for_model(model: Optional[str]) -> Optional[str]:
+    """Preserve the requested Gemini identity without resolving a provider."""
+    if model is not None and model.startswith("gemini-"):
+        return "gemini"
+    return None
+
+
+def _write_credential_isolation_startup_failure(args: list, failure_class: str) -> None:
+    """Persist a bounded pre-dispatch failure contract when an output was requested."""
+    output_root = _argument_value(args, "--out")
+    requested_model = _argument_value(args, "--model")
+    if output_root is None:
+        return
+    try:
+        from core.json import save_json
+
+        out_dir = Path(output_root)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        save_json(out_dir / "credential-isolation-startup.json", {
+            "schema_version": 1,
+            "record_kind": "credential_isolation_startup_failure",
+            "requested_provider": _requested_provider_for_model(requested_model),
+            "requested_model": requested_model,
+            "provider_turn_count": 0,
+            "scanner_started": False,
+            "failure_stage": "credential_isolation_startup",
+            "failure_class": failure_class,
+        })
+    except Exception:
+        # The caller remains fail-closed even if its requested output cannot
+        # be materialized. Never emit a path or re-enable a credential fallback.
+        return
 
 
 def _run_script(script_path: Path, args: list) -> int:
@@ -738,6 +796,11 @@ def _run_script(script_path: Path, args: list) -> int:
             )
             return proc.wait()
         if os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") == "1":
+            _write_credential_isolation_startup_failure(
+                args,
+                _last_dispatcher_startup_failure
+                or "credential_isolation_startup_failed",
+            )
             print(
                 "✗ Credential-isolation dispatcher unavailable; refusing "
                 "environment credential fallback.",
