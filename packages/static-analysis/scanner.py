@@ -60,8 +60,8 @@ def _bounded_diagnostic_tail(value: object, limit: int = _MAX_SEMGREP_DIAGNOSTIC
     """Return a bounded stderr tail without credentials or private paths."""
     text = str(value or "")
     text = _SENSITIVE_PROXY_HEADER.sub("<redacted-header>", text)
-    text = _SENSITIVE_DIAGNOSTIC_VALUE.sub("<redacted>", text)
     text = _SENSITIVE_BEARER_VALUE.sub("<redacted-bearer>", text)
+    text = _SENSITIVE_DIAGNOSTIC_VALUE.sub("<redacted>", text)
     text = _PRIVATE_PATH.sub("<runtime-path>", text)
     text = "".join(ch if ch in "\n\t" or ord(ch) >= 32 else "?" for ch in text)
     return text[-limit:]
@@ -131,7 +131,7 @@ def _sarif_is_acceptable(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        return validate_sarif(path) is not False
+        return validate_sarif(path) is True
     except Exception:  # noqa: BLE001 - diagnostic persistence must not fail scans
         return False
 
@@ -254,6 +254,8 @@ def build_semgrep_run_summary(
 def write_semgrep_run_summary(**kwargs: Any) -> dict[str, object]:
     """Persist the scanner's bounded diagnostic contract atomically."""
     summary = build_semgrep_run_summary(**kwargs)
+    if kwargs.get("failure_class") is None:
+        summary["aggregate_exit_code"] = 4 if summary["all_semgrep_failed"] else 0
     save_json(Path(kwargs["out_dir"]) / "semgrep-run-summary.json", summary)
     return summary
 
@@ -2458,6 +2460,7 @@ def main():
                 aggregate_exit_code=4 if all_semgrep_failed else 0,
                 sandbox_engagement_state="engaged",
             )
+            all_semgrep_failed = bool(semgrep_summary["all_semgrep_failed"])
             metrics["semgrep_run_summary"] = "semgrep-run-summary.json"
             save_json(out_dir / "scan_metrics.json", metrics)
             semgrep_summary_written = True

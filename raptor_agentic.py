@@ -62,8 +62,8 @@ def _bounded_qualification_diagnostic(value: object) -> str:
     """Persist a short scanner/prepass diagnostic without private values."""
     text = str(value or "")
     text = _QUALIFICATION_SENSITIVE_HEADER.sub("<redacted-header>", text)
-    text = _QUALIFICATION_SENSITIVE_VALUE.sub("<redacted>", text)
     text = _QUALIFICATION_SENSITIVE_BEARER_VALUE.sub("<redacted-bearer>", text)
+    text = _QUALIFICATION_SENSITIVE_VALUE.sub("<redacted>", text)
     text = _QUALIFICATION_PRIVATE_PATH.sub("<runtime-path>", text)
     text = "".join(ch if ch in "\n\t" or ord(ch) >= 32 else "?" for ch in text)
     return text[-_MAX_QUALIFICATION_DIAGNOSTIC_CHARS:]
@@ -252,7 +252,7 @@ def _semgrep_artifact_state(scan_dir: Path) -> tuple[bool, bool]:
     if combined.is_file():
         try:
             from core.sarif.parser import validate_sarif
-            combined_valid = validate_sarif(combined) is not False
+            combined_valid = validate_sarif(combined) is True
         except Exception:  # noqa: BLE001 - artefact validation must fail closed
             combined_valid = False
     metrics = scan_dir / "scan_metrics.json"

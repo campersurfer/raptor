@@ -236,7 +236,7 @@ def test_semgrep_failure_persists_bounded_pack_diagnostics(tmp_path):
         payload = raptor_agentic.persist_agentic_semgrep_failure(
             out_dir=out_dir,
             return_code=4,
-            stdout="Bearer top-secret-value",
+            stdout="request failed: Authorization: Bearer top-secret-value",
             stderr="/private/var/folders/abc/opaque-fixture",
         )
 
@@ -254,3 +254,57 @@ def test_semgrep_failure_persists_bounded_pack_diagnostics(tmp_path):
     assert "/private/var/folders" not in rendered
     assert "opaque-fixture" not in rendered
     fail_run.assert_called_once()
+
+
+def test_skipped_sarif_validation_is_rejected(tmp_path):
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "combined.sarif").write_text(
+        '{"version":"2.1.0","runs":[]}', encoding="utf-8",
+    )
+    (scan_dir / "scan_metrics.json").write_text("{}", encoding="utf-8")
+
+    with patch("core.sarif.parser.validate_sarif", return_value=None):
+        assert raptor_agentic._semgrep_artifact_state(scan_dir) == (False, True)
+
+
+def test_agentic_semgrep_success_rejects_skipped_sarif_validation(tmp_path):
+    out_dir = tmp_path / "out"
+    scan_dir = out_dir / "scan"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "semgrep-run-summary.json").write_text(json.dumps({
+        "schema_version": 1,
+        "scanner": {},
+        "packs_dispatched": 1,
+        "packs_succeeded": 1,
+        "packs_failed": 0,
+        "all_semgrep_failed": False,
+        "aggregate_exit_code": 0,
+        "failure_class": None,
+        "packs": [{
+            "pack_name": "category_auth",
+            "config_kind": "local_directory",
+            "config_sha256": None,
+            "raw_exit_code": 0,
+            "sarif_exists": True,
+            "sarif_valid": True,
+            "stderr_class": "none",
+            "failure_class": None,
+            "bounded_stderr_tail": "",
+            "sandbox_denial_count": 0,
+            "proxy_event_count": 0,
+        }],
+        "combined_sarif_exists": True,
+        "combined_sarif_valid": True,
+        "sandbox_engagement": {"state": "engaged", "denial_count": 0},
+    }), encoding="utf-8")
+    (scan_dir / "combined.sarif").write_text(
+        '{"version":"2.1.0","runs":[]}', encoding="utf-8",
+    )
+    (scan_dir / "scan_metrics.json").write_text("{}", encoding="utf-8")
+
+    with patch("core.sarif.parser.validate_sarif", return_value=None):
+        summary, error = raptor_agentic.validate_agentic_semgrep_success(out_dir)
+
+    assert summary is None
+    assert error == "scanner_artifact_invalid"

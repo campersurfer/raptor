@@ -48,7 +48,7 @@ class TestSemgrepRunSummary:
             "category_auth",
             -1,
             "SBPL string contains control character at /private/var/folders/abc/opaque-fixture\n"
-            "Bearer top-secret-value",
+            "request failed: Authorization: Bearer top-secret-value",
         )
         (tmp_path / ".sandbox-denials.jsonl").write_text("{}\n{}\n", encoding="utf-8")
         (tmp_path / "proxy-events.jsonl").write_text("{}\n", encoding="utf-8")
@@ -77,6 +77,28 @@ class TestSemgrepRunSummary:
 
         _scanner_mod.cleanup_per_pack_artifacts(tmp_path)
         assert (tmp_path / "semgrep-run-summary.json").is_file()
+
+    @patch.object(_scanner_mod, "validate_sarif", return_value=None)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_skipped_sarif_validation_fails_the_summary(self, _identity, _validate, tmp_path):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(tmp_path, "category_auth", 0)
+        (tmp_path / "combined.sarif").write_text(
+            '{"version":"2.1.0","runs":[]}', encoding="utf-8",
+        )
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["failure_class"] == "sarif_invalid"
+        assert summary["combined_sarif_valid"] is False
+        assert summary["all_semgrep_failed"] is True
+        assert summary["aggregate_exit_code"] == 4
 
     @patch.object(_scanner_mod, "validate_sarif", return_value=True)
     @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
