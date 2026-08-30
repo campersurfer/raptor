@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "record_kind": "qualification_evidence_correction",
+  "immutable": true,
+  "promotable": false,
+  "status": "corrected_historical_metadata",
+  "affected_record": {
+    "path": "qualification/minimal-cpp-direct-semgrep-qualification-20260830-repaired.json",
+    "record_kind": "minimal_cpp_direct_semgrep_qualification",
+    "promotable": false
+  },
+  "corrections": {
+    "sarif_validation.canonical_schema": {
+      "incorrect_recorded_value": "core/schemas/sarif-2.1.0.json",
+      "corrected_value": "engine/schemas/sarif-2.1.0.json",
+      "unchanged_schema_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "scan_artifacts.manifest_schema_version": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "scan_artifacts.metrics_schema_version": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    }
+  }
+}

@@ -719,8 +719,14 @@ def _requested_provider_for_model(model: Optional[str]) -> Optional[str]:
     return None
 
 
-def _write_credential_isolation_startup_failure(args: list, failure_class: str) -> None:
-    """Persist a bounded pre-dispatch failure contract when an output was requested."""
+def _write_credential_isolation_startup_failure(
+    args: list,
+    failure_class: str,
+    *,
+    dispatcher_started: bool = False,
+    failure_stage: str = "credential_isolation_startup",
+) -> None:
+    """Persist bounded pre-child failure evidence when output was requested."""
     output_root = _argument_value(args, "--out")
     requested_model = _argument_value(args, "--model")
     if output_root is None:
@@ -735,9 +741,12 @@ def _write_credential_isolation_startup_failure(args: list, failure_class: str) 
             "record_kind": "credential_isolation_startup_failure",
             "requested_provider": _requested_provider_for_model(requested_model),
             "requested_model": requested_model,
+            "dispatcher_started": dispatcher_started,
+            "child_started": False,
             "provider_turn_count": 0,
             "scanner_started": False,
-            "failure_stage": "credential_isolation_startup",
+            "direct_fallback_occurred": False,
+            "failure_stage": failure_stage,
             "failure_class": failure_class,
         })
     except Exception:
@@ -778,6 +787,29 @@ def _run_script(script_path: Path, args: list) -> int:
         from core.config import RaptorConfig
         dispatcher = _get_or_start_dispatcher()
         if dispatcher is not None:
+            # The dispatcher has started but the child must not spawn until its
+            # credential-isolated environment passes the private-temp contract.
+            try:
+                safe_env = RaptorConfig.get_safe_env(
+                    include_python_user_base=(
+                        os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1"
+                    )
+                )
+            except RuntimeError:
+                if os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1":
+                    raise
+                _write_credential_isolation_startup_failure(
+                    args,
+                    "credential_isolation_private_temp_contract_invalid",
+                    dispatcher_started=True,
+                    failure_stage="credential_isolation_private_temp_contract",
+                )
+                print(
+                    "✗ Credential-isolation private temporary directory contract "
+                    "is invalid; refusing child spawn.",
+                    file=sys.stderr,
+                )
+                return 2
             from core.llm.dispatcher.spawn import spawn_worker
             proc = spawn_worker(
                 dispatcher,
@@ -788,11 +820,7 @@ def _run_script(script_path: Path, args: list) -> int:
                 # Credential-isolated automation also keeps PYTHONUSERBASE
                 # out of the worker because its .pth files execute at Python
                 # startup before the target-facing script can constrain them.
-                env=RaptorConfig.get_safe_env(
-                    include_python_user_base=(
-                        os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1"
-                    )
-                ),
+                env=safe_env,
             )
             return proc.wait()
         if os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") == "1":

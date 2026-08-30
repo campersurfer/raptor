@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from contextlib import ExitStack
@@ -76,14 +77,18 @@ def _qualified_foundation_record() -> dict:
         },
         "execution": {"commit": commit, "tree": tree},
         "direct_semgrep_qualification": {
-            "artifact": "direct.json",
+            "artifact": "qualification/direct.json",
             "artifact_sha256": digest,
             "execution_commit": commit,
             "execution_tree": tree,
+            "sarif_schema": {
+                "path": "engine/schemas/sarif-2.1.0.json",
+                "sha256": digest,
+            },
             **semgrep,
         },
         "integrated_agentic_qualification": {
-            "artifact": "integrated.json",
+            "artifact": "qualification/integrated.json",
             "artifact_sha256": digest,
             "execution_commit": commit,
             "execution_tree": tree,
@@ -100,14 +105,50 @@ def _qualified_foundation_record() -> dict:
             },
             "semgrep": semgrep,
         },
+        "canary_binding": {
+            "mode": "fresh_standalone",
+            "artifact": "qualification/canary.json",
+            "artifact_sha256": digest,
+            "execution_commit": commit,
+            "execution_tree": tree,
+            "provider": "gemini",
+            "model": "gemini-2.5-flash",
+            "provider_turn_count": 1,
+            "terminal_call_count": 1,
+        },
+        "evidence_paths": {
+            "qualification/direct.json": digest,
+            "qualification/integrated.json": digest,
+            "qualification/canary.json": digest,
+            "engine/schemas/sarif-2.1.0.json": digest,
+        },
         "consumed_artifact_hashes": {
-            "direct.json": digest,
-            "integrated.json": digest,
+            "qualification/direct.json": digest,
+            "qualification/integrated.json": digest,
+            "qualification/canary.json": digest,
         },
     }
 
 
 def _write_qualification(path: Path, record: dict) -> Path:
+    evidence_paths = record.get("evidence_paths")
+    if isinstance(evidence_paths, dict):
+        repo_root = path.parent.parent
+        for relative in tuple(evidence_paths):
+            evidence = repo_root / relative
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text(relative, encoding="utf-8")
+            digest = hashlib.sha256(evidence.read_bytes()).hexdigest()
+            evidence_paths[relative] = digest
+            if relative == "qualification/direct.json":
+                record["direct_semgrep_qualification"]["artifact_sha256"] = digest
+            elif relative == "qualification/integrated.json":
+                record["integrated_agentic_qualification"]["artifact_sha256"] = digest
+            elif relative == "qualification/canary.json":
+                record["canary_binding"]["artifact_sha256"] = digest
+            elif relative == "engine/schemas/sarif-2.1.0.json":
+                record["direct_semgrep_qualification"]["sarif_schema"]["sha256"] = digest
+        record["consumed_artifact_hashes"] = dict(evidence_paths)
     path.write_text(json.dumps(record), encoding="utf-8")
     return path
 
@@ -128,11 +169,13 @@ def test_historical_qualification_records_are_not_discoverable(tmp_path):
 
 
 def test_exactly_one_active_foundation_qualification_is_discoverable(tmp_path):
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
     record = _qualified_foundation_record()
-    path = _write_qualification(tmp_path / "active.json", record)
+    path = _write_qualification(qualification_dir / "active.json", record)
 
-    assert discover_active_foundation_qualifications(tmp_path) == (path,)
-    assert select_active_foundation_qualification(tmp_path) == path
+    assert discover_active_foundation_qualifications(qualification_dir) == (path,)
+    assert select_active_foundation_qualification(qualification_dir) == path
 
 
 def test_revoked_failed_incomplete_and_misbound_records_are_unselectable(tmp_path):
@@ -154,24 +197,138 @@ def test_revoked_failed_incomplete_and_misbound_records_are_unselectable(tmp_pat
     misbound = _qualified_foundation_record()
     misbound["integrated_agentic_qualification"]["execution_tree"] = "d" * 40
 
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
     for name, record in (
         ("revoked.json", revoked),
         ("failed.json", failed),
         ("incomplete.json", incomplete),
         ("misbound.json", misbound),
     ):
-        _write_qualification(tmp_path / name, record)
+        _write_qualification(qualification_dir / name, record)
 
-    assert discover_active_foundation_qualifications(tmp_path) == ()
-    assert select_active_foundation_qualification(tmp_path) is None
+    assert discover_active_foundation_qualifications(qualification_dir) == ()
+    assert select_active_foundation_qualification(qualification_dir) is None
 
 
 def test_multiple_active_foundation_qualifications_fail_closed(tmp_path):
-    _write_qualification(tmp_path / "first.json", _qualified_foundation_record())
-    _write_qualification(tmp_path / "second.json", _qualified_foundation_record())
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
+    _write_qualification(qualification_dir / "first.json", _qualified_foundation_record())
+    _write_qualification(qualification_dir / "second.json", _qualified_foundation_record())
 
-    assert len(discover_active_foundation_qualifications(tmp_path)) == 2
-    assert select_active_foundation_qualification(tmp_path) is None
+    assert len(discover_active_foundation_qualifications(qualification_dir)) == 2
+    assert select_active_foundation_qualification(qualification_dir) is None
+def test_active_qualification_with_missing_schema_path_fails_closed(tmp_path):
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
+    record = _qualified_foundation_record()
+    _write_qualification(qualification_dir / "active.json", record)
+    (tmp_path / "engine/schemas/sarif-2.1.0.json").unlink()
+
+    assert discover_active_foundation_qualifications(qualification_dir) == ()
+    assert select_active_foundation_qualification(qualification_dir) is None
+
+
+def test_active_qualification_rejects_mismatched_canary_evidence(tmp_path):
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
+    path = _write_qualification(qualification_dir / "active.json", _qualified_foundation_record())
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["canary_binding"]["artifact_sha256"] = "d" * 64
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert discover_active_foundation_qualifications(qualification_dir) == ()
+
+
+def test_active_qualification_requires_canonical_sarif_schema(tmp_path):
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
+    record = _qualified_foundation_record()
+    record["direct_semgrep_qualification"]["sarif_schema"]["path"] = "qualification/direct.json"
+    _write_qualification(qualification_dir / "active.json", record)
+
+    assert discover_active_foundation_qualifications(qualification_dir) == ()
+
+
+def test_active_qualification_rejects_boolean_provider_turn_count(tmp_path):
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
+    record = _qualified_foundation_record()
+    record["canary_binding"]["provider_turn_count"] = True
+    _write_qualification(qualification_dir / "active.json", record)
+
+    assert discover_active_foundation_qualifications(qualification_dir) == ()
+
+
+def test_active_qualification_allows_explicit_hash_bound_canary_reuse(tmp_path):
+    qualification_dir = tmp_path / "qualification"
+    qualification_dir.mkdir()
+    path = _write_qualification(qualification_dir / "active.json", _qualified_foundation_record())
+    record = json.loads(path.read_text(encoding="utf-8"))
+    fresh = record["canary_binding"]
+    record["canary_binding"] = {
+        "mode": "hash_bound_reuse",
+        "artifact": fresh["artifact"],
+        "artifact_sha256": fresh["artifact_sha256"],
+        "prior_attestation": {
+            "artifact": fresh["artifact"],
+            "artifact_sha256": fresh["artifact_sha256"],
+            "execution_commit": "d" * 40,
+            "execution_tree": "e" * 40,
+            "provider": "gemini",
+            "model": "gemini-2.5-flash",
+            "provider_turn_count": 1,
+            "terminal_call_count": 1,
+        },
+        "candidate_execution": {
+            "commit": record["qualified_candidate"]["commit"],
+            "tree": record["qualified_candidate"]["tree"],
+            "candidate_code_cannot_affect_canary_outcome": True,
+        },
+    }
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert discover_active_foundation_qualifications(qualification_dir) == (path,)
+
+
+def test_checked_in_qualification_inventory_has_zero_active_records():
+    source_dir = Path(__file__).resolve().parents[3] / "qualification"
+
+    assert discover_active_foundation_qualifications(source_dir) == ()
+    assert select_active_foundation_qualification(source_dir) is None
+
+
+def test_historical_direct_evidence_correction_preserves_nonpromotable_record():
+    repo_root = Path(__file__).resolve().parents[3]
+    direct_path = repo_root / "qualification/minimal-cpp-direct-semgrep-qualification-20260830-repaired.json"
+    correction_path = repo_root / "qualification/evidence-correction-20260830-r2.json"
+    direct = json.loads(direct_path.read_text(encoding="utf-8"))
+    correction = json.loads(correction_path.read_text(encoding="utf-8"))
+
+    assert direct["promotable"] is False
+    assert correction["affected_record"]["path"] == (
+        "qualification/minimal-cpp-direct-semgrep-qualification-20260830-repaired.json"
+    )
+    schema = correction["corrections"]["sarif_validation.canonical_schema"]
+    assert schema["incorrect_recorded_value"] == "core/schemas/sarif-2.1.0.json"
+    assert schema["corrected_value"] == "engine/schemas/sarif-2.1.0.json"
+    referenced_paths = (
+        correction["affected_record"]["path"],
+        schema["corrected_value"],
+    )
+    assert all((repo_root / relative).is_file() for relative in referenced_paths)
+    assert hashlib.sha256(
+        (repo_root / schema["corrected_value"]).read_bytes()
+    ).hexdigest() == schema["unchanged_schema_sha256"]
+    for declaration in (
+        correction["corrections"]["scan_artifacts.manifest_schema_version"],
+        correction["corrections"]["scan_artifacts.metrics_schema_version"],
+    ):
+        assert declaration == {
+            "status": "not_declared",
+            "validation": "structural_contract_passed",
+        }
 
 
 def test_threat_model_requires_explicit_model(tmp_path):

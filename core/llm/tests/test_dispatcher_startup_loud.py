@@ -186,10 +186,64 @@ def test_required_isolation_persists_bounded_socket_startup_failure(
         "record_kind": "credential_isolation_startup_failure",
         "requested_provider": "gemini",
         "requested_model": "gemini-2.5-flash",
+        "dispatcher_started": False,
+        "child_started": False,
         "provider_turn_count": 0,
         "scanner_started": False,
+        "direct_fallback_occurred": False,
         "failure_stage": "credential_isolation_startup",
         "failure_class": "credential_isolation_socket_path_invalid",
+    }
+    rendered = json.dumps(payload, sort_keys=True)
+    assert str(out_dir) not in rendered
+    assert "opaque-fixture" not in rendered
+def test_required_isolation_private_temp_failure_stops_before_worker(
+    fresh_raptor_module, monkeypatch, tmp_path,
+):
+    """An invalid private-temp contract fails after dispatcher startup."""
+    raptor = fresh_raptor_module
+    out_dir = tmp_path / "out"
+    dispatcher = mock.Mock()
+    monkeypatch.setenv("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION", "1")
+    for name in ("RAPTOR_PRIVATE_TMPDIR", "TMPDIR", "TMP", "TEMP"):
+        monkeypatch.delenv(name, raising=False)
+
+    creds = mock.Mock()
+    creds.bedrock_session_warnings.return_value = []
+    with mock.patch(
+        "core.llm.dispatcher.auth.CredentialStore", return_value=creds,
+    ), mock.patch(
+        "core.llm.dispatcher.auth.seed_from_config",
+    ), mock.patch(
+        "core.llm.dispatcher.server.LLMDispatcher", return_value=dispatcher,
+    ) as dispatcher_constructor, mock.patch(
+        "core.llm.dispatcher.spawn.spawn_worker",
+    ) as worker_spawn, mock.patch.object(raptor.subprocess, "run") as direct_run:
+        assert raptor._run_script(
+            Path("raptor_agentic.py"),
+            [
+                "--repo", "opaque-fixture",
+                "--out", str(out_dir),
+                "--model", "gemini-2.5-flash",
+            ],
+        ) == 2
+
+    assert dispatcher_constructor.call_count == 1
+    worker_spawn.assert_not_called()
+    direct_run.assert_not_called()
+    payload = json.loads((out_dir / "credential-isolation-startup.json").read_text())
+    assert payload == {
+        "schema_version": 1,
+        "record_kind": "credential_isolation_startup_failure",
+        "requested_provider": "gemini",
+        "requested_model": "gemini-2.5-flash",
+        "dispatcher_started": True,
+        "child_started": False,
+        "provider_turn_count": 0,
+        "scanner_started": False,
+        "direct_fallback_occurred": False,
+        "failure_stage": "credential_isolation_private_temp_contract",
+        "failure_class": "credential_isolation_private_temp_contract_invalid",
     }
     rendered = json.dumps(payload, sort_keys=True)
     assert str(out_dir) not in rendered
