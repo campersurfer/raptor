@@ -78,6 +78,11 @@ def _provider_with_response(
     client = _FakeClient(response)
     provider._local.client = client
     return provider, client
+def _wire_config(config: dict) -> dict:
+    return types.GenerateContentConfig.model_validate(config).model_dump(
+        by_alias=True,
+        exclude_none=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +111,17 @@ def test_turn_json_text_response_returns_complete() -> None:
     assert out.content[0].text == "just a plain answer"
     assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
     config = client.models.calls[0]["config"]
-    assert "response_json_schema" not in config
-    schema = config["response_schema"]
-    assert schema["type"] == "OBJECT"
+    assert "response_schema" not in config
+    assert "response_json_schema" in config
+    schema = config["response_json_schema"]
+    assert set(schema) == {"anyOf"}
     assert {tuple(option["required"]) for option in schema["anyOf"]} == {
         ("tool", "input"),
         ("text",),
     }
+    wire_config = _wire_config(config)
+    assert "responseSchema" not in wire_config
+    assert wire_config["responseJsonSchema"] == schema
 
 
 def test_turn_without_tools_preserves_text_transport() -> None:
@@ -154,16 +163,16 @@ def test_turn_native_json_response_emits_tool_call() -> None:
     assert client.models.calls[0]["config"]["response_mime_type"] == "application/json"
     assert client.models.calls[0]["config"]["thinking_config"] == {"thinking_budget": 0}
     config = client.models.calls[0]["config"]
-    assert "response_json_schema" not in config
-    schema = config["response_schema"]
+    assert "response_schema" not in config
+    schema = config["response_json_schema"]
     tool_option = next(
         option for option in schema["anyOf"]
         if option["required"] == ["tool", "input"]
     )
     assert tool_option["properties"]["tool"]["enum"] == ["echo"]
     assert tool_option["properties"]["input"] == {
-        "type": "OBJECT",
-        "properties": {"q": {"type": "STRING"}},
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
     }
 
 
@@ -179,23 +188,34 @@ def test_native_json_schema_binds_each_tool_input() -> None:
         handler=lambda inp: str(inp["count"]),
     )
 
-    schema = GeminiProvider._tool_response_schema([_echo_tool(), other_tool])
+    echo_tool = _echo_tool()
+    tools = [echo_tool, other_tool]
+    schema = GeminiProvider._tool_response_schema(tools)
+    assert set(schema) == {"anyOf"}
     tool_options = [
         option for option in schema["anyOf"]
         if option["required"] == ["tool", "input"]
     ]
-    schemas_by_name = {
-        option["properties"]["tool"]["enum"][0]: option["properties"]["input"]
+    assert [option["properties"]["tool"]["enum"] for option in tool_options] == [
+        ["echo"], ["count"],
+    ]
+    assert [option["properties"]["input"] for option in tool_options] == [
+        echo_tool.input_schema, other_tool.input_schema,
+    ]
+    assert all(
+        option["type"] == "object"
+        and option["additionalProperties"] is False
         for option in tool_options
+    )
+    text_option = next(option for option in schema["anyOf"] if option["required"] == ["text"])
+    assert text_option == {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": False,
     }
 
-    assert schemas_by_name == {
-        "echo": _echo_tool().input_schema,
-        "count": other_tool.input_schema,
-    }
-
-
-def test_turn_serializes_terminal_map_input_without_response_json_schema() -> None:
+def test_turn_serializes_terminal_map_input_with_response_json_schema() -> None:
     terminal_map = ToolDef(
         name="submit_context_map",
         description="terminal map",
@@ -224,32 +244,17 @@ def test_turn_serializes_terminal_map_input_without_response_json_schema() -> No
 
     assert isinstance(result.content[0], ToolCall)
     config = client.models.calls[0]["config"]
-    wire_config = types.GenerateContentConfig.model_validate(config).model_dump(
-        by_alias=True,
-        exclude_none=True,
-    )
-    assert "responseJsonSchema" not in wire_config
-    assert wire_config["responseSchema"] == config["response_schema"]
-    assert "response_json_schema" not in config
+    wire_config = _wire_config(config)
+    assert "responseSchema" not in wire_config
+    assert wire_config["responseJsonSchema"] == config["response_json_schema"]
+    assert "response_schema" not in config
     option = next(
-        item for item in config["response_schema"]["anyOf"]
+        item for item in config["response_json_schema"]["anyOf"]
         if item["properties"]["tool"]["enum"] == ["submit_context_map"]
     )
-    assert option["properties"]["input"] == {
-        "type": "OBJECT",
-        "properties": {
-            "context_map": {
-                "type": "OBJECT",
-                "properties": {
-                    "sources": {"type": "ARRAY", "items": {"type": "OBJECT"}},
-                },
-                "required": ["sources"],
-                "additionalProperties": False,
-            },
-        },
-        "required": ["context_map"],
-        "additionalProperties": False,
-    }
+    assert option["properties"]["input"] == terminal_map.input_schema
+
+
 def test_turn_malformed_json_remains_an_ordinary_completion() -> None:
     p, _ = _provider_with_response("not JSON")
     out = p.turn(messages=[_user("hi")], tools=[_echo_tool()])
@@ -274,3 +279,62 @@ def test_turn_preserves_native_thinking_cost() -> None:
     assert p.call_count == 1
     assert p.total_input_tokens == 100
     assert p.total_output_tokens == 50
+
+
+def test_turn_emits_raw_response_json_schema_without_forbidden_root_type() -> None:
+    provider, client = _provider_with_response('{"tool": "echo", "input": {"q": "x"}}')
+
+    provider.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
+    config = client.models.calls[0]["config"]
+    wire_config = _wire_config(config)
+    assert "response_schema" not in config
+    assert "response_json_schema" in config
+    assert "responseSchema" not in wire_config
+    schema = wire_config["responseJsonSchema"]
+    assert set(schema) == {"anyOf"}
+
+
+def test_duplicate_tool_names_fail_closed() -> None:
+    duplicate = ToolDef(
+        name="echo",
+        description="duplicate",
+        input_schema={"type": "object"},
+        handler=lambda _input: "unused",
+    )
+
+    with pytest.raises(ValueError, match="duplicate tool name"):
+        GeminiProvider._tool_response_schema([_echo_tool(), duplicate])
+
+
+def test_unknown_tool_response_fails_closed() -> None:
+    provider, _ = _provider_with_response('{"tool": "unknown", "input": {}}')
+
+    response = provider.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
+    assert response.stop_reason is StopReason.COMPLETE
+    assert isinstance(response.content[0], TextBlock)
+
+
+def test_known_tool_with_malformed_input_fails_closed() -> None:
+    provider, _ = _provider_with_response('{"tool": "echo", "input": {"q": 1}}')
+
+    response = provider.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
+    assert response.stop_reason is StopReason.COMPLETE
+    assert isinstance(response.content[0], TextBlock)
+
+
+def test_terminal_tool_prose_cannot_masquerade_as_a_call() -> None:
+    terminal_map = ToolDef(
+        name="submit_context_map",
+        description="terminal map",
+        input_schema={"type": "object"},
+        handler=lambda _input: "unused",
+    )
+    provider, _ = _provider_with_response("submit_context_map completed")
+
+    response = provider.turn(messages=[_user("map")], tools=[terminal_map])
+
+    assert response.stop_reason is StopReason.COMPLETE
+    assert isinstance(response.content[0], TextBlock)

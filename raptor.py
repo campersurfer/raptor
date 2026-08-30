@@ -13,14 +13,15 @@ Usage:
     raptor.py <mode> [options]
 
 Available Modes:
-    scan        - Static code analysis (Semgrep + CodeQL)
-    fuzz        - Binary fuzzing with AFL++
-    web         - Web application security testing
-    agentic     - Full autonomous workflow
-    codeql      - CodeQL-only analysis
-    doctor      - Status report for local setup (no claude needed)
-    frida       - Dynamic instrumentation via Frida (alpha)
-    help        - Show detailed help for a specific mode
+    scan             - Static code analysis (Semgrep + CodeQL)
+    fuzz             - Binary fuzzing with AFL++
+    web              - Web application security testing
+    agentic          - Full autonomous workflow
+    codeql           - CodeQL-only analysis
+    semantic-canary  - Gemini context-map qualification preflight
+    doctor           - Status report for local setup (no claude needed)
+    frida            - Dynamic instrumentation via Frida (alpha)
+    help             - Show detailed help for a specific mode
 
 Examples:
     # Full autonomous workflow
@@ -1280,6 +1281,11 @@ def main():
     if mode in _HELP_RENDER_MODES and _wants_help(remaining):
         show_mode_help(mode, preamble=False)
         return 0
+
+    if mode == "semantic-canary":
+        from packages.code_understanding.semantic_canary import main as semantic_canary_main
+
+        return semantic_canary_main(remaining)
 
     # Route to appropriate mode
     mode_handlers = {

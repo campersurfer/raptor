@@ -587,10 +587,18 @@ class LLMProvider(ABC):
         if not isinstance(name, str) or not isinstance(inp, dict):
             return TextBlock(text=text), StopReason.COMPLETE
 
-        if not any(t.name == name for t in tools):
-            # Model hallucinated a tool name — surface the raw text so
-            # the loop can see what happened rather than dispatching a
-            # bogus call.
+        tool = next((candidate for candidate in tools if candidate.name == name), None)
+        if tool is None:
+            # Model hallucinated a tool name. Preserve the raw completion and
+            # never dispatch a bogus call.
+            return TextBlock(text=text), StopReason.COMPLETE
+        try:
+            import jsonschema
+
+            jsonschema.validate(instance=inp, schema=tool.input_schema)
+        except Exception:
+            # SDK schema conformance is advisory. Reject malformed inputs
+            # locally before they can reach a tool handler.
             return TextBlock(text=text), StopReason.COMPLETE
 
         import uuid as _uuid
@@ -2344,7 +2352,10 @@ class GeminiProvider(LLMProvider):
     def supports_parallel_tools(self) -> bool: return False
     @staticmethod
     def _tool_response_schema(tools: Sequence[ToolDef]) -> dict[str, Any]:
-        """Return Gemini's constrained form of the fallback wire protocol."""
+        """Return the exact raw JSON-schema envelope for Gemini tool turns."""
+        names = [tool.name for tool in tools]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate tool name in Gemini tool response schema")
         tool_options = [
             {
                 "type": "object",
@@ -2357,8 +2368,9 @@ class GeminiProvider(LLMProvider):
             }
             for tool in tools
         ]
+        # Gemini response_json_schema rejects root type beside anyOf. The
+        # branches remain closed and bind each tool to its own input schema.
         return {
-            "type": "object",
             "anyOf": [
                 *tool_options,
                 {
@@ -2391,6 +2403,7 @@ class GeminiProvider(LLMProvider):
                 **provider_specific,
             )
         del cache_control, provider_specific
+        schema = self._tool_response_schema(tools)
         tool_protocol = self._render_tool_protocol(tools) + (
             "\n\nThis Gemini turn is JSON-constrained. When no tool call is "
             'needed, respond exactly as {"text": "<final response>"}.'
@@ -2401,11 +2414,7 @@ class GeminiProvider(LLMProvider):
             "temperature": self.config.temperature,
             "max_output_tokens": max_tokens,
             "response_mime_type": "application/json",
-            # The task reports two prior HTTP 400 outcomes, but local/redacted records
-            # do not preserve a rejected-field detail; that cause is UNVERIFIED. Use the
-            # established native-SDK Schema serialization path rather than infer an
-            # undocumented JSON-Schema capability.
-            "response_schema": _schema_to_gemini(self._tool_response_schema(tools)),
+            "response_json_schema": schema,
         }
         # Gemini 2.5 Flash otherwise spends the per-turn response budget on
         # hidden reasoning and truncates the terminal context-map payload.
