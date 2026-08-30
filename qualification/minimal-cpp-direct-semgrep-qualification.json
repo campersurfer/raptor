@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "candidate_branch": "repair/minimal-cpp-qualification-20260830",
+  "raptor_commit": "21df56c74857ba86a68338ef58e54af4861ad2f7",
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_files": [
+      "CMakeLists.txt",
+      "src/main.cpp"
+    ],
+    "source_tree_sha256": "956058c3311d45e43a18a7bb45e0b5c7e6eee163f8b336f00b14185558669117"
+  },
+  "scanner_contract": {
+    "entrypoint": "packages/static-analysis/scanner.py",
+    "sandbox": "strict",
+    "codeql": false,
+    "policy_groups": [
+      "all"
+    ],
+    "output_root": "scan",
+    "scanner_exit_code": 0
+  },
+  "semgrep": {
+    "packs_dispatched": 16,
+    "packs_succeeded": 16,
+    "packs_failed": 0,
+    "combined_sarif_valid": true,
+    "sandbox_engagement": "engaged"
+  },
+  "validated_artifacts": [
+    "scan/scan-manifest.json",
+    "scan/semgrep-run-summary.json",
+    "scan/combined.sarif",
+    "scan/scan_metrics.json"
+  ],
+  "retention": {
+    "fixture_and_raw_scan_output": "ephemeral",
+    "durable_fields": "bounded qualification result only"
+  }
+}

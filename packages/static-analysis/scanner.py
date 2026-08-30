@@ -20,7 +20,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Add parent directory to path for imports
 # packages/static-analysis/scanner.py -> repo root
@@ -38,6 +38,224 @@ from core.hash import sha256_bytes, sha256_tree
 from packages import semgrep as semgrep_pkg
 
 logger = get_logger()
+
+
+_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 1
+_MAX_SEMGREP_DIAGNOSTIC_CHARS = 800
+_SENSITIVE_DIAGNOSTIC_VALUE = re.compile(
+    r"(?i)\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|"
+    r"cookie|password|secret|session(?:_id)?|token)\b\s*(?:=|:)\s*[^\s,;]+"
+)
+_SENSITIVE_BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_SENSITIVE_PROXY_HEADER = re.compile(
+    r"(?im)^(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-(?:api-key|auth(?:orization)?|token|secret))\s*:\s*[^\r\n]*$"
+)
+_PRIVATE_PATH = re.compile(
+    r"(?<!\w)/(?:Users|home|tmp|private/(?:tmp|var/folders)|var/folders)/[^\s'\"]+"
+)
+
+
+def _bounded_diagnostic_tail(value: object, limit: int = _MAX_SEMGREP_DIAGNOSTIC_CHARS) -> str:
+    """Return a bounded stderr tail without credentials or private paths."""
+    text = str(value or "")
+    text = _SENSITIVE_PROXY_HEADER.sub("<redacted-header>", text)
+    text = _SENSITIVE_DIAGNOSTIC_VALUE.sub("<redacted>", text)
+    text = _SENSITIVE_BEARER_VALUE.sub("<redacted-bearer>", text)
+    text = _PRIVATE_PATH.sub("<runtime-path>", text)
+    text = "".join(ch if ch in "\n\t" or ord(ch) >= 32 else "?" for ch in text)
+    return text[-limit:]
+
+
+def _semgrep_executable_identity() -> dict[str, object]:
+    """Capture portable, non-private identity for the configured Semgrep binary."""
+    candidate = shutil.which("semgrep") or "/opt/homebrew/bin/semgrep"
+    path = Path(candidate)
+    exists = path.is_file()
+    executable = exists and os.access(path, os.X_OK)
+    version = None
+    if executable:
+        try:
+            proc = subprocess.run(
+                [str(path), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=RaptorConfig.get_safe_env(),
+            )
+            version = _bounded_diagnostic_tail(
+                proc.stdout or proc.stderr, limit=160
+            ).strip() or None
+        except (OSError, subprocess.SubprocessError):
+            version = None
+    digest = None
+    if exists:
+        try:
+            digest = sha256_bytes(path.read_bytes())
+        except OSError:
+            digest = None
+    rendered = str(path)
+    return {
+        "basename": path.name or "semgrep",
+        "path_kind": "system" if rendered.startswith(("/usr/", "/opt/")) else "private",
+        "exists": exists,
+        "executable": executable,
+        "version": version,
+        "sha256": digest,
+    }
+
+
+def _semgrep_config_identity(config: str) -> tuple[str, Optional[str]]:
+    """Classify and hash a resolved pack without leaking its source path."""
+    path = Path(config)
+    try:
+        if path.is_file():
+            return "local_file", sha256_bytes(path.read_bytes())
+        if path.is_dir():
+            return "local_directory", sha256_tree(path)
+    except OSError:
+        return "unknown", None
+    if config.startswith(("p/", "category/")):
+        return "registry", None
+    return "unknown", None
+
+
+def _read_pack_exit(path: Path) -> Optional[int]:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _sarif_is_acceptable(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        return validate_sarif(path) is not False
+    except Exception:  # noqa: BLE001 - diagnostic persistence must not fail scans
+        return False
+
+
+def _count_jsonl_events(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
+        return 0
+
+
+def _classify_semgrep_failure(
+    raw_exit_code: Optional[int],
+    stderr_tail: str,
+    *,
+    sarif_exists: bool,
+    sarif_valid: bool,
+    config_kind: str,
+) -> Optional[str]:
+    """Map only evidenced Semgrep outcomes to a closed diagnostic class."""
+    if raw_exit_code in (0, 1) and sarif_exists and sarif_valid:
+        return None
+    text = stderr_tail.lower()
+    if "sbpl string contains control character" in text:
+        return "target_staging_error"
+    if raw_exit_code == 127 or "semgrep: command not found" in text or "no such file or directory" in text and "semgrep" in text:
+        return "semgrep_missing"
+    if raw_exit_code == 126 or "permission denied" in text and "semgrep" in text:
+        return "semgrep_not_executable"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "incompatible" in text and "semgrep" in text or "requires semgrep" in text:
+        return "incompatible_semgrep_version"
+    if "invalid config" in text or "invalid yaml" in text or "configuration is invalid" in text or "rule parse" in text:
+        return "invalid_config"
+    if "registry" in text and "cache" in text and ("missing" in text or "not found" in text):
+        return "registry_cache_missing"
+    if "registry" in text and ("denied" in text or "fetch" in text or "network" in text):
+        return "registry_fetch_denied"
+    if "sandbox" in text and ("read" in text or "landlock" in text and "read" in text):
+        return "sandbox_read_denied"
+    if "sandbox" in text or "seatbelt" in text or "sbpl" in text:
+        return "sandbox_exec_denied"
+    if "permission denied" in text and config_kind.startswith("local_"):
+        return "config_unreadable"
+    if not sarif_exists or not sarif_valid:
+        return "sarif_invalid"
+    if raw_exit_code is None:
+        return "internal_scanner_exception"
+    return "unknown"
+
+
+def build_semgrep_run_summary(
+    *,
+    out_dir: Path,
+    configs: List[Tuple[str, str]],
+    aggregate_exit_code: int,
+    sandbox_engagement_state: str,
+    failure_class: Optional[str] = None,
+) -> dict[str, object]:
+    """Build the bounded durable Semgrep outcome contract before cleanup."""
+    sandbox_denials = _count_jsonl_events(out_dir / ".sandbox-denials.jsonl")
+    proxy_events = _count_jsonl_events(out_dir / "proxy-events.jsonl")
+    packs: list[dict[str, object]] = []
+    for name, config in configs:
+        suffix = _sanitize_pack_name(name)
+        sarif = out_dir / f"semgrep_{suffix}.sarif"
+        stderr = out_dir / f"semgrep_{suffix}.stderr.log"
+        raw_exit_code = _read_pack_exit(out_dir / f"semgrep_{suffix}.exit")
+        sarif_exists = sarif.is_file()
+        sarif_valid = _sarif_is_acceptable(sarif)
+        stderr_tail = _bounded_diagnostic_tail(
+            stderr.read_text(encoding="utf-8", errors="replace")
+            if stderr.is_file() else ""
+        )
+        config_kind, config_sha256 = _semgrep_config_identity(config)
+        pack_failure = _classify_semgrep_failure(
+            raw_exit_code,
+            stderr_tail,
+            sarif_exists=sarif_exists,
+            sarif_valid=sarif_valid,
+            config_kind=config_kind,
+        )
+        packs.append({
+            "pack_name": name,
+            "config_kind": config_kind,
+            "config_sha256": config_sha256,
+            "raw_exit_code": raw_exit_code,
+            "sarif_exists": sarif_exists,
+            "sarif_valid": sarif_valid,
+            "stderr_class": pack_failure or "none",
+            "failure_class": pack_failure,
+            "bounded_stderr_tail": stderr_tail,
+            "sandbox_denial_count": sandbox_denials,
+            "proxy_event_count": proxy_events,
+        })
+    succeeded = sum(1 for pack in packs if pack["failure_class"] is None)
+    failed = len(packs) - succeeded
+    combined = out_dir / "combined.sarif"
+    return {
+        "schema_version": _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
+        "scanner": _semgrep_executable_identity(),
+        "packs_dispatched": len(packs),
+        "packs_succeeded": succeeded,
+        "packs_failed": failed,
+        "all_semgrep_failed": bool(packs) and failed == len(packs),
+        "aggregate_exit_code": aggregate_exit_code,
+        "failure_class": failure_class,
+        "packs": packs,
+        "combined_sarif_exists": combined.is_file(),
+        "combined_sarif_valid": _sarif_is_acceptable(combined),
+        "sandbox_engagement": {
+            "state": sandbox_engagement_state,
+            "denial_count": sandbox_denials,
+        },
+    }
+
+
+def write_semgrep_run_summary(**kwargs: Any) -> dict[str, object]:
+    """Persist the scanner's bounded diagnostic contract atomically."""
+    summary = build_semgrep_run_summary(**kwargs)
+    save_json(Path(kwargs["out_dir"]) / "semgrep-run-summary.json", summary)
+    return summary
 
 
 def _sarif_result_uri(result: dict) -> str:
@@ -584,6 +802,57 @@ def _sanitize_pack_name(name: str) -> str:
     mapping (both in the disallowed set, so they get replaced anyway).
     """
     return re.sub(r'[^A-Za-z0-9._-]', '_', name)
+
+
+def _build_semgrep_configs(
+    rules_dirs: List[str],
+    baseline_packs: List[Tuple[str, str]],
+    extra_configs: Optional[List[str]] = None,
+) -> List[Tuple[str, str]]:
+    """Resolve the exact Semgrep pack list once for dispatch and diagnostics."""
+    configs: List[Tuple[str, str]] = []
+    added_packs: set[str] = set()
+    for rule_dir in rules_dirs:
+        rule_path = Path(rule_dir)
+        if not rule_path.exists():
+            logger.warning(f"Rule directory not found: {rule_path}")
+            continue
+        category_name = rule_path.name
+        configs.append((f"category_{category_name}", str(rule_path)))
+        if category_name in RaptorConfig.POLICY_GROUP_TO_SEMGREP_PACK:
+            pack_name, pack_id = RaptorConfig.POLICY_GROUP_TO_SEMGREP_PACK[category_name]
+            if pack_id not in added_packs:
+                configs.append((pack_name, RaptorConfig.get_semgrep_config(pack_id)))
+                added_packs.add(pack_id)
+    for pack_name, pack_id in baseline_packs:
+        if pack_id not in added_packs:
+            configs.append((pack_name, RaptorConfig.get_semgrep_config(pack_id)))
+            added_packs.add(pack_id)
+    seen_extra: set[str] = set()
+    used_names = {name for name, _ in configs}
+    for extra in extra_configs or []:
+        if extra in seen_extra:
+            logger.warning(f"--extra-config: duplicate path dropped: {extra}")
+            continue
+        seen_extra.add(extra)
+        base = f"extra_{_sanitize_pack_name(Path(extra).name)}"
+        unique = base
+        suffix = 0
+        while unique in used_names:
+            suffix += 1
+            unique = f"{base}_{suffix}"
+        used_names.add(unique)
+        configs.append((unique, extra))
+    return configs
+
+
+def _all_semgrep_packs_failed(
+    configs: List[Tuple[str, str]],
+    failed_scans: List[str],
+) -> bool:
+    """Return whether every dispatched Semgrep pack reported failure."""
+    configured_packs = {name for name, _ in configs}
+    return bool(configured_packs) and set(failed_scans) == configured_packs
 
 
 def run(cmd, cwd=None, timeout=RaptorConfig.DEFAULT_TIMEOUT, env=None,
@@ -1868,6 +2137,12 @@ def main():
     start_time = time.time()
     tmp = Path(tempfile.mkdtemp(prefix="raptor_auto_"))
     repo_path = None
+    out_dir: Optional[Path] = None
+    semgrep_configs: List[Tuple[str, str]] = []
+    semgrep_sarifs: List[str] = []
+    semgrep_failed: List[str] = []
+    all_semgrep_failed = False
+    semgrep_summary_written = False
 
     logger.info("Starting automated code security scan")
     logger.info(f"Repository: {args.repo}")
@@ -1994,6 +2269,9 @@ def main():
                     _target_langs, _codeql_running,
                     llm_configured=_llm_configured(),
                 ))
+        semgrep_configs = _build_semgrep_configs(
+            rules_dirs, list(resolved_baseline), args.extra_config,
+        )
         logger.info("Starting Semgrep scans...")
         if args.sequential:
             # Fallback to sequential for debugging
@@ -2022,31 +2300,24 @@ def main():
                 file=sys.stderr,
             )
 
-        # CI-gate signal — "every dispatched semgrep pack failed" means
-        # the scan produced no useful output. Pre-fix this exited 0
-        # regardless: an operator running ``raptor scan`` as a pre-merge
-        # gate on a broken sandbox would silently false-pass with "0
-        # findings". Detect at the dispatch boundary (sarif_paths has
-        # one entry per dispatched pack — success or fail; failed_scans
-        # is the failure subset). When the two lengths match and packs
-        # were attempted, surface as a distinct exit code at the final
-        # sys.exit below. The reserved SANDBOX_ENGAGE_EXIT_CODE stays
-        # for the actual sandbox-engagement-failure path (raised as
-        # SandboxSetupError); ``4`` is the all-packs-failed signal.
-        all_semgrep_failed = (
-            len(semgrep_sarifs) > 0
-            and len(semgrep_failed) == len(semgrep_sarifs)
+        # Every dispatched Semgrep pack failed, so the scan cannot pass.
+        # A worker exception does not produce a SARIF path. Compare the
+        # reported failures with the immutable dispatch list instead.
+        # Exit 4 is the all-packs-failed CI signal; the reserved
+        # SANDBOX_ENGAGE_EXIT_CODE remains for sandbox-engagement failure.
+        all_semgrep_failed = _all_semgrep_packs_failed(
+            semgrep_configs,
+            semgrep_failed,
         )
         if all_semgrep_failed:
             print(
-                f"\nRAPTOR: scan produced no useful semgrep output — "
-                f"all {len(semgrep_sarifs)} dispatched pack(s) failed. "
-                f"Exiting 4 (CI-gate signal — distinct from "
-                f"sandbox-engagement-failure exit "
+                f"\nRAPTOR: scan produced no useful semgrep output — ",
+                f"all {len(semgrep_configs)} dispatched pack(s) failed. ",
+                f"Exiting 4 (CI-gate signal — distinct from ",
+                f"sandbox-engagement-failure exit ",
                 f"{SANDBOX_ENGAGE_EXIT_CODE}).",
                 file=sys.stderr,
             )
-
         # CodeQL stage (optional). --no-codeql takes precedence —
         # script-friendly so a default-flip from "off" to "on" can
         # be opted out of without code changes.
@@ -2181,6 +2452,19 @@ def main():
         # intermediate. Keep only what's useful for post-mortem of failed
         # packs (exit code + non-empty stderr + sarif-with-findings).
         try:
+            semgrep_summary = write_semgrep_run_summary(
+                out_dir=out_dir,
+                configs=semgrep_configs,
+                aggregate_exit_code=4 if all_semgrep_failed else 0,
+                sandbox_engagement_state="engaged",
+            )
+            metrics["semgrep_run_summary"] = "semgrep-run-summary.json"
+            save_json(out_dir / "scan_metrics.json", metrics)
+            semgrep_summary_written = True
+        except Exception:
+            logger.exception("scanner: failed to persist Semgrep diagnostic summary")
+            raise
+        try:
             cleanup_per_pack_artifacts(out_dir)
         except Exception as e:
             logger.debug(f"Per-pack cleanup failed (non-fatal): {e}")
@@ -2251,6 +2535,32 @@ def main():
         # the sandbox-engagement-failure exit code which is reserved
         # for the SandboxSetupError path at __main__).
         sys.exit(4 if all_semgrep_failed else 0)
+    except SandboxSetupError:
+        if out_dir is not None and not semgrep_summary_written:
+            try:
+                write_semgrep_run_summary(
+                    out_dir=out_dir,
+                    configs=semgrep_configs,
+                    aggregate_exit_code=SANDBOX_ENGAGE_EXIT_CODE,
+                    sandbox_engagement_state="failed",
+                    failure_class="sandbox_exec_denied",
+                )
+            except Exception:
+                logger.exception("scanner: failed to persist sandbox diagnostic summary")
+        raise
+    except Exception:
+        if out_dir is not None and not semgrep_summary_written:
+            try:
+                write_semgrep_run_summary(
+                    out_dir=out_dir,
+                    configs=semgrep_configs,
+                    aggregate_exit_code=1,
+                    sandbox_engagement_state="unknown",
+                    failure_class="internal_scanner_exception",
+                )
+            except Exception:
+                logger.exception("scanner: failed to persist exception diagnostic summary")
+        raise
     finally:
         if not args.keep:
             try:

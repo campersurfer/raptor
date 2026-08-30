@@ -15,6 +15,7 @@ Complete end-to-end autonomous security testing:
 """
 
 import argparse
+import re
 import os
 import subprocess
 import sys
@@ -37,6 +38,324 @@ from core.security.cc_trust import check_repo_claude_trust, set_trust_override
 
 logger = get_logger()
 
+
+_QUALIFICATION_SUMMARY_SCHEMA_VERSION = 1
+_MAX_QUALIFICATION_DIAGNOSTIC_CHARS = 800
+_TERMINAL_CALL_COUNT = re.compile(
+    r"submit_context_map must be invoked exactly once; observed (\d+)"
+)
+_QUALIFICATION_SENSITIVE_VALUE = re.compile(
+    r"(?i)\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|"
+    r"cookie|password|secret|session(?:_id)?|token)\b\s*(?:=|:)\s*[^\s,;]+"
+)
+_QUALIFICATION_SENSITIVE_BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_QUALIFICATION_SENSITIVE_HEADER = re.compile(
+    r"(?im)^(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-(?:api-key|auth(?:orization)?|token|secret))\s*:\s*[^\r\n]*$"
+)
+_QUALIFICATION_PRIVATE_PATH = re.compile(
+    r"(?<!\w)/(?:Users|home|tmp|private/(?:tmp|var/folders)|var/folders)/[^\s'\"]+"
+)
+
+
+def _bounded_qualification_diagnostic(value: object) -> str:
+    """Persist a short scanner/prepass diagnostic without private values."""
+    text = str(value or "")
+    text = _QUALIFICATION_SENSITIVE_HEADER.sub("<redacted-header>", text)
+    text = _QUALIFICATION_SENSITIVE_VALUE.sub("<redacted>", text)
+    text = _QUALIFICATION_SENSITIVE_BEARER_VALUE.sub("<redacted-bearer>", text)
+    text = _QUALIFICATION_PRIVATE_PATH.sub("<runtime-path>", text)
+    text = "".join(ch if ch in "\n\t" or ord(ch) >= 32 else "?" for ch in text)
+    return text[-_MAX_QUALIFICATION_DIAGNOSTIC_CHARS:]
+
+
+def _context_map_is_valid(prepass_result: object) -> bool:
+    """Reuse the understand contract rather than accepting map-file existence."""
+    path = getattr(prepass_result, "context_map_path", None)
+    if not isinstance(path, Path) or not path.is_file():
+        return False
+    try:
+        from core.orchestration.agentic_passes import _validate_context_map_shape
+        return _validate_context_map_shape(load_json(path)) is None
+    except Exception:  # noqa: BLE001 - qualification must fail closed
+        return False
+
+
+def _terminal_call_count(prepass_result: object, context_map_valid: bool) -> int:
+    """Expose the canonical map terminal invariant without persisting context."""
+    reason = str(getattr(prepass_result, "skipped_reason", "") or "")
+    match = _TERMINAL_CALL_COUNT.search(reason)
+    if match:
+        return int(match.group(1))
+    if bool(getattr(prepass_result, "ran", False)) and context_map_valid:
+        # default_map_dispatch returns only after enforcing exactly one call.
+        return 1
+    return 0
+
+
+def build_understand_prepass_summary(
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    prepass_result: object,
+    model_resolved: bool,
+) -> dict:
+    """Build the no-context qualification contract for an explicit map prepass."""
+    context_map_valid = _context_map_is_valid(prepass_result)
+    terminal_call_count = _terminal_call_count(prepass_result, context_map_valid)
+    ran = bool(getattr(prepass_result, "ran", False))
+    semantic_complete = (
+        model_resolved and ran and context_map_valid and terminal_call_count == 1
+    )
+    failure_class = None
+    failure_stage = None
+    if not model_resolved:
+        failure_class = "model_resolution_failed"
+        failure_stage = "model_resolution"
+    elif terminal_call_count != 1:
+        failure_class = "terminal_context_map_count"
+        failure_stage = "understand_prepass"
+    elif not context_map_valid:
+        failure_class = "context_map_invalid"
+        failure_stage = "understand_prepass"
+    elif not ran:
+        failure_class = "understand_prepass_failed"
+        failure_stage = "understand_prepass"
+    return {
+        "schema_version": _QUALIFICATION_SUMMARY_SCHEMA_VERSION,
+        "provider": provider,
+        "model": model,
+        "ran": ran,
+        "terminal_call_count": terminal_call_count,
+        "context_map_valid": context_map_valid,
+        "semantic_complete": semantic_complete,
+        "failure_class": failure_class,
+        "failure_stage": failure_stage,
+    }
+
+
+def write_understand_prepass_summary(out_dir: Path, summary: dict) -> Path:
+    """Persist only contract fields, never the context-map or provider response."""
+    path = out_dir / "understand-prepass-summary.json"
+    save_json(path, summary)
+    return path
+
+
+def _relative_run_output(out_dir: Path, value: object) -> Optional[str]:
+    """Report only run-relative artefacts, never operator or target paths."""
+    if value is None:
+        return None
+    try:
+        return str(Path(value).resolve().relative_to(out_dir.resolve()))
+    except (OSError, ValueError):
+        return None
+
+
+def _relative_run_outputs(out_dir: Path, values: list[object]) -> list[str]:
+    return [relative for value in values if (relative := _relative_run_output(out_dir, value))]
+
+_THREAT_MODEL_ARTIFACT_FIELDS = frozenset({
+    "threat_model_json", "threat_model_markdown", "threat_model_report",
+    "threat_model_lint", "threat_model_drift", "threats",
+    "candidate_sarif", "context_map",
+})
+
+
+def _sanitize_report_value(out_dir: Path, value: object) -> object:
+    """Keep persisted report metadata free of external paths and secrets."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, Path):
+        return _relative_run_output(out_dir, value)
+    if isinstance(value, str):
+        relative = _relative_run_output(out_dir, value)
+        if relative is not None:
+            return relative
+        if Path(value).is_absolute():
+            return None
+        return _bounded_qualification_diagnostic(value)
+    if isinstance(value, list):
+        return [_sanitize_report_value(out_dir, item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _sanitize_report_value(out_dir, item) for key, item in value.items()}
+    return _bounded_qualification_diagnostic(value)
+
+
+def _report_threat_model_phase(out_dir: Path, phase: object) -> dict:
+    """Return durable threat-model phase metadata with run-relative outputs."""
+    if not isinstance(phase, dict):
+        return {"enabled": False, "completed": False, "semantic_complete": False}
+    report: dict = {}
+    for key, value in phase.items():
+        if key == "stale_files":
+            report["stale_file_count"] = len(value) if isinstance(value, list) else 0
+        elif key in _THREAT_MODEL_ARTIFACT_FIELDS:
+            report[key] = _relative_run_output(out_dir, value)
+        else:
+            report[key] = _sanitize_report_value(out_dir, value)
+    return report
+
+def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
+    """Reject incomplete scanner output before any model-analysis phase starts."""
+    if not isinstance(payload, dict):
+        return "summary_not_object"
+    required = {
+        "schema_version", "packs_dispatched", "packs_succeeded", "packs_failed",
+        "all_semgrep_failed", "aggregate_exit_code", "packs",
+        "combined_sarif_exists", "combined_sarif_valid", "sandbox_engagement",
+    }
+    if not required.issubset(payload):
+        return "summary_missing_required_fields"
+    if payload.get("schema_version") != _QUALIFICATION_SUMMARY_SCHEMA_VERSION:
+        return "summary_schema_version"
+    packs = payload.get("packs")
+    if not isinstance(packs, list):
+        return "summary_packs_not_list"
+    dispatched = payload.get("packs_dispatched")
+    succeeded = payload.get("packs_succeeded")
+    failed = payload.get("packs_failed")
+    if not all(isinstance(value, int) and value >= 0 for value in (dispatched, succeeded, failed)):
+        return "summary_pack_counts_invalid"
+    if dispatched != len(packs) or succeeded + failed != dispatched:
+        return "summary_pack_counts_inconsistent"
+    if bool(payload.get("all_semgrep_failed")) != (bool(packs) and failed == len(packs)):
+        return "summary_all_failed_inconsistent"
+    for pack in packs:
+        if not isinstance(pack, dict):
+            return "summary_pack_not_object"
+        if not {
+            "pack_name", "config_kind", "config_sha256", "raw_exit_code",
+            "sarif_exists", "sarif_valid", "stderr_class", "failure_class",
+            "bounded_stderr_tail", "sandbox_denial_count", "proxy_event_count",
+        }.issubset(pack):
+            return "summary_pack_missing_required_fields"
+    return None
+
+
+def _load_semgrep_run_summary(scan_dir: Path) -> tuple[Optional[dict], Optional[str]]:
+    path = scan_dir / "semgrep-run-summary.json"
+    if not path.is_file():
+        return None, "summary_missing"
+    try:
+        payload = load_json(path)
+    except Exception:  # noqa: BLE001 - malformed scanner output is a hard failure
+        return None, "summary_unreadable"
+    error = _validate_semgrep_run_summary(payload)
+    return (payload if error is None else None), error
+
+
+def _semgrep_artifact_state(scan_dir: Path) -> tuple[bool, bool]:
+    """Validate the two artefacts an agentic run consumes after Semgrep."""
+    combined_valid = False
+    metrics_valid = False
+    combined = scan_dir / "combined.sarif"
+    if combined.is_file():
+        try:
+            from core.sarif.parser import validate_sarif
+            combined_valid = validate_sarif(combined) is not False
+        except Exception:  # noqa: BLE001 - artefact validation must fail closed
+            combined_valid = False
+    metrics = scan_dir / "scan_metrics.json"
+    if metrics.is_file():
+        try:
+            metrics_valid = isinstance(load_json(metrics), dict)
+        except Exception:  # noqa: BLE001 - artefact validation must fail closed
+            metrics_valid = False
+    return combined_valid, metrics_valid
+
+
+def persist_agentic_semgrep_failure(
+    *,
+    out_dir: Path,
+    return_code: int,
+    stdout: object,
+    stderr: object,
+    timeout: bool = False,
+) -> dict:
+    """Persist a bounded failure contract before halting model analysis."""
+    scan_dir = out_dir / "scan"
+    safe_run_mkdir(scan_dir)
+    summary, summary_error = _load_semgrep_run_summary(scan_dir)
+    combined_valid, metrics_valid = _semgrep_artifact_state(scan_dir)
+    failed_packs = []
+    sandbox_denial_count = 0
+    proxy_event_count = 0
+    all_semgrep_failed = False
+    aggregate_exit_code = return_code
+    failure_class = "scanner_failure"
+    if timeout:
+        failure_class = "phase_timeout"
+    elif return_code == SANDBOX_ENGAGE_EXIT_CODE:
+        failure_class = "sandbox_engagement_failed"
+    elif summary is None:
+        failure_class = "scanner_summary_invalid"
+    else:
+        all_semgrep_failed = bool(summary["all_semgrep_failed"])
+        aggregate_exit_code = summary["aggregate_exit_code"]
+        sandbox = summary.get("sandbox_engagement") or {}
+        sandbox_denial_count = int(sandbox.get("denial_count") or 0)
+        for pack in summary["packs"]:
+            if pack.get("failure_class") is not None:
+                failed_packs.append({
+                    "pack_name": pack["pack_name"],
+                    "failure_class": pack["failure_class"],
+                    "raw_exit_code": pack["raw_exit_code"],
+                    "stderr_tail": _bounded_qualification_diagnostic(
+                        pack.get("bounded_stderr_tail")
+                    ),
+                    "sandbox_denial_count": pack["sandbox_denial_count"],
+                    "proxy_event_count": pack["proxy_event_count"],
+                })
+                proxy_event_count = max(
+                    proxy_event_count,
+                    int(pack["proxy_event_count"] or 0),
+                )
+        if all_semgrep_failed:
+            failure_class = "aggregate_all_packs_failed"
+        elif not combined_valid or not metrics_valid:
+            failure_class = "scanner_artifact_invalid"
+    payload = {
+        "schema_version": _QUALIFICATION_SUMMARY_SCHEMA_VERSION,
+        "failure_stage": "semgrep_scan",
+        "failure_class": failure_class,
+        "return_code": return_code,
+        "aggregate_exit_code": aggregate_exit_code,
+        "all_semgrep_failed": all_semgrep_failed,
+        "summary_error": summary_error,
+        "summary_path": "scan/semgrep-run-summary.json",
+        "failure_path": "scan/semgrep-agentic-failure.json",
+        "failed_packs": failed_packs,
+        "sandbox_denial_count": sandbox_denial_count,
+        "proxy_event_count": proxy_event_count,
+        "combined_sarif_valid": combined_valid,
+        "metrics_valid": metrics_valid,
+        "stdout_tail": _bounded_qualification_diagnostic(stdout),
+        "stderr_tail": _bounded_qualification_diagnostic(stderr),
+    }
+    save_json(scan_dir / "semgrep-agentic-failure.json", payload)
+    from core.run import fail_run
+    fail_run(
+        out_dir,
+        f"Semgrep qualification failed: {failure_class}",
+        extra={"semgrep_failure": payload},
+    )
+    return payload
+
+
+def validate_agentic_semgrep_success(out_dir: Path) -> tuple[Optional[dict], Optional[str]]:
+    """Require complete scanner evidence even when its child exits zero."""
+    scan_dir = out_dir / "scan"
+    summary, error = _load_semgrep_run_summary(scan_dir)
+    if error is not None or summary is None:
+        return None, error or "summary_invalid"
+    if summary["all_semgrep_failed"]:
+        return None, "all_semgrep_failed"
+    if summary["aggregate_exit_code"] not in (0, 1):
+        return None, "aggregate_exit_nonzero"
+    combined_valid, metrics_valid = _semgrep_artifact_state(scan_dir)
+    if not combined_valid or not metrics_valid:
+        return None, "scanner_artifact_invalid"
+    return summary, None
 
 def _tuning_default(key: str) -> int:
     from core.tuning import get_tuning
@@ -254,7 +573,10 @@ def _materialise_threat_model_phase(
         "candidate_sarif": str(candidate_sarif) if candidate_count else None,
         "context_map": str(context_map_path),
     })
-    save_json(out_dir / "threat-model-summary.json", summary)
+    save_json(
+        out_dir / "threat-model-summary.json",
+        _report_threat_model_phase(out_dir, summary),
+    )
     return summary
 
 
@@ -1444,6 +1766,8 @@ Examples:
     if args.threat_model_only:
         args.threat_model = True
     if args.threat_model:
+        if not args.model:
+            parser.error("--threat-model requires an explicit --model")
         args.understand = True
 
     # Apply --phase-timeout uniformly. ``0`` is the unbounded
@@ -1773,26 +2097,42 @@ Examples:
     # Creates a lifecycle-managed sibling /understand run (discoverable to the
     # bridge tier-2/3) AND enriches the agentic checklist with priority
     # markers. The analysis prompt surfaces those markers per finding, so
-    # --understand pays off in this run too — not just in any later /validate.
-    # ========================================================================
     prepass_result = None
     threat_model_phase = {"enabled": bool(args.threat_model), "completed": False}
     prepass_model = None
+    prepass_model_resolved = not args.threat_model
+    prepass_provider = None
+    prepass_model_name = args.model[0] if args.threat_model else None
     if args.understand and args.model:
-        from packages.llm_analysis.orchestrator import build_llm_config_from_flags
-        prepass_llm_config = build_llm_config_from_flags(
-            models=args.model,
-            auto_detect=False,
-        )
+        try:
+            from packages.llm_analysis.orchestrator import build_llm_config_from_flags
+            prepass_llm_config = build_llm_config_from_flags(
+                models=args.model,
+                auto_detect=False,
+            )
+        except Exception:  # noqa: BLE001 - qualification must not select a fallback
+            if not args.threat_model:
+                raise
+            prepass_llm_config = None
+            logger.error("understand pre-pass could not resolve the explicit qualification model")
         if prepass_llm_config and prepass_llm_config.primary_model:
             prepass_model = prepass_llm_config.primary_model
-        else:
+            prepass_model_resolved = True
+            prepass_provider = getattr(prepass_model, "provider", None)
+            prepass_model_name = getattr(prepass_model, "model_name", prepass_model_name)
+        elif not args.threat_model:
             logger.warning(
                 "understand pre-pass could not resolve explicit model %s; "
                 "falling back to Claude Code",
                 args.model[0],
             )
-    if args.understand:
+    if args.threat_model and not prepass_model_resolved:
+        from core.orchestration.agentic_passes import PrepassResult
+        prepass_result = PrepassResult(
+            ran=False,
+            skipped_reason="explicit qualification model resolution failed",
+        )
+    elif args.understand:
         from core.orchestration import run_understand_prepass
         print("\n" + "=" * 70)
         print("UNDERSTAND PRE-PASS")
@@ -1811,6 +2151,39 @@ Examples:
         else:
             logger.warning(f"Pre-pass skipped: {prepass_result.skipped_reason}")
 
+    prepass_summary = None
+    if args.threat_model:
+        prepass_summary = build_understand_prepass_summary(
+            provider=prepass_provider,
+            model=prepass_model_name,
+            prepass_result=prepass_result,
+            model_resolved=prepass_model_resolved,
+        )
+        write_understand_prepass_summary(out_dir, prepass_summary)
+        if not prepass_summary["semantic_complete"]:
+            threat_model_phase = {
+                "enabled": True,
+                "completed": False,
+                "semantic_complete": False,
+                "skipped_reason": prepass_summary["failure_class"],
+                "understand_prepass_summary": "understand-prepass-summary.json",
+            }
+            save_json(out_dir / "raptor_agentic_report.json", {
+                "schema_version": _QUALIFICATION_SUMMARY_SCHEMA_VERSION,
+                "phases": {"threat_model": threat_model_phase},
+                "outputs": {
+                    "understand_prepass_summary": "understand-prepass-summary.json",
+                },
+            })
+            from core.run import fail_run
+            fail_run(
+                out_dir,
+                f"Threat-model qualification prepass failed: {prepass_summary['failure_class']}",
+                extra={"understand_prepass": prepass_summary},
+            )
+            print("\nThreat-model qualification prepass failed before scanning.", file=sys.stderr)
+            return 1
+
     if args.threat_model:
         try:
             threat_model_phase = _materialise_threat_model_phase(
@@ -1820,33 +2193,49 @@ Examples:
                 refresh=args.threat_model_refresh,
                 allow_stale=args.threat_model_use_stale,
             )
-        except Exception as e:
-            logger.error(f"Threat model phase failed: {e}")
-            threat_model_phase = {"enabled": True, "completed": False, "skipped_reason": str(e)}
+        except Exception:  # noqa: BLE001 - persist a bounded qualification state
+            logger.exception("Threat model phase failed")
+            threat_model_phase = {
+                "enabled": True,
+                "completed": False,
+                "semantic_complete": False,
+                "skipped_reason": "threat_model_materialization_failed",
+            }
+        if not threat_model_phase.get("semantic_complete"):
+            prepass_summary["semantic_complete"] = False
+            prepass_summary["failure_class"] = "threat_model_materialization_failed"
+            prepass_summary["failure_stage"] = "threat_model_materialization"
+            write_understand_prepass_summary(out_dir, prepass_summary)
+        threat_model_phase["understand_prepass_summary"] = "understand-prepass-summary.json"
         _print_threat_model_phase(threat_model_phase)
 
         if args.threat_model_only:
             report_file = out_dir / "raptor_agentic_report.json"
+            reported_threat_model_phase = _report_threat_model_phase(
+                out_dir,
+                threat_model_phase,
+            )
             final_report = {
-                "repository": str(original_repo_path),
+                "repository": ".",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "duration_seconds": time.time() - workflow_start,
                 "phases": {
-                    "threat_model": threat_model_phase,
+                    "threat_model": reported_threat_model_phase,
                     "scanning": {"enabled": False, "skipped_reason": "--threat-model-only"},
                     "exploitability_validation": {"completed": False},
                     "autonomous_analysis": {"completed": False},
                 },
                 "outputs": {
-                    "threat_model_json": threat_model_phase.get("threat_model_json"),
-                    "threat_model_markdown": threat_model_phase.get("threat_model_markdown"),
-                    "threat_model_report": threat_model_phase.get("threat_model_report"),
-                    "threat_model_lint": threat_model_phase.get("threat_model_lint"),
-                    "threat_model_drift": threat_model_phase.get("threat_model_drift"),
-                    "threats": threat_model_phase.get("threats"),
-                    "threat_model_summary": str(out_dir / "threat-model-summary.json") if threat_model_phase.get("completed") else None,
-                    "threat_model_candidates": threat_model_phase.get("candidate_sarif"),
-                    "context_map": threat_model_phase.get("context_map"),
+                    "threat_model_json": _relative_run_output(out_dir, threat_model_phase.get("threat_model_json")),
+                    "threat_model_markdown": _relative_run_output(out_dir, threat_model_phase.get("threat_model_markdown")),
+                    "threat_model_report": _relative_run_output(out_dir, threat_model_phase.get("threat_model_report")),
+                    "threat_model_lint": _relative_run_output(out_dir, threat_model_phase.get("threat_model_lint")),
+                    "threat_model_drift": _relative_run_output(out_dir, threat_model_phase.get("threat_model_drift")),
+                    "threats": _relative_run_output(out_dir, threat_model_phase.get("threats")),
+                    "threat_model_summary": "threat-model-summary.json" if threat_model_phase.get("completed") else None,
+                    "threat_model_candidates": _relative_run_output(out_dir, threat_model_phase.get("candidate_sarif")),
+                    "context_map": _relative_run_output(out_dir, threat_model_phase.get("context_map")),
+                    "understand_prepass_summary": "understand-prepass-summary.json",
                 },
             }
             save_json(report_file, final_report)
@@ -1855,7 +2244,7 @@ Examples:
                     from core.run import complete_run
                     complete_run(out_dir, extra={
                         "findings_count": threat_model_phase.get("generated_candidates", 0),
-                        "threat_model": threat_model_phase,
+                        "threat_model": reported_threat_model_phase,
                         "duration_seconds": round(time.time() - workflow_start, 1),
                     })
                 else:
@@ -1911,6 +2300,7 @@ Examples:
 
     all_sarif_files = []
     semgrep_metrics = {}
+    semgrep_summary = None
     codeql_metrics = {}
     threat_candidate_sarif = threat_model_phase.get("candidate_sarif")
     if threat_candidate_sarif and Path(threat_candidate_sarif).exists():
@@ -2050,97 +2440,68 @@ Examples:
 
     # ---- Collect Semgrep results ----
     if semgrep_proc:
+        semgrep_timed_out = False
         try:
-            # ``args.phase_timeout`` 0 → ``None`` = unbounded (operator
-            # opt-in for kernel-scale targets via ``--phase-timeout 0``).
             semgrep_stdout, semgrep_stderr = semgrep_proc.communicate(
                 timeout=(args.phase_timeout or None)
             )
             rc = semgrep_proc.returncode
         except subprocess.TimeoutExpired:
+            semgrep_timed_out = True
             semgrep_proc.kill()
-            # Bound the post-kill drain — pre-fix bare
-            # ``communicate()`` had no timeout and could wedge on a
-            # child stuck in uninterruptible IO inside the sandbox.
-            # 30s is generous for a kill-9'd process to release its
-            # FDs; on TimeoutExpired here we abandon the streams
-            # (FDs leaked, but the kill has already been sent).
+            semgrep_stdout = ""
+            semgrep_stderr = f"phase timeout after {args.phase_timeout} seconds"
             try:
-                semgrep_proc.communicate(timeout=30)
+                semgrep_stdout, semgrep_stderr = semgrep_proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
-                logger.warning(
-                    "Semgrep child did not drain after kill; "
-                    "abandoning communicate (FDs may leak)"
-                )
+                logger.warning("Semgrep child did not drain after kill")
             rc = -1
-            print("❌ Semgrep scan timed out (30m)")
-            logger.error("Semgrep scan timed out")
-            # Surface the timeout in the agentic-run summary even when
-            # CodeQL also runs. Pre-fix the `if not run_codeql:
-            # sys.exit(1)` asymmetry made the timeout LOUDLY fail
-            # Semgrep-only runs but SILENTLY continue mixed runs —
-            # operator scrolling past the error mid-run could miss
-            # it and ship a "scan complete" report that was actually
-            # missing all Semgrep findings. Write a marker file so
-            # downstream consumers (project merge, /project status,
-            # final summary) see an unambiguous "Semgrep timed out"
-            # signal instead of just absent semgrep_*.json files
-            # (which look indistinguishable from "scan was disabled").
-            try:
-                from core.json import save_json as _save_json
-                _save_json(
-                    Path(args.out) / ".semgrep_timeout" if args.out
-                    else RaptorConfig.get_out_dir() / ".semgrep_timeout",
-                    {"timed_out_at_seconds": 1800, "stage": "semgrep"},
-                )
-            except Exception:
-                pass
-            if not run_codeql:
-                sys.exit(1)
 
-        if rc == SANDBOX_ENGAGE_EXIT_CODE:
-            # The semgrep subprocess reported the sandbox could not engage
-            # (it already printed the actionable message). Abort the whole
-            # run loud — never fall through into LLM analysis on a silent
-            # "0 findings". Kill the sibling codeql child first.
+        if rc not in (0, 1):
             if codeql_proc and codeql_proc.poll() is None:
                 codeql_proc.kill()
-            raise SandboxSetupError(
-                "the semgrep scan subprocess reported the sandbox could not "
-                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above",
-                "re-run with --sandbox network-only (or --sandbox none). "
-                "RAPTOR will not silently downgrade.",
+            failure = persist_agentic_semgrep_failure(
+                out_dir=out_dir,
+                return_code=rc,
+                stdout=semgrep_stdout,
+                stderr=semgrep_stderr,
+                timeout=semgrep_timed_out,
             )
+            print(
+                "❌ Semgrep scan failed: "
+                f"{failure['failure_class']} "
+                "(diagnostics: scan/semgrep-agentic-failure.json)",
+                file=sys.stderr,
+            )
+            logger.error("Semgrep scan failed with %s", failure["failure_class"])
+            return 1
 
-        if rc in (0, 1):
-            # The scanner now writes into the run dir's scan/ subdir (--out
-            # above), so its outputs — combined.sarif, scan_metrics.json, and
-            # the coverage records — are first-class run artifacts. No transient
-            # dir to discover, no copy.
-            actual_scan_dir = out_dir / "scan"
-            logger.info(f"Semgrep output in run dir: {actual_scan_dir}")
+        semgrep_summary, semgrep_contract_error = validate_agentic_semgrep_success(out_dir)
+        if semgrep_contract_error is not None:
+            failure = persist_agentic_semgrep_failure(
+                out_dir=out_dir,
+                return_code=rc,
+                stdout=semgrep_stdout,
+                stderr=semgrep_stderr,
+            )
+            print(
+                "❌ Semgrep scan contract failed: "
+                f"{failure['failure_class']} "
+                "(diagnostics: scan/semgrep-agentic-failure.json)",
+                file=sys.stderr,
+            )
+            logger.error("Semgrep output contract failed: %s", semgrep_contract_error)
+            return 1
 
-            scan_metrics_file = actual_scan_dir / "scan_metrics.json"
-            if scan_metrics_file.exists():
-                semgrep_metrics = load_json(scan_metrics_file)
-
-                print("\n✓ Semgrep scan complete:")
-                print(f"  - Files scanned: {semgrep_metrics.get('total_files_scanned', 0)}")
-                print(f"  - Findings: {semgrep_metrics.get('total_findings', 0)}")
-                print(f"  - Critical: {semgrep_metrics.get('findings_by_severity', {}).get('error', 0)}")
-                print(f"  - Warnings: {semgrep_metrics.get('findings_by_severity', {}).get('warning', 0)}")
-
-            sarif_file = actual_scan_dir / "combined.sarif"
-            if sarif_file.exists():
-                all_sarif_files.append(sarif_file)
-            else:
-                semgrep_sarifs = list(actual_scan_dir.glob("semgrep_*.sarif"))
-                all_sarif_files.extend(semgrep_sarifs)
-        elif rc != -1:  # -1 is timeout, already reported
-            print(f"❌ Semgrep scan failed (exit code {rc})")
-            if not run_codeql:
-                sys.exit(1)
-
+        actual_scan_dir = out_dir / "scan"
+        logger.info("Semgrep output contract accepted")
+        semgrep_metrics = load_json(actual_scan_dir / "scan_metrics.json")
+        print("\n✓ Semgrep scan complete:")
+        print(f"  - Files scanned: {semgrep_metrics.get('total_files_scanned', 0)}")
+        print(f"  - Findings: {semgrep_metrics.get('total_findings', 0)}")
+        print(f"  - Critical: {semgrep_metrics.get('findings_by_severity', {}).get('error', 0)}")
+        print(f"  - Warnings: {semgrep_metrics.get('findings_by_severity', {}).get('warning', 0)}")
+        all_sarif_files.append(actual_scan_dir / "combined.sarif")
     # ---- Collect CodeQL results ----
     if codeql_proc:
         try:
@@ -2700,9 +3061,13 @@ Examples:
     print("🎉 RAPTOR AGENTIC WORKFLOW COMPLETE")
     print("=" * 70)
 
+    reported_threat_model_phase = _report_threat_model_phase(
+        out_dir,
+        threat_model_phase,
+    )
     final_report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "repository": str(original_repo_path),
+        "repository": ".",
         "duration_seconds": workflow_duration,
         "tools_used": {
             "semgrep": not args.codeql_only,
@@ -2725,7 +3090,7 @@ Examples:
                     "languages": list(codeql_metrics.get('languages_detected', {}).keys()) if codeql_metrics else [],
                 },
             },
-            "threat_model": threat_model_phase,
+            "threat_model": reported_threat_model_phase,
             "sca": {
                 "enabled": args.sca,
                 "completed": sca_result is not None,
@@ -2757,25 +3122,27 @@ Examples:
             },
         },
         "outputs": {
-            "sarif_files": [str(f) for f in sarif_files],
-            "threat_model_json": threat_model_phase.get("threat_model_json"),
-            "threat_model_markdown": threat_model_phase.get("threat_model_markdown"),
-            "threat_model_report": threat_model_phase.get("threat_model_report"),
-            "threat_model_lint": threat_model_phase.get("threat_model_lint"),
-            "threat_model_drift": threat_model_phase.get("threat_model_drift"),
-            "threats": threat_model_phase.get("threats"),
-            "threat_model_summary": str(out_dir / "threat-model-summary.json") if threat_model_phase.get("completed") else None,
-            "threat_model_candidates": threat_model_phase.get("candidate_sarif"),
-            "sca_findings": str(sca_findings_path) if sca_findings_path and sca_findings_path.exists() else None,
-            "sca_report": str(out_dir / "sca" / "report.md") if sca_result else None,
-            "validation_report": str(out_dir / "validation" / "findings.json") if validation_result else None,
-            "autonomous_report": str(analysis_report) if analysis_report and analysis_report.exists() else None,
-            "orchestrated_report": str(out_dir / "orchestrated_report.json") if orchestration_result else None,
-            "aggregation_report": str(out_dir / "aggregation.json") if orchestration_result and orchestration_result.get("aggregation") else None,
-            "exploits_directory": str(autonomous_out / "exploits") if autonomous_out else None,
-            "patches_directory": str(autonomous_out / "patches") if autonomous_out else None,
-            "exploit_feasibility": str(out_dir / "exploit_feasibility.txt") if mitigation_result else None,
-            "enriched_sarif": None,  # populated after --sarif-out write
+            "sarif_files": _relative_run_outputs(out_dir, sarif_files),
+            "threat_model_json": _relative_run_output(out_dir, threat_model_phase.get("threat_model_json")),
+            "threat_model_markdown": _relative_run_output(out_dir, threat_model_phase.get("threat_model_markdown")),
+            "threat_model_report": _relative_run_output(out_dir, threat_model_phase.get("threat_model_report")),
+            "threat_model_lint": _relative_run_output(out_dir, threat_model_phase.get("threat_model_lint")),
+            "threat_model_drift": _relative_run_output(out_dir, threat_model_phase.get("threat_model_drift")),
+            "threats": _relative_run_output(out_dir, threat_model_phase.get("threats")),
+            "threat_model_summary": "threat-model-summary.json" if threat_model_phase.get("completed") else None,
+            "threat_model_candidates": _relative_run_output(out_dir, threat_model_phase.get("candidate_sarif")),
+            "understand_prepass_summary": "understand-prepass-summary.json" if prepass_summary is not None else None,
+            "semgrep_run_summary": "scan/semgrep-run-summary.json" if semgrep_summary is not None else None,
+            "sca_findings": _relative_run_output(out_dir, sca_findings_path) if sca_findings_path and sca_findings_path.exists() else None,
+            "sca_report": "sca/report.md" if sca_result else None,
+            "validation_report": "validation/findings.json" if validation_result else None,
+            "autonomous_report": _relative_run_output(out_dir, analysis_report) if analysis_report and analysis_report.exists() else None,
+            "orchestrated_report": "orchestrated_report.json" if orchestration_result else None,
+            "aggregation_report": "aggregation.json" if orchestration_result and orchestration_result.get("aggregation") else None,
+            "exploits_directory": _relative_run_output(out_dir, autonomous_out / "exploits") if autonomous_out else None,
+            "patches_directory": _relative_run_output(out_dir, autonomous_out / "patches") if autonomous_out else None,
+            "exploit_feasibility": "exploit_feasibility.txt" if mitigation_result else None,
+            "enriched_sarif": None,
         }
     }
 
@@ -3001,7 +3368,9 @@ Examples:
                 sarif_out_resolved = out_dir / sarif_out_resolved
             n = write_enriched_sarif(analysed_results, sarif_out_resolved)
             print(f"\n✓ Enriched SARIF written: {sarif_out_resolved} ({n} findings)")
-            final_report["outputs"]["enriched_sarif"] = str(sarif_out_resolved)
+            final_report["outputs"]["enriched_sarif"] = _relative_run_output(
+                out_dir, sarif_out_resolved,
+            )
             save_json(report_file, final_report)
         else:
             logger.warning("--sarif-out: no analysed findings to write")
@@ -3356,7 +3725,7 @@ Examples:
 
     extra_sections = []
     if threat_model_phase.get("completed"):
-        extra_sections.append(_build_threat_model_report_section(threat_model_phase))
+        extra_sections.append(_build_threat_model_report_section(reported_threat_model_phase))
     if aggregation:
         extra_sections.append(_build_aggregation_report_section(aggregation))
     dv = (orchestration_result or {}).get("dataflow_validation") or {}
