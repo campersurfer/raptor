@@ -1,0 +1,112 @@
+{
+  "command": {
+    "argv": [
+      "candidate-python",
+      "packages/static-analysis/scanner.py",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_scan_out>/scan",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--policy-groups",
+      "all"
+    ],
+    "argv_sha256": "f676d76382c0314e82a0f8605a26084199aa85ccbc00e0dc952e12f410dfe0c5",
+    "codeql": false,
+    "entrypoint": "packages/static-analysis/scanner.py",
+    "policy_groups": [
+      "all"
+    ],
+    "sandbox": "strict"
+  },
+  "duration_seconds": 113.981,
+  "execution": {
+    "commit": "867c3d666ef615272f9e8904afc6e415a92656a0",
+    "tree": "7019b0fe19f11535d3add2c60e2ce092d24eb8f4"
+  },
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "6bee05aaab472b29e728b0464f2f177c24bc4dc5c5870a88a159cb628c115637"
+  },
+  "immutable": true,
+  "output_digests": {
+    "stderr_sha256": "4e66fe61b27ba3871049218e81e3a3d5e860459898a236d029bc4735a8ae7b28",
+    "stdout_sha256": "17961229750d6ff13a07be4e191251454d83ed640a9729e93f5b503a1b116dcb"
+  },
+  "promotable": false,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "retention": {
+    "fixture_and_raw_scan_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "runtime": {
+    "python_executable_basename": "python",
+    "python_version": "3.13.15"
+  },
+  "sarif_validation": {
+    "canonical_schema": "core/schemas/sarif-2.1.0.json",
+    "combined_full_validation": true,
+    "jsonschema_distribution": "jsonschema",
+    "jsonschema_version": "4.26.0",
+    "per_pack_count": 16,
+    "per_pack_full_validation": true,
+    "schema_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+  },
+  "scan_artifacts": {
+    "artifact_sha256": {
+      ".home/.cache/semgrep_version": "d5238e469ddbecf2b20107ea6ee5403a86ee4d43af8c9990c1eab583a32b82b9",
+      ".home/.config/.semgrep/semgrep.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      ".home/.config/.semgrep/settings.yml": "831733652e895d198dbc62b5378653fcb086b8615fe5c64da8f06411d67d166b",
+      "combined.sarif": "3182f0654dbc3f70e68c1f24fe16d3f8da93b63e43a91373a4f8d9004facc4cc",
+      "coverage-semgrep.json": "949c8854cec40a2d368b02396cd5a502f53c62f5b20e246815c42e38674a54c8",
+      "proxy-events.jsonl": "9cf040130a72afb24f6153fba8a2c7b1405238f12cf05f5ceb8c03f3135b31d0",
+      "scan-manifest.json": "ad68b7ca9c6d6a592f0cdfa8162d4c44a4f59999c2eeef2f45016712584cd567",
+      "scan_metrics.json": "6924c2e36150a0caa6dba290798265b8ba2d2f8d1d579563ae593fa6759a0995",
+      "semgrep-run-summary.json": "98b17aa1d92967eabaa9c2a44cd06ce1cfee399fe1b94e9be32c02275790671a",
+      "verification.json": "17822e8424b830d327dc61bb51a158c4fb52c4416ca4921d5f28a0dc11a6e12d"
+    },
+    "manifest_schema_version": null,
+    "metrics_schema_version": null,
+    "per_pack_sarif_sha256": {
+      "category_auth": "cd28686403cf4eceff9af80714ba3565675fd40bd2d2b8623a17a5ddcdcc2da1",
+      "category_crypto": "15960c2d682bb1a8d25e90c57cedbe2cc51fb4e791af72348d331c6eb0feae1f",
+      "category_deserialisation": "1990d84ea0736967176f2da454645eccb40d80c624f56020db26e76114c8fa89",
+      "category_filesystem": "681a6eeba56aa3320aea864f7cc604289b4f8c501aa250969d1b5d94157d52a5",
+      "category_flows": "17f01f21272e88339c31b3850916425c2419be5c40c50faf1c3ca2d25b6ef48e",
+      "category_injection": "7736c80af61d5c08a2d91bafeccaaa48055a177f73614a75601a7688df9b91b8",
+      "category_logging": "73f2d971fd6c565085a9e4729a0b7f4270c3b692c86a2c5dbd963a88d7b71c30",
+      "category_secrets": "5e1f24d6a9131cd5e5a7743189dd848792cf649a6287a2e7a07ee98ebfa6b5bb",
+      "category_sinks": "7725ec8b26a5f4d80b74df2ff2e40550b691bb16d5a965449fee6e978ffb925c",
+      "semgrep_auth": "ec1e58cc44708e3c35544be52df202bc0958231a3ae1b1283560438da4e0c0c8",
+      "semgrep_dataflow": "789da3e2f3996ddf241e28eb80f8c145b53a2cdfdecec7408684ca9bb538f539",
+      "semgrep_injection": "f1ba435348c58a13c3b3a321229852db411ab34bad958cac1bccb5a4a151dc84",
+      "semgrep_owasp_top_10": "40063925ed0a155aea90477152bb1cfff48eb42096ddb197e1c089d593eface1",
+      "semgrep_secrets": "f80e643666435fc4b255b724558774fb5526e0600041abdc123727fc58c0170e",
+      "semgrep_security_audit": "76ccd078de42056c42b41348eb274116165c7dc11d25ae64b7373a255824eae1",
+      "semgrep_sinks": "3e0831aec4a09427adf101ff0e9cb2113d1037e852d23d6038933efcd846f955"
+    }
+  },
+  "scanner_exit_code": 0,
+  "scanner_started": true,
+  "schema_version": 1,
+  "semgrep": {
+    "aggregate_exit_code": 0,
+    "identity": {
+      "executable_basename": null,
+      "executable_sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
+      "path_sha256": null,
+      "version": "1.174.0"
+    },
+    "packs_dispatched": 16,
+    "packs_failed": 0,
+    "packs_succeeded": 16,
+    "sandbox_engagement": {
+      "denial_count": 0,
+      "state": "engaged"
+    }
+  },
+  "status": "qualified",
+  "superseded_by": null
+}

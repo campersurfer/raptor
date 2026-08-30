@@ -1,0 +1,44 @@
+{
+  "attestation": {
+    "fixture_read": true,
+    "language_verified": true,
+    "model": "gemini-2.5-flash",
+    "provider": "gemini",
+    "provider_turns_completed": 2,
+    "provider_turns_started": 2,
+    "request_schema_sha256": "d298feec9dd9f9be853961724b88f94231019975848bdaa8e833f5171a18e4bc",
+    "schema_version": 3,
+    "sdk_version": "1.65.0",
+    "semantic_relation_verified": true,
+    "sink_verified": true,
+    "source_verified": true,
+    "status": "passed",
+    "terminal_call_count": 1,
+    "worker_cleanup_verified": true
+  },
+  "command": {
+    "argv": [
+      "candidate-python",
+      "raptor.py",
+      "semantic-canary",
+      "--model",
+      "gemini-2.5-flash",
+      "--format",
+      "json"
+    ],
+    "argv_sha256": "56ed94d57889c577881e1578d9384018734bbb5ee72a0a69bb6687d40d741472"
+  },
+  "duration_seconds": 25.486,
+  "exactly_one_valid_submit_context_map": true,
+  "execution": {
+    "commit": "867c3d666ef615272f9e8904afc6e415a92656a0",
+    "tree": "7019b0fe19f11535d3add2c60e2ce092d24eb8f4"
+  },
+  "raw_output_persisted": false,
+  "record_kind": "semantic_canary_attestation",
+  "return_code": 0,
+  "schema_version": 1,
+  "status": "passed",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "ce301899fb048a083881ca9df6644d38e44ecdae5ef16a452e5ea55158f64256"
+}

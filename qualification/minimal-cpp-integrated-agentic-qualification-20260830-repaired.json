@@ -1,0 +1,74 @@
+{
+  "agentic_exit_code": 2,
+  "command": {
+    "argv": [
+      "candidate-python",
+      "raptor.py",
+      "agentic",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_agentic_out>",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--threat-model",
+      "--validate",
+      "--model",
+      "gemini-2.5-flash",
+      "--max-findings",
+      "1",
+      "--no-exploits",
+      "--no-patches",
+      "--phase-timeout",
+      "180"
+    ],
+    "argv_sha256": "b55728dc6615cd453c19cb11e900f13cdd54e58c389690302cfda04752e979cc",
+    "codeql": false,
+    "max_findings": 1,
+    "model": "gemini-2.5-flash",
+    "no_exploits": true,
+    "no_patches": true,
+    "phase_timeout_seconds": 180,
+    "sandbox": "strict",
+    "threat_model": true,
+    "validate": true
+  },
+  "credential_isolation": {
+    "direct_fallback_occurred": null,
+    "legacy_path_lower_bound_bytes": 234,
+    "legacy_path_would_exceed_uds_limit": true,
+    "long_ambient_tmpdir_exercised": true,
+    "required_by_environment": true,
+    "startup_failure_artifact_present": false
+  },
+  "duration_seconds": 12.205,
+  "execution": {
+    "commit": "867c3d666ef615272f9e8904afc6e415a92656a0",
+    "tree": "7019b0fe19f11535d3add2c60e2ce092d24eb8f4"
+  },
+  "failure_class": "agentic_nonzero",
+  "failure_stage": "integrated_agentic_qualification",
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "eaa03c439c7cdf4bf9434438c91d3c29d63538fd473a4f99a2fb3ff9a37ee47e"
+  },
+  "immutable": true,
+  "output_digests": {
+    "stderr_sha256": "b18f7d75e43b140a71cdb6d0a934bd14d6cc59bd8b3dbc9d61566cecf14fba30",
+    "stdout_sha256": "99792d693a3b9ca7c9f82c37c620e2566b76e5c25a6566a7b1807cf0cd0ba03f"
+  },
+  "promotable": false,
+  "record_kind": "minimal_cpp_integrated_agentic_qualification",
+  "retention": {
+    "fixture_and_raw_run_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "runtime": {
+    "python_executable_basename": "python",
+    "python_version": "3.13.15"
+  },
+  "schema_version": 1,
+  "status": "failed",
+  "superseded_by": null
+}
