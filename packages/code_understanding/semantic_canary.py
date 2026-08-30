@@ -133,20 +133,19 @@ def _is_cpp_label(value: Any) -> bool:
     )
 
 
-def _contains_fixture_location(value: Any, line: int) -> bool:
-    return isinstance(value, str) and f"fixture.cpp:{line}" in value
+def _is_fixture_location(value: Any, line: int) -> bool:
+    return value == f"fixture.cpp:{line}"
 
 
 def _details_match_fixture_line(entry: dict[str, Any], line: int) -> bool:
     return entry.get("file") == "fixture.cpp" and entry.get("line") == line
 
 
-def _entry_contains_identifier(
-    entry: dict[str, Any], identifier: str, fields: tuple[str, ...]
-) -> bool:
-    return any(
-        isinstance(value := entry.get(field), str) and identifier in value
-        for field in fields
+def _matches_source_entry(value: Any, fixture: _Fixture) -> bool:
+    return (
+        isinstance(value, str)
+        and value.split()
+        == [f"fixture.cpp:{fixture.source_line}", fixture.source, "argv[1]"]
     )
 
 
@@ -170,7 +169,7 @@ def _matching_entry_point_ids(
         for entry in context_map["entry_points"]
         if isinstance(entry.get("id"), str)
         and _details_match_fixture_line(entry, fixture.relation_line)
-        and _entry_contains_identifier(entry, fixture.relation, ("name", "notes"))
+        and entry.get("name") == fixture.relation
     }
 
 
@@ -184,7 +183,7 @@ def _matching_sink_detail_ids(
         and isinstance(entry.get("type"), str)
         and entry["type"].casefold() in _SHELL_EXEC_TYPES
         and _details_match_fixture_line(entry, fixture.sink_line)
-        and _entry_contains_identifier(entry, fixture.sink, ("name", "notes", "operation"))
+        and entry.get("name") == fixture.sink
     }
 
 
@@ -193,8 +192,7 @@ def _source_is_verified(context_map: dict[str, Any], fixture: _Fixture) -> bool:
         isinstance(entry.get("type"), str)
         and entry["type"].casefold() in _CLI_SOURCE_TYPES
         and entry.get("trust_level") == "attacker_controlled"
-        and _contains_fixture_location(entry.get("entry"), fixture.source_line)
-        and _entry_contains_identifier(entry, fixture.source, ("entry",))
+        and _matches_source_entry(entry.get("entry"), fixture)
         for entry in context_map["sources"]
     )
 
@@ -203,7 +201,7 @@ def _sink_is_verified(context_map: dict[str, Any], fixture: _Fixture) -> bool:
     top_level_sink = any(
         isinstance(entry.get("type"), str)
         and entry["type"].casefold() in _SHELL_EXEC_TYPES
-        and _contains_fixture_location(entry.get("location"), fixture.sink_line)
+        and _is_fixture_location(entry.get("location"), fixture.sink_line)
         for entry in context_map["sinks"]
     )
     return top_level_sink and bool(_matching_sink_detail_ids(context_map, fixture))
@@ -492,7 +490,8 @@ def run_semantic_canary(
                     "attacker-controlled cli_arg source, a relation entry point, a shell_exec "
                     "sink, and an ID-linked unchecked flow. Include exact identifiers discovered "
                     "after the read in sources.entry, entry_points.name, and sink_details.name. "
-                    "Use repository-relative fixture locations and real source lines. Set "
+                    "Set sources.entry to `fixture.cpp:<line> <identifier> argv[1]`. Use "
+                    "repository-relative fixture locations and real source lines. Set "
                     "context_map.meta.language to an array inferred from source. Do not include "
                     "source text in the context map."
                 ),

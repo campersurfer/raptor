@@ -536,6 +536,70 @@ def test_canary_rejects_wrong_hidden_semantic_identifier(mutate):
 
 
 @pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda context_map: context_map["sources"][0].update(
+            entry=context_map["sources"][0]["entry"].replace(" ", "0 ", 1)
+        ),
+        lambda context_map: context_map["sources"][0].update(
+            entry=context_map["sources"][0]["entry"].replace(
+                context_map["sources"][0]["entry"].split()[1],
+                "prefix_" + context_map["sources"][0]["entry"].split()[1],
+            )
+        ),
+        lambda context_map: context_map["sources"][0].update(
+            entry=context_map["sources"][0]["entry"].replace(
+                context_map["sources"][0]["entry"].split()[1],
+                context_map["sources"][0]["entry"].split()[1] + "é",
+            )
+        ),
+        lambda context_map: context_map["sources"][0].update(
+            entry=context_map["sources"][0]["entry"].replace(
+                context_map["sources"][0]["entry"].split()[1],
+                context_map["sources"][0]["entry"].split()[1] + chr(0x0301),
+            )
+        ),
+        lambda context_map: context_map["sources"][0].update(
+            entry=context_map["sources"][0]["entry"].replace(
+                context_map["sources"][0]["entry"].split()[1],
+                context_map["sources"][0]["entry"].split()[1] + "\\u0301",
+            )
+        ),
+        lambda context_map: context_map["sources"][0].update(
+            entry=context_map["sources"][0]["entry"] + " fabricated"
+        ),
+        lambda context_map: context_map["sinks"][0].update(
+            location=context_map["sinks"][0]["location"] + "0"
+        ),
+        lambda context_map: context_map["entry_points"][0].update(
+            name="prefix_" + context_map["entry_points"][0]["name"]
+        ),
+        lambda context_map: context_map["entry_points"][0].update(
+            name="different_relation",
+            notes=context_map["entry_points"][0]["name"],
+        ),
+        lambda context_map: context_map["sink_details"][0].update(
+            name="prefix_" + context_map["sink_details"][0]["name"]
+        ),
+        lambda context_map: context_map["sink_details"][0].update(
+            name="different_sink",
+            notes=context_map["sink_details"][0]["name"],
+        ),
+    ],
+)
+def test_canary_rejects_noncanonical_evidence_anchors(mutate):
+    context_map = _canonical_fixture_map()
+    mutate(context_map)
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    _assert_failure(result, "semantic_evidence")
+
+
+@pytest.mark.parametrize(
     "field",
     ["entry_point", "sink"],
 )
