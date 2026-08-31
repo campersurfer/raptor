@@ -821,7 +821,7 @@ applying an SBPL (Sandbox Profile Language) profile.
 | ---------------------------- | -------------- | -------------------------------------------------------------- |
 | PID namespace                | ⚠ absent       | No unprivileged equivalent on macOS. Host PIDs visible.        |
 | Mount namespace + pivot_root | ⚠ absent       | `restrict_reads=True` is the substitute (read-deny via SBPL).  |
-| `RLIMIT_NPROC` per-namespace | weaker         | macOS rlimit is per-UID host-wide. Lower the limit on Darwin.  |
+| `RLIMIT_NPROC` per-namespace | absent         | macOS NPROC is per-UID host-wide and includes the seatbelt shim. Requested `nproc_limit` is not applied; the inherited ceiling remains in force. |
 | `seccomp_profile=full`       | partial        | Mapped to `(deny process-info* (target others))` — coarse.     |
 | `audit_verbose` (per-syscall)| partial        | SBPL `(allow X (with report))` for an extended category set    |
 |                              |                | (file-read*, mach-lookup, process-exec*, process-fork, signal, |

@@ -32,8 +32,8 @@ Feature parity table (Linux ⇄ macOS):
                                         seccomp_profile is set
     rlimits via prlimit + preexec      → preexec rlimits (same code
                                         path); ⚠  RLIMIT_NPROC is
-                                        per-UID host-wide on macOS,
-                                        not per-namespace
+                                        inherited unchanged on macOS:
+                                        it is per-UID host-wide
     ptrace tracer (audit_mode)         → `log stream` reader (see
                                         seatbelt_audit.LogStreamer)
     fake_home env override             → identical (env mutation)
@@ -64,9 +64,12 @@ Implications of the ⚠ items for the threat model:
      child can read everything the calling user can. Always pass
      restrict_reads=True for untrusted code (run_untrusted does this
      by default).
-  3. RLIMIT_NPROC: a fork-bombing sandboxed child can exhaust the
-     calling user's process table host-wide. Lower nproc_limit on
-     macOS than on Linux when running unknown code.
+  3. RLIMIT_NPROC: macOS applies this limit to the calling UID
+     host-wide, including the seatbelt shim. To avoid making the
+     shim unable to fork when that UID already exceeds a requested
+     lower limit, nproc_limit is not applied on macOS; the inherited
+     ceiling remains in force. A fork-bombing sandboxed child can
+     therefore still exhaust the calling user's process table.
   4. audit_verbose granularity: macOS records are SBPL-action-level
      (e.g. "file-read-data /etc/foo") rather than syscall+argv
      level. Linux's tracer can show "openat(/etc/foo, O_RDONLY)";
@@ -98,7 +101,6 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from . import seatbelt
-from ._fork_safe_warn import warn_post_fork
 from .preexec import _make_preexec_fn
 
 logger = logging.getLogger(__name__)
@@ -134,7 +136,7 @@ def run_sandboxed(cmd: List[str], *,
                   target: Optional[str] = None,
                   output: Optional[str] = None,
                   block_network: bool = False,
-                  nproc_limit: Optional[int] = None,
+                  nproc_limit: Optional[int] = None,  # noqa: ARG001
                   limits: Optional[dict] = None,
                   writable_paths: Optional[Iterable[str]] = None,
                   readable_paths: Optional[Iterable[str]] = None,
@@ -340,36 +342,16 @@ def run_sandboxed(cmd: List[str], *,
     #
     # _make_preexec_fn handles memory / CPU / file-size via setrlimit
     # — works as-is on macOS (POSIX). It deliberately skips
-    # RLIMIT_NPROC on Linux because Linux applies nproc via the
-    # prlimit-inside-unshare wrapper (so the limit counts against the
-    # ns-local UID, not the host's). macOS has no unshare wrapper,
-    # so we apply nproc INSIDE preexec here. The limit then counts
-    # against the calling UID host-wide — coarser than Linux's per-
-    # namespace semantics, but the threat model (bound the fork count
-    # of THIS sandboxed child) is met. Operators on shared hosts
-    # should set a lower nproc on macOS than on Linux. Documented in
-    # this module's top docstring.
+    # RLIMIT_NPROC because Linux applies nproc with a wrapper inside
+    # unshare, where it counts against a namespace-local UID. macOS
+    # has no equivalent: its NPROC limit is host-wide for the calling
+    # UID and includes the seatbelt shim's fork. Applying a requested
+    # lower nproc_limit can therefore make the shim fail before the
+    # sandbox starts when the shared UID already exceeds it. Preserve
+    # the inherited NPROC ceiling instead; this backend provides no
+    # per-sandbox process-count bound on macOS.
     effective_limits = dict(limits or {})
-    base_preexec = _make_preexec_fn(effective_limits)
-    if nproc_limit and nproc_limit > 0:
-        import resource as _resource
-        _nproc = int(nproc_limit)
-        def preexec():
-            base_preexec()
-            try:
-                _resource.setrlimit(
-                    _resource.RLIMIT_NPROC, (_nproc, _nproc)
-                )
-            except (ValueError, OSError):
-                # Best-effort. Some macOS versions cap NPROC via
-                # different sysctls and setrlimit may EPERM the
-                # call when NPROC > kern.maxproc/UID. The module
-                # docstring already documents this as soft posture;
-                # emit a fork-safe warning so operators can observe
-                # when the documented-soft bound becomes a silent no-op.
-                warn_post_fork(b"RAPTOR: _macos_spawn RLIMIT_NPROC setrlimit failed -- documented soft posture became silent no-op\n")
-    else:
-        preexec = base_preexec
+    preexec = _make_preexec_fn(effective_limits)
 
     # 4. Wrap cmd with sandbox-exec, interposed by the seatbelt shim.
     #    Layout (outermost first):

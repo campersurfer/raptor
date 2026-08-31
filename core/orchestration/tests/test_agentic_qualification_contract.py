@@ -306,6 +306,7 @@ def test_historical_direct_evidence_correction_preserves_nonpromotable_record():
     direct = json.loads(direct_path.read_text(encoding="utf-8"))
     correction = json.loads(correction_path.read_text(encoding="utf-8"))
 
+    assert correction["correction_commit"] == "80bc27be9621aa929c1f6dfade4a12bbe6fb0c60"
     assert direct["promotable"] is False
     assert correction["affected_record"]["path"] == (
         "qualification/minimal-cpp-direct-semgrep-qualification-20260830-repaired.json"

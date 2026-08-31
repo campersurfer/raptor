@@ -4,6 +4,7 @@
   "immutable": true,
   "promotable": false,
   "status": "corrected_historical_metadata",
+  "correction_commit": "80bc27be9621aa929c1f6dfade4a12bbe6fb0c60",
   "affected_record": {
     "path": "qualification/minimal-cpp-direct-semgrep-qualification-20260830-repaired.json",
     "record_kind": "minimal_cpp_direct_semgrep_qualification",

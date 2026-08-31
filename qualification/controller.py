@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +91,7 @@ class QualificationControllerError(RuntimeError):
 class PrivateTempAttestation:
     """Boolean-only private-temp contract result."""
 
+    credential_isolation_required: bool
     present: bool
     aliases_equal: bool
     absolute: bool
@@ -102,7 +103,8 @@ class PrivateTempAttestation:
     @property
     def valid(self) -> bool:
         return (
-            self.present
+            self.credential_isolation_required
+            and self.present
             and self.aliases_equal
             and self.absolute
             and self.canonical
@@ -113,7 +115,7 @@ class PrivateTempAttestation:
 
     def as_record(self) -> dict[str, Any]:
         return {
-            "credential_isolation_required": True,
+            "credential_isolation_required": self.credential_isolation_required,
             "private_temp_present": self.present,
             "temp_aliases_equal": self.aliases_equal,
             "private_temp_absolute": self.absolute,
@@ -175,7 +177,8 @@ class QualificationController:
         fixture = self._new_fixture(workspace)
         output_root = workspace / "out"
         output_root.mkdir(mode=0o700)
-        attestation = validate_private_temp(private_root)
+        worker_environment = self._safe_worker_environment(private_root)
+        attestation = validate_private_temp(private_root, worker_environment)
         record: dict[str, Any] = {
             "schema_version": 1,
             "record_kind": "qualification_private_temp_preflight",
@@ -260,7 +263,7 @@ class QualificationController:
                     dispatcher,
                     [str(self.candidate_python), str(child)],
                     label="qualification-no-provider",
-                    env=self._safe_worker_environment(private_root),
+                    env=worker_environment,
                     stdout=stdout,
                     stderr=stderr,
                 )
@@ -418,7 +421,8 @@ class QualificationController:
         output_root = workspace / "out"
         output_root.mkdir(mode=0o700)
         scan_out = output_root / "scan"
-        attestation = validate_private_temp(private_root)
+        worker_environment = self._safe_worker_environment(private_root)
+        attestation = validate_private_temp(private_root, worker_environment)
         argv = [
             str(self.candidate_python),
             "packages/static-analysis/scanner.py",
@@ -438,7 +442,7 @@ class QualificationController:
         try:
             if not attestation.valid:
                 return self._set_contract_failure(record)
-            capture = self._run(argv, env=self._safe_worker_environment(private_root))
+            capture = self._run(argv, env=worker_environment)
             record.update({
                 "process_exit_code": capture.return_code,
                 "scanner_exit_code": capture.return_code,
@@ -455,7 +459,14 @@ class QualificationController:
                 record.update({
                     "status": "failed",
                     "failure_stage": "direct_semgrep_qualification",
-                    "failure_class": "direct_semgrep_contract_failed",
+                    "failure_class": (
+                        record["semgrep"]["failure_class"]
+                        if (
+                            isinstance(record.get("semgrep"), dict)
+                            and isinstance(record["semgrep"].get("failure_class"), str)
+                        )
+                        else "direct_semgrep_contract_failed"
+                    ),
                 })
             else:
                 record["status"] = "qualified"
@@ -475,7 +486,8 @@ class QualificationController:
         fixture = self._new_fixture(workspace)
         output_root = workspace / "out"
         output_root.mkdir(mode=0o700)
-        attestation = validate_private_temp(private_root)
+        launcher_environment = self._launcher_environment(private_root)
+        attestation = validate_private_temp(private_root, launcher_environment)
         argv = [
             str(self.candidate_python),
             "raptor.py",
@@ -512,7 +524,7 @@ class QualificationController:
                 })
                 return record
             record["integrated_live_command_count"] = 1
-            capture = self._run(argv, env=self._launcher_environment(private_root), timeout=420)
+            capture = self._run(argv, env=launcher_environment, timeout=420)
             record.update({
                 "process_exit_code": capture.return_code,
                 "agentic_exit_code": capture.return_code,
@@ -778,6 +790,7 @@ class QualificationController:
             "packs_succeeded": summary.get("packs_succeeded"),
             "packs_failed": summary.get("packs_failed"),
             "aggregate_exit_code": summary.get("aggregate_exit_code"),
+            "failure_class": summary.get("failure_class"),
             "combined_sarif_valid": combined_valid,
             "per_pack_sarif_valid": pack_validations,
             "per_pack_full_validation": bool(pack_validations) and all(pack_validations.values()),
@@ -844,10 +857,13 @@ class QualificationController:
         record["private_temp_cleanup_complete"] = not workspace.exists()
 
 
-def validate_private_temp(private_root: Path) -> PrivateTempAttestation:
-    """Validate exactly the same bounded contract RaptorConfig enforces."""
+def validate_private_temp(
+    private_root: Path,
+    environment: Mapping[str, str],
+) -> PrivateTempAttestation:
+    """Validate the exact environment mapping passed to a bounded child."""
     root_text = str(private_root)
-    values = {name: root_text for name in _PRIVATE_TEMP_ENV}
+    values = {name: environment.get(name) for name in _PRIVATE_TEMP_ENV}
     present = private_root.exists()
     aliases_equal = all(value == root_text for value in values.values())
     absolute = private_root.is_absolute()
@@ -865,6 +881,9 @@ def validate_private_temp(private_root: Path) -> PrivateTempAttestation:
     except OSError:
         pass
     return PrivateTempAttestation(
+        credential_isolation_required=(
+            environment.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") == "1"
+        ),
         present=present,
         aliases_equal=aliases_equal,
         absolute=absolute,

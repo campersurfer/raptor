@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import resource
+import subprocess
 import sys
 import time
 
@@ -67,17 +69,60 @@ def test_is_available_false_on_non_darwin():
     assert _macos_spawn.is_available() is False
 
 
+def test_requested_nproc_preserves_inherited_ceiling(monkeypatch, tmp_path):
+    """A Darwin NPROC request must not replace the UID-wide inherited cap.
+
+    The preexec function runs in-process here, so this is deterministic:
+    it proves a requested 1024 cap neither calls setrlimit nor changes the
+    inherited RLIMIT_NPROC before the seatbelt shim starts.
+    """
+    inherited = resource.getrlimit(resource.RLIMIT_NPROC)
+    preexec_limits = []
+    setrlimit_calls = []
+
+    def base_preexec():
+        preexec_limits.append(resource.getrlimit(resource.RLIMIT_NPROC))
+
+    def fake_make_preexec(limits):
+        assert limits == {}
+        return base_preexec
+
+    def forbidden_setrlimit(*args):
+        setrlimit_calls.append(args)
+
+    def fake_run(command, **kwargs):
+        kwargs["preexec_fn"]()
+        os.write(int(kwargs["env"]["_RAPTOR_STATUS_FD"]), _macos_spawn._READY_BYTE)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(_macos_spawn, "_make_preexec_fn", fake_make_preexec)
+    monkeypatch.setattr(resource, "setrlimit", forbidden_setrlimit)
+    monkeypatch.setattr(_macos_spawn.subprocess, "run", fake_run)
+
+    result = _macos_spawn.run_sandboxed(
+        ["/usr/bin/true"],
+        output=str(tmp_path),
+        nproc_limit=1024,
+    )
+
+    assert result.returncode == 0
+    assert preexec_limits == [inherited]
+    assert setrlimit_calls == []
+
+
 # --- Darwin-only behavioural tests ------------------------------------
 
 @darwin_only
 def test_smoke_test_invocation_succeeds(tmp_path):
-    """Most basic smoke test: run /usr/bin/true under the sandbox.
-    Confirms sandbox-exec invocation works AND our kwarg threading
-    doesn't break the simplest possible invocation."""
+    """Run the real seatbelt shim with a requested NPROC cap.
+
+    The Darwin backend must start successfully while preserving that
+    host-wide inherited ceiling."""
     r = _macos_spawn.run_sandboxed(
         ["/usr/bin/true"],
         output=str(tmp_path),
         capture_output=True,
+        nproc_limit=1024,
         timeout=10,
     )
     assert r.returncode == 0
