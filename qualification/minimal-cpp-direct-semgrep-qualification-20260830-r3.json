@@ -1,0 +1,116 @@
+{
+  "artifact_contracts": {
+    "scan_manifest": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "scan_metrics": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "verification": {
+      "status": "declared",
+      "validation": "structural_contract_passed"
+    }
+  },
+  "child_started": false,
+  "command": {
+    "argv": [
+      "candidate-python",
+      "packages/static-analysis/scanner.py",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_empty_output>",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--policy-groups",
+      "all"
+    ],
+    "argv_sha256": "2fb742fbc0e62dc41fc2daddc9b20dc22c1f17bf579fd71e90072dec2982fbc9"
+  },
+  "consumed_artifact_hashes": {
+    "scan/combined.sarif": "97d5a9e5a185627caf94f0b12777030835b57c466ebaa866a0c2dc888cb33695",
+    "scan/scan-manifest.json": "cb4ddf14316857d7f9abb2b9a1f2a86b772e91b3a5f52c8e2955060618041a50",
+    "scan/scan_metrics.json": "6924c2e36150a0caa6dba290798265b8ba2d2f8d1d579563ae593fa6759a0995",
+    "scan/semgrep-run-summary.json": "becd8b79c948556b70534709740214c3219b8a9aedc314b83ae55ccf0f0b1141",
+    "scan/verification.json": "898c27a052ce51c5e66491ea1b7c630744f28a8a5ce88387409beee51274a3df"
+  },
+  "credential_isolation_required": true,
+  "direct_fallback_occurred": false,
+  "dispatcher_started": false,
+  "execution": {
+    "commit": "a138da823660fa6adaadd133d34778697374249a",
+    "tree": "209b73fcbe7b26b0c705c9de8bac76332de65d67"
+  },
+  "failure_class": "direct_semgrep_contract_failed",
+  "failure_stage": "direct_semgrep_qualification",
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "bb9b64d2ffa4820531bfd4067f5ae077791bc52b"
+  },
+  "immutable": true,
+  "output_digests": {
+    "stderr_sha256": "85581b87bea2014ae8c3534583aa1057be9483d5c8dfd88289e506573b08585a",
+    "stdout_sha256": "ee8faa57dcc720c2cb2f4ec6a4e9e4d6975287a9e4e955c2c2f41babc71d6e36"
+  },
+  "private_temp_absolute": true,
+  "private_temp_canonical": true,
+  "private_temp_cleanup_complete": true,
+  "private_temp_current_user_owned": true,
+  "private_temp_mode": "0700",
+  "private_temp_non_symlink": true,
+  "private_temp_present": true,
+  "process_exit_code": 4,
+  "promotable": false,
+  "provider_turn_count": 0,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "retention": {
+    "fixture_and_raw_run_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "sarif_validation": {
+    "canonical_schema": "engine/schemas/sarif-2.1.0.json",
+    "combined_full_validation": false,
+    "jsonschema_distribution": "jsonschema",
+    "jsonschema_version": "unavailable",
+    "per_pack_full_validation": false,
+    "schema_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+  },
+  "scanner_exit_code": 4,
+  "scanner_started": true,
+  "schema_version": 1,
+  "semgrep": {
+    "aggregate_exit_code": 4,
+    "combined_sarif_valid": false,
+    "failure_class": null,
+    "packs_dispatched": 16,
+    "packs_failed": 16,
+    "packs_succeeded": 0,
+    "per_pack_full_validation": false,
+    "per_pack_sarif_valid": {
+      "category_auth": false,
+      "category_flows": false,
+      "category_injection": false,
+      "category_secrets": false,
+      "category_sinks": false,
+      "custom_b616509922abed54": false,
+      "custom_d2a0d143a1989c57": false,
+      "custom_e54e13ee642eff13": false,
+      "custom_fac7d4a8a3e5d001": false,
+      "semgrep_auth": false,
+      "semgrep_dataflow": false,
+      "semgrep_injection": false,
+      "semgrep_owasp_top_10": false,
+      "semgrep_secrets": false,
+      "semgrep_security_audit": false,
+      "semgrep_sinks": false
+    },
+    "sandbox_engagement": "engaged"
+  },
+  "socket_path_bytes": null,
+  "status": "failed",
+  "tcp_fallback_occurred": false,
+  "temp_aliases_equal": true
+}
