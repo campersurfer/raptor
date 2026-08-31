@@ -1,0 +1,349 @@
+{
+  "artifact_contracts": {
+    "scan_manifest": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "scan_metrics": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "verification": {
+      "status": "declared",
+      "validation": "structural_contract_passed"
+    }
+  },
+  "candidate_runtime": {
+    "candidate_python": {
+      "executable_basename": "python",
+      "implementation": "cpython",
+      "path_kind": "system",
+      "resolved_executable_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+      "version": {
+        "major": 3,
+        "minor": 13,
+        "patch": 15
+      }
+    },
+    "failure_class": null,
+    "jsonschema": {
+      "expected_version": "4.26.0",
+      "importable": true,
+      "version": "4.26.0",
+      "version_matches": true
+    },
+    "passed": true,
+    "probe_output_digests": {
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "39ba6917ac3ee521476c43a1397e5fe4e602f30bb3646882e3697ad4230fc683"
+    },
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "sarif_schema": {
+      "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+      "hash_matches": true,
+      "present": true,
+      "relative_path": "engine/schemas/sarif-2.1.0.json",
+      "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "semgrep": {
+      "basename": "semgrep",
+      "executable": true,
+      "path_kind": "system",
+      "sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
+      "version": "1.174.0"
+    }
+  },
+  "child_started": false,
+  "command": {
+    "argv": [
+      "candidate-python",
+      "packages/static-analysis/scanner.py",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_empty_output>",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--policy-groups",
+      "all"
+    ],
+    "argv_sha256": "45a9cdc6ed89430660b6dd6cc85e98bc093a3db19a3e2ce056620f43c6cd2437"
+  },
+  "consumed_artifact_hashes": {
+    "scan/combined.sarif": "6b9eca299ece7a7abf0e20652a76fe77790404412125c01012c23f8f707e552b",
+    "scan/scan-manifest.json": "a17f133f7b8fd84ded442acee9219bc7084a4d9f53b12b3d0dab690d335a053a",
+    "scan/scan_metrics.json": "6924c2e36150a0caa6dba290798265b8ba2d2f8d1d579563ae593fa6759a0995",
+    "scan/semgrep-run-summary.json": "7857ae750ac1beee120d1e153f1abdf80c29d0198333c71415e5e01fb69bf305",
+    "scan/verification.json": "9f1bfe716f041a8df0bd5295c500b3b9ee44e3f57457a7e87b70b2849db70703"
+  },
+  "credential_isolation_required": true,
+  "direct_fallback_occurred": false,
+  "dispatcher_started": false,
+  "execution": {
+    "commit": "708e37d697f4d7215d25dc2e21424ea6bd296d50",
+    "tree": "bfafac8ea35f7ac67a7b707901e3fffd534f505d"
+  },
+  "failure_class": null,
+  "failure_stage": null,
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "bb9b64d2ffa4820531bfd4067f5ae077791bc52b"
+  },
+  "immutable": true,
+  "output_digests": {
+    "stderr_sha256": "cfc103063bf2375db13831c816e078bbcc6ca87415a131c843702bc9a87056d8",
+    "stdout_sha256": "dc5d4e329940ba927e7478e22fd73d025492e2497d258c3e6c330e29224c5f9e"
+  },
+  "packs_dispatched": 16,
+  "private_temp_absolute": true,
+  "private_temp_canonical": true,
+  "private_temp_cleanup_complete": true,
+  "private_temp_current_user_owned": true,
+  "private_temp_mode": "0700",
+  "private_temp_non_symlink": true,
+  "private_temp_present": true,
+  "process_exit_code": 0,
+  "promotable": false,
+  "provider_turn_count": 0,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "retention": {
+    "fixture_and_raw_run_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "sarif_validation": {
+    "canonical_schema": "engine/schemas/sarif-2.1.0.json",
+    "combined_full_validation": true,
+    "combined_validation_status": "full_valid",
+    "jsonschema_distribution": "jsonschema",
+    "jsonschema_version": "4.26.0",
+    "jsonschema_version_matches": true,
+    "per_pack_full_validation": true,
+    "schema_hash_matches": true,
+    "schema_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+  },
+  "scanner_exit_code": 0,
+  "scanner_started": true,
+  "schema_version": 1,
+  "semgrep": {
+    "aggregate_exit_code": 0,
+    "combined_sarif_validation_status": "full_valid",
+    "failure_class": null,
+    "failure_class_counts": {},
+    "failure_class_source": "no_failed_packs",
+    "pack_diagnostics": [
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "739ce238e726589ea0071019931890c2fbd8bb7156d8d83f54ea582a0bf75763",
+        "failure_class": null,
+        "pack_name": "category_auth",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "d368619399741bc45e5ec5bda5945f8999601e9248b8b7ad01f6be3aff97fc8c",
+        "failure_class": null,
+        "pack_name": "semgrep_auth",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "ef4e0efa7b3f6bd5c1b683ee896c8400c424f12e7925652622e738335cc2220c",
+        "failure_class": null,
+        "pack_name": "custom_e54e13ee642eff13",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "515fd10b97231c0d7d25e13a73c049b88053cab51b63eb4b56ba9a6db7bdd1ae",
+        "failure_class": null,
+        "pack_name": "custom_fac7d4a8a3e5d001",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "a7c591fe8a7ce436117c7d7b1cc9e902f7ee6c56688de7bbecd5b3e4b98d7f7c",
+        "failure_class": null,
+        "pack_name": "custom_d2a0d143a1989c57",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "970996554f3ce3377f0b17a69bc778230afac0f290acad92ac01ba9cb210b102",
+        "failure_class": null,
+        "pack_name": "category_flows",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "99e335a57d5da38d508a740f8b4fb048cfd1569f44ad56f044defe2735cd8e16",
+        "failure_class": null,
+        "pack_name": "semgrep_dataflow",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "1d29da7932fa6c25ff8271d90870a8ce7836d41db7c9df632d72a392192a1304",
+        "failure_class": null,
+        "pack_name": "category_injection",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "c306782cf67427a7ef261de48ffd98de6594ffe4cc7f5fa367ec44233250b270",
+        "failure_class": null,
+        "pack_name": "semgrep_injection",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "f72d92fb3cd4bdc1f6319629254de1c1617c9a7e749176b2eba7cd47bc8912a2",
+        "failure_class": null,
+        "pack_name": "custom_b616509922abed54",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "c1f2a8298bbf45e867190c671b822cab40a4c458fb6d30411af277b8b64c8c82",
+        "failure_class": null,
+        "pack_name": "category_secrets",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "485a563532973a770e1bbbdf2a9d01ffd1733eecadee3d324c3757aec46643ec",
+        "failure_class": null,
+        "pack_name": "semgrep_secrets",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_directory",
+        "config_sha256": "6eeaa583b7e4ad18e92f2ecdecdcf1daae4199a0a806f38d77000634015408dc",
+        "failure_class": null,
+        "pack_name": "category_sinks",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "20e597c3e0c1dcae8e106b61265fcf564e56ecd5f1ee9b6fd902b07898565c3c",
+        "failure_class": null,
+        "pack_name": "semgrep_sinks",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "c39c49b23ae2a3d1e069be1979129db7a5b75d0e1712bebfadedffcc5cec0719",
+        "failure_class": null,
+        "pack_name": "semgrep_security_audit",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "",
+        "config_kind": "local_file",
+        "config_sha256": "b4a9f044eeba7eb8b203dd68dd4826dbd109fcdb413994f077172cbf6a530371",
+        "failure_class": null,
+        "pack_name": "semgrep_owasp_top_10",
+        "proxy_event_count": 12,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      }
+    ],
+    "packs_dispatched": 16,
+    "packs_failed": 0,
+    "packs_succeeded": 16,
+    "per_pack_full_validation": true,
+    "runtime_identity_matches_preflight": true,
+    "sandbox_engagement": "engaged",
+    "scanner": {
+      "basename": "semgrep",
+      "executable": true,
+      "path_kind": "system",
+      "sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
+      "version": "1.174.0"
+    },
+    "summary_schema_version": 2,
+    "unclassified_pack_count": 0
+  },
+  "socket_path_bytes": null,
+  "status": "qualified",
+  "tcp_fallback_occurred": false,
+  "temp_aliases_equal": true
+}
