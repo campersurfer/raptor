@@ -64,7 +64,9 @@ class TestSemgrepRunSummary:
         assert summary["all_semgrep_failed"] is True
         pack = summary["packs"][0]
         assert pack["failure_class"] == "target_staging_error"
-        assert pack["stderr_class"] == "target_staging_error"
+        assert summary["schema_version"] == 2
+        assert summary["failure_class"] == "target_staging_error"
+        assert summary["failure_class_counts"] == {"target_staging_error": 1}
         assert pack["config_kind"] == "local_file"
         assert pack["config_sha256"]
         assert pack["sandbox_denial_count"] == 2
@@ -95,11 +97,132 @@ class TestSemgrepRunSummary:
             sandbox_engagement_state="engaged",
         )
 
-        assert summary["packs"][0]["failure_class"] == "sarif_invalid"
-        assert summary["combined_sarif_valid"] is False
+        assert summary["packs"][0]["failure_class"] == "sarif_full_validation_unavailable"
+        assert summary["packs"][0]["sarif_validation_status"] == "full_validation_unavailable"
+        assert summary["combined_sarif_validation_status"] == "full_validation_unavailable"
         assert summary["all_semgrep_failed"] is True
         assert summary["aggregate_exit_code"] == 4
+    @patch.object(_scanner_mod, "validate_sarif", return_value=None)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    @patch.object(
+        _scanner_mod,
+        "run",
+        return_value=(1, '{"version":"2.1.0","runs":[]}', ""),
+    )
+    def test_unavailable_full_validation_has_one_fail_closed_meaning(
+        self, _run, _identity, _validate, tmp_path,
+    ):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
 
+        _, scan_success = _scanner_mod.run_single_semgrep(
+            "category_auth",
+            str(config),
+            tmp_path,
+            tmp_path,
+            timeout=1,
+        )
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert (
+            scan_success,
+            summary["packs"][0]["failure_class"],
+            summary["aggregate_exit_code"],
+        ) == (False, "sarif_full_validation_unavailable", 4)
+
+    def test_invalid_unavailable_and_missing_sarif_are_distinct(self, tmp_path):
+        sarif = tmp_path / "result.sarif"
+        sarif.write_text('{"version":"2.1.0","runs":[]}', encoding="utf-8")
+        with patch.object(_scanner_mod, "validate_sarif", return_value=None):
+            assert _scanner_mod._sarif_validation_status(sarif) == "full_validation_unavailable"
+        with patch.object(_scanner_mod, "validate_sarif", return_value=False):
+            assert _scanner_mod._sarif_validation_status(sarif) == "invalid"
+        assert _scanner_mod._sarif_validation_status(tmp_path / "missing.sarif") == "missing"
+
+    @patch.object(_scanner_mod, "validate_sarif", return_value=True)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_mixed_pack_failures_retain_counts_without_single_cause(
+        self, _identity, _validate, tmp_path,
+    ):
+        first_config = tmp_path / "first.yml"
+        second_config = tmp_path / "second.yml"
+        first_config.write_text("rules: []\n", encoding="utf-8")
+        second_config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(tmp_path, "category_auth", 127, "semgrep: command not found")
+        _write_pack(tmp_path, "category_flows", 2, "invalid yaml configuration")
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[
+                ("category_auth", str(first_config)),
+                ("category_flows", str(second_config)),
+            ],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["failure_class"] == "mixed_pack_failures"
+        assert summary["failure_class_source"] == "mixed_pack_failure_classes"
+        assert summary["failure_class_counts"] == {
+            "invalid_config": 1,
+            "semgrep_missing": 1,
+        }
+
+    def test_summary_parser_accepts_historical_one_and_current_two(self):
+        from raptor_agentic import _validate_semgrep_run_summary
+
+        common = {
+            "packs_dispatched": 1,
+            "packs_succeeded": 1,
+            "packs_failed": 0,
+            "all_semgrep_failed": False,
+            "aggregate_exit_code": 0,
+            "combined_sarif_exists": True,
+            "sandbox_engagement": {"state": "engaged", "denial_count": 0},
+        }
+        version_one = {
+            **common,
+            "schema_version": 1,
+            "combined_sarif_valid": True,
+            "packs": [{
+                "pack_name": "category_auth",
+                "config_kind": "local_file",
+                "config_sha256": "a" * 64,
+                "raw_exit_code": 0,
+                "sarif_exists": True,
+                "sarif_valid": True,
+                "stderr_class": "none",
+                "failure_class": None,
+                "bounded_stderr_tail": "",
+                "sandbox_denial_count": 0,
+                "proxy_event_count": 0,
+            }],
+        }
+        version_two = {
+            **common,
+            "schema_version": 2,
+            "combined_sarif_validation_status": "full_valid",
+            "packs": [{
+                "pack_name": "category_auth",
+                "config_kind": "local_file",
+                "config_sha256": "a" * 64,
+                "raw_exit_code": 0,
+                "sarif_exists": True,
+                "sarif_validation_status": "full_valid",
+                "failure_class": None,
+                "bounded_stderr_tail": "",
+                "sandbox_denial_count": 0,
+                "proxy_event_count": 0,
+            }],
+        }
+
+        assert _validate_semgrep_run_summary(version_one) is None
+        assert _validate_semgrep_run_summary(version_two) is None
     @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
     def test_default_schema_fully_validates_valid_sarif(self, _identity, tmp_path):
         config = tmp_path / "rules.yml"
@@ -129,8 +252,8 @@ class TestSemgrepRunSummary:
         )
 
         assert summary["packs"][0]["failure_class"] is None
-        assert summary["packs"][0]["sarif_valid"] is True
-        assert summary["combined_sarif_valid"] is True
+        assert summary["packs"][0]["sarif_validation_status"] == "full_valid"
+        assert summary["combined_sarif_validation_status"] == "full_valid"
         assert summary["all_semgrep_failed"] is False
         assert summary["aggregate_exit_code"] == 0
 
@@ -169,20 +292,19 @@ class TestSemgrepRunSummary:
     def test_failure_classes_do_not_collapse_to_sandbox(self):
         classify = _scanner_mod._classify_semgrep_failure
         assert classify(
-            -1, "registry cache missing", sarif_exists=False,
-            sarif_valid=False, config_kind="registry",
+            -1, "registry cache missing",
+            sarif_validation_status="missing", config_kind="registry",
         ) == "registry_cache_missing"
         assert classify(
-            -1, "permission denied", sarif_exists=False,
-            sarif_valid=False, config_kind="local_directory",
+            -1, "permission denied",
+            sarif_validation_status="missing", config_kind="local_directory",
         ) == "config_unreadable"
         assert classify(
-            -1, "sandbox read denied", sarif_exists=False,
-            sarif_valid=False, config_kind="local_file",
+            -1, "sandbox read denied",
+            sarif_validation_status="missing", config_kind="local_file",
         ) == "sandbox_read_denied"
         assert classify(
-            0, "", sarif_exists=False,
-            sarif_valid=False, config_kind="local_file",
+            0, "", sarif_validation_status="invalid", config_kind="local_file",
         ) == "sarif_invalid"
 
     def test_all_dispatched_packs_fail_without_sarif_paths(self):

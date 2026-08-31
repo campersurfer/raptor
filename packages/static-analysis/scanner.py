@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,7 +41,7 @@ from packages import semgrep as semgrep_pkg
 logger = get_logger()
 
 
-_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 1
+_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 2
 _MAX_SEMGREP_DIAGNOSTIC_CHARS = 800
 
 _PUBLIC_SEMGREP_PACK_NAMES = frozenset(
@@ -73,6 +74,29 @@ def _bounded_diagnostic_tail(value: object, limit: int = _MAX_SEMGREP_DIAGNOSTIC
     return text[-limit:]
 
 
+def _executable_path_kind(path: Path) -> str:
+    """Classify an executable path without retaining the path itself."""
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return "unknown"
+    rendered = str(resolved)
+    if rendered.startswith((
+        "/bin/", "/sbin/", "/usr/", "/opt/", "/System/Library/",
+        "/Library/Frameworks/",
+    )):
+        return "system"
+    current_uid = getattr(os, "geteuid", os.getuid)()
+    for parent in (resolved.parent, *resolved.parents):
+        try:
+            observed = parent.stat()
+        except OSError:
+            continue
+        if observed.st_uid == current_uid and stat.S_IMODE(observed.st_mode) == 0o700:
+            return "governed_private"
+    return "unknown"
+
+
 def _semgrep_executable_identity() -> dict[str, object]:
     """Capture portable, non-private identity for the configured Semgrep binary."""
     candidate = shutil.which("semgrep") or "/opt/homebrew/bin/semgrep"
@@ -93,6 +117,7 @@ def _semgrep_executable_identity() -> dict[str, object]:
                     text=True,
                     timeout=10,
                     env=safe_env,
+                    stdin=subprocess.DEVNULL,
                 )
                 version = _bounded_diagnostic_tail(
                     proc.stdout or proc.stderr, limit=160
@@ -105,16 +130,14 @@ def _semgrep_executable_identity() -> dict[str, object]:
             digest = sha256_bytes(path.read_bytes())
         except OSError:
             digest = None
-    rendered = str(path)
     return {
         "basename": path.name or "semgrep",
-        "path_kind": "system" if rendered.startswith(("/usr/", "/opt/")) else "private",
+        "path_kind": _executable_path_kind(path),
         "exists": exists,
         "executable": executable,
         "version": version,
         "sha256": digest,
     }
-
 
 def _semgrep_config_identity(config: str) -> tuple[str, Optional[str]]:
     """Classify and hash a resolved pack without leaking its source path."""
@@ -138,13 +161,19 @@ def _read_pack_exit(path: Path) -> Optional[int]:
         return None
 
 
-def _sarif_is_acceptable(path: Path) -> bool:
+def _sarif_validation_status(path: Path) -> str:
+    """Return the durable four-state SARIF validation result."""
     if not path.is_file():
-        return False
+        return "missing"
     try:
-        return validate_sarif(path) is True
-    except Exception:  # noqa: BLE001 - diagnostic persistence must not fail scans
-        return False
+        result = validate_sarif(path)
+    except Exception:  # noqa: BLE001 - summary persistence must fail closed
+        return "invalid"
+    if result is True:
+        return "full_valid"
+    if result is None:
+        return "full_validation_unavailable"
+    return "invalid"
 
 
 def _count_jsonl_events(path: Path) -> int:
@@ -159,12 +188,11 @@ def _classify_semgrep_failure(
     raw_exit_code: Optional[int],
     stderr_tail: str,
     *,
-    sarif_exists: bool,
-    sarif_valid: bool,
+    sarif_validation_status: str,
     config_kind: str,
 ) -> Optional[str]:
     """Map only evidenced Semgrep outcomes to a closed diagnostic class."""
-    if raw_exit_code in (0, 1) and sarif_exists and sarif_valid:
+    if raw_exit_code in (0, 1) and sarif_validation_status == "full_valid":
         return None
     text = stderr_tail.lower()
     if "sbpl string contains control character" in text:
@@ -189,11 +217,35 @@ def _classify_semgrep_failure(
         return "sandbox_exec_denied"
     if "permission denied" in text and config_kind.startswith("local_"):
         return "config_unreadable"
-    if not sarif_exists or not sarif_valid:
+    if sarif_validation_status == "missing":
+        return "sarif_missing"
+    if sarif_validation_status == "invalid":
         return "sarif_invalid"
+    if sarif_validation_status == "full_validation_unavailable":
+        return "sarif_full_validation_unavailable"
     if raw_exit_code is None:
         return "internal_scanner_exception"
     return "unknown"
+
+
+def _pack_failure_summary(
+    packs: list[dict[str, object]],
+    failed: int,
+) -> tuple[Optional[str], dict[str, int], str]:
+    counts: dict[str, int] = {}
+    for pack in packs:
+        failure = pack.get("failure_class")
+        if isinstance(failure, str) and failure:
+            counts[failure] = counts.get(failure, 0) + 1
+    counts = dict(sorted(counts.items()))
+    if failed == 0:
+        return None, counts, "no_failed_packs"
+    classified = sum(counts.values())
+    if classified == 0:
+        return "pack_failure_class_unavailable", counts, "no_per_pack_failure_class"
+    if classified != failed or len(counts) > 1:
+        return "mixed_pack_failures", counts, "mixed_pack_failure_classes"
+    return next(iter(counts)), counts, "uniform_pack_failure_class"
 
 
 def build_semgrep_run_summary(
@@ -214,7 +266,7 @@ def build_semgrep_run_summary(
         stderr = out_dir / f"semgrep_{suffix}.stderr.log"
         raw_exit_code = _read_pack_exit(out_dir / f"semgrep_{suffix}.exit")
         sarif_exists = sarif.is_file()
-        sarif_valid = _sarif_is_acceptable(sarif)
+        validation_status = _sarif_validation_status(sarif)
         stderr_tail = _bounded_diagnostic_tail(
             stderr.read_text(encoding="utf-8", errors="replace")
             if stderr.is_file() else ""
@@ -223,8 +275,7 @@ def build_semgrep_run_summary(
         pack_failure = _classify_semgrep_failure(
             raw_exit_code,
             stderr_tail,
-            sarif_exists=sarif_exists,
-            sarif_valid=sarif_valid,
+            sarif_validation_status=validation_status,
             config_kind=config_kind,
         )
         packs.append({
@@ -233,8 +284,7 @@ def build_semgrep_run_summary(
             "config_sha256": config_sha256,
             "raw_exit_code": raw_exit_code,
             "sarif_exists": sarif_exists,
-            "sarif_valid": sarif_valid,
-            "stderr_class": pack_failure or "none",
+            "sarif_validation_status": validation_status,
             "failure_class": pack_failure,
             "bounded_stderr_tail": stderr_tail,
             "sandbox_denial_count": sandbox_denials,
@@ -242,6 +292,7 @@ def build_semgrep_run_summary(
         })
     succeeded = sum(1 for pack in packs if pack["failure_class"] is None)
     failed = len(packs) - succeeded
+    pack_failure, failure_counts, failure_source = _pack_failure_summary(packs, failed)
     combined = out_dir / "combined.sarif"
     return {
         "schema_version": _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
@@ -251,17 +302,17 @@ def build_semgrep_run_summary(
         "packs_failed": failed,
         "all_semgrep_failed": bool(packs) and failed == len(packs),
         "aggregate_exit_code": aggregate_exit_code,
-        "failure_class": failure_class,
+        "failure_class": failure_class or pack_failure,
+        "failure_class_source": "scanner" if failure_class else failure_source,
+        "failure_class_counts": failure_counts,
         "packs": packs,
         "combined_sarif_exists": combined.is_file(),
-        "combined_sarif_valid": _sarif_is_acceptable(combined),
+        "combined_sarif_validation_status": _sarif_validation_status(combined),
         "sandbox_engagement": {
             "state": sandbox_engagement_state,
             "denial_count": sandbox_denials,
         },
     }
-
-
 def write_semgrep_run_summary(**kwargs: Any) -> dict[str, object]:
     """Persist the scanner's bounded diagnostic contract atomically."""
     summary = build_semgrep_run_summary(**kwargs)
@@ -1207,9 +1258,8 @@ def run_single_semgrep(
         #   False → load failed or schema rejected the structure
         #   None  → basic shape OK but full schema check couldn't run
         #           (jsonschema not installed, schema file missing)
-        # Treat None as trust-with-warning rather than rejection;
-        # the basic-shape check (load + version + runs field) is
-        # already strict enough to catch malformed semgrep output.
+        # A direct qualification may retain the SARIF for diagnostics, but it
+        # cannot count the pack as successful without full schema validation.
         is_valid = validate_sarif(sarif)
         if is_valid is False:
             logger.warning(f"Semgrep scan '{name}' produced invalid SARIF")
@@ -1219,7 +1269,7 @@ def run_single_semgrep(
                 "schema validation skipped (jsonschema or schema file unavailable)"
             )
 
-        success = rc in (0, 1) and is_valid is not False
+        success = rc in (0, 1) and is_valid is True
         logger.debug(f"Completed Semgrep scan: {name} (exit={rc}, valid={is_valid})")
 
         return str(sarif), success

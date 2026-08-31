@@ -40,6 +40,8 @@ logger = get_logger()
 
 
 _QUALIFICATION_SUMMARY_SCHEMA_VERSION = 1
+_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 2
+_HISTORICAL_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 1
 _MAX_QUALIFICATION_DIAGNOSTIC_CHARS = 800
 _TERMINAL_CALL_COUNT = re.compile(
     r"submit_context_map must be invoked exactly once; observed (\d+)"
@@ -196,18 +198,40 @@ def _report_threat_model_phase(out_dir: Path, phase: object) -> dict:
     return report
 
 def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
-    """Reject incomplete scanner output before any model-analysis phase starts."""
+    """Accept the current scanner summary and explicit historical version 1."""
     if not isinstance(payload, dict):
         return "summary_not_object"
     required = {
         "schema_version", "packs_dispatched", "packs_succeeded", "packs_failed",
         "all_semgrep_failed", "aggregate_exit_code", "packs",
-        "combined_sarif_exists", "combined_sarif_valid", "sandbox_engagement",
+        "combined_sarif_exists", "sandbox_engagement",
     }
     if not required.issubset(payload):
         return "summary_missing_required_fields"
-    if payload.get("schema_version") != _QUALIFICATION_SUMMARY_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in {
+        _HISTORICAL_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
+        _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
+    }:
         return "summary_schema_version"
+    if schema_version == _HISTORICAL_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION:
+        if "combined_sarif_valid" not in payload:
+            return "summary_missing_required_fields"
+        pack_required = {
+            "pack_name", "config_kind", "config_sha256", "raw_exit_code",
+            "sarif_exists", "sarif_valid", "stderr_class", "failure_class",
+            "bounded_stderr_tail", "sandbox_denial_count", "proxy_event_count",
+        }
+    else:
+        if payload.get("combined_sarif_validation_status") not in {
+            "full_valid", "invalid", "full_validation_unavailable", "missing",
+        }:
+            return "summary_combined_sarif_status_invalid"
+        pack_required = {
+            "pack_name", "config_kind", "config_sha256", "raw_exit_code",
+            "sarif_exists", "sarif_validation_status", "failure_class",
+            "bounded_stderr_tail", "sandbox_denial_count", "proxy_event_count",
+        }
     packs = payload.get("packs")
     if not isinstance(packs, list):
         return "summary_packs_not_list"
@@ -223,15 +247,13 @@ def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
     for pack in packs:
         if not isinstance(pack, dict):
             return "summary_pack_not_object"
-        if not {
-            "pack_name", "config_kind", "config_sha256", "raw_exit_code",
-            "sarif_exists", "sarif_valid", "stderr_class", "failure_class",
-            "bounded_stderr_tail", "sandbox_denial_count", "proxy_event_count",
-        }.issubset(pack):
+        if not pack_required.issubset(pack):
             return "summary_pack_missing_required_fields"
+        if schema_version == _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION and pack.get(
+            "sarif_validation_status"
+        ) not in {"full_valid", "invalid", "full_validation_unavailable", "missing"}:
+            return "summary_pack_sarif_status_invalid"
     return None
-
-
 def _load_semgrep_run_summary(scan_dir: Path) -> tuple[Optional[dict], Optional[str]]:
     path = scan_dir / "semgrep-run-summary.json"
     if not path.is_file():

@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -19,7 +20,6 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -83,6 +83,27 @@ _CANARY_ATTESTATION_FIELDS = (
 )
 
 
+_EXPECTED_JSONSCHEMA_VERSION = "4.26.0"
+_SARIF_SCHEMA_RELATIVE_PATH = "engine/schemas/sarif-2.1.0.json"
+_EXPECTED_SARIF_SCHEMA_SHA256 = "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+_MAX_CANDIDATE_PROBE_OUTPUT_BYTES = 65536
+_MAX_PACK_DIAGNOSTICS = 16
+_MAX_PACK_STDERR_CHARS = 800
+_SARIF_VALIDATION_STATUSES = frozenset({
+    "full_valid", "invalid", "full_validation_unavailable", "missing",
+})
+_DIAGNOSTIC_SENSITIVE_VALUE = re.compile(
+    r"(?i)\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|"
+    r"cookie|password|secret|session(?:_id)?|token)\b\s*(?:=|:)\s*[^\s,;]+"
+)
+_DIAGNOSTIC_BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_DIAGNOSTIC_SENSITIVE_HEADER = re.compile(
+    r"(?im)^(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-(?:api-key|auth(?:orization)?|token|secret))\s*:\s*[^\r\n]*$"
+)
+_DIAGNOSTIC_PRIVATE_PATH = re.compile(
+    r"(?<!\w)/(?:Users|home|tmp|private/(?:tmp|var/folders)|var/folders)/[^\s'\"]+"
+)
 class QualificationControllerError(RuntimeError):
     """A bounded controller invariant failed before a live command."""
 
@@ -170,6 +191,17 @@ class QualificationController:
             tree=self._git("rev-parse", "HEAD^{tree}").stdout.strip(),
         )
 
+    def _candidate_runtime_preflight(
+        self,
+        environment: dict[str, str],
+    ) -> dict[str, Any]:
+        """Attest the exact candidate interpreter and worker environment."""
+        capture, payload = self._run_bounded_json(
+            [str(self.candidate_python), "-c", _candidate_runtime_probe_source()],
+            env=environment,
+            timeout=20,
+        )
+        return _bounded_candidate_runtime_record(capture, payload)
     def run_no_provider_preflight(self) -> dict[str, Any]:
         """Exercise a real local dispatcher without invoking a provider."""
         workspace = self._workspace()
@@ -195,6 +227,7 @@ class QualificationController:
             "child_started": False,
             "provider_turn_count": 0,
             "scanner_started": False,
+            "packs_dispatched": 0,
             "direct_fallback_occurred": False,
             "tcp_fallback_occurred": False,
             "process_exit_code": None,
@@ -224,6 +257,16 @@ class QualificationController:
                 })
                 return record
 
+            candidate_runtime = self._candidate_runtime_preflight(worker_environment)
+            record["candidate_runtime"] = candidate_runtime
+            if candidate_runtime.get("passed") is not True:
+                record.update({
+                    "process_exit_code": 2,
+                    "failure_stage": "candidate_runtime_preflight",
+                    "failure_class": candidate_runtime.get("failure_class")
+                    or "candidate_runtime_probe_invalid",
+                })
+                return record
             from core.llm.dispatcher.auth import CredentialStore
             from core.llm.dispatcher.server import LLMDispatcher
             from core.llm.dispatcher.spawn import spawn_worker
@@ -442,6 +485,18 @@ class QualificationController:
         try:
             if not attestation.valid:
                 return self._set_contract_failure(record)
+            candidate_runtime = self._candidate_runtime_preflight(worker_environment)
+            record["candidate_runtime"] = candidate_runtime
+            if candidate_runtime.get("passed") is not True:
+                record.update({
+                    "process_exit_code": 2,
+                    "scanner_exit_code": None,
+                    "packs_dispatched": 0,
+                    "failure_stage": "candidate_runtime_preflight",
+                    "failure_class": candidate_runtime.get("failure_class")
+                    or "candidate_runtime_probe_invalid",
+                })
+                return record
             capture = self._run(argv, env=worker_environment)
             record.update({
                 "process_exit_code": capture.return_code,
@@ -575,6 +630,7 @@ class QualificationController:
             "child_started": False,
             "provider_turn_count": 0,
             "scanner_started": False,
+            "packs_dispatched": 0,
             "direct_fallback_occurred": False,
             "tcp_fallback_occurred": False,
             "failure_stage": None,
@@ -777,35 +833,89 @@ class QualificationController:
         record["consumed_artifact_hashes"] = _artifact_hashes(scan_out, prefix="scan")
         if not isinstance(summary, dict):
             return
+        summary_version = summary.get("schema_version")
+        raw_packs = summary.get("packs")
+        diagnostics = [
+            diagnostic
+            for pack in (raw_packs[:_MAX_PACK_DIAGNOSTICS] if isinstance(raw_packs, list) else [])
+            if isinstance(pack, dict)
+            for diagnostic in (_bounded_pack_diagnostic(pack, summary_version),)
+            if diagnostic is not None
+        ]
         sandbox = summary.get("sandbox_engagement")
         sandbox_state = sandbox.get("state") if isinstance(sandbox, dict) else None
-        pack_validations = {
-            str(pack.get("pack_name")): pack.get("sarif_valid") is True
-            for pack in summary.get("packs", [])
-            if isinstance(pack, dict) and isinstance(pack.get("pack_name"), str)
-        }
-        combined_valid = _validate_sarif(scan_out / "combined.sarif")
+        dispatched = _bounded_nonnegative_int(summary.get("packs_dispatched"))
+        succeeded = _bounded_nonnegative_int(summary.get("packs_succeeded"))
+        failed = _bounded_nonnegative_int(summary.get("packs_failed"))
+        failure_class, failure_counts, failure_source, unclassified = (
+            _pack_failure_evidence(
+                diagnostics,
+                failed,
+                summary.get("failure_class"),
+            )
+        )
+        combined_status = _summary_combined_validation_status(summary, summary_version)
+        per_pack_full = (
+            dispatched is not None
+            and dispatched > 0
+            and dispatched == len(diagnostics)
+            and all(
+                diagnostic["sarif_validation_status"] == "full_valid"
+                for diagnostic in diagnostics
+            )
+        )
+        scanner_identity = _bounded_executable_identity(summary.get("scanner"))
+        candidate_runtime = record.get("candidate_runtime")
+        candidate_semgrep = (
+            candidate_runtime.get("semgrep")
+            if isinstance(candidate_runtime, dict) else None
+        )
+        runtime_identity_matches = _executable_identities_match(
+            candidate_semgrep,
+            scanner_identity,
+        )
+        record["packs_dispatched"] = dispatched
         record["semgrep"] = {
-            "packs_dispatched": summary.get("packs_dispatched"),
-            "packs_succeeded": summary.get("packs_succeeded"),
-            "packs_failed": summary.get("packs_failed"),
+            "summary_schema_version": summary_version,
+            "scanner": scanner_identity,
+            "runtime_identity_matches_preflight": runtime_identity_matches,
+            "packs_dispatched": dispatched,
+            "packs_succeeded": succeeded,
+            "packs_failed": failed,
             "aggregate_exit_code": summary.get("aggregate_exit_code"),
-            "failure_class": summary.get("failure_class"),
-            "combined_sarif_valid": combined_valid,
-            "per_pack_sarif_valid": pack_validations,
-            "per_pack_full_validation": bool(pack_validations) and all(pack_validations.values()),
+            "failure_class": failure_class,
+            "failure_class_source": failure_source,
+            "failure_class_counts": failure_counts,
+            "unclassified_pack_count": unclassified,
+            "pack_diagnostics": diagnostics,
+            "combined_sarif_validation_status": combined_status,
+            "per_pack_full_validation": per_pack_full,
             "sandbox_engagement": sandbox_state,
         }
+        jsonschema_identity = (
+            candidate_runtime.get("jsonschema")
+            if isinstance(candidate_runtime, dict) else None
+        )
+        schema_identity = (
+            candidate_runtime.get("sarif_schema")
+            if isinstance(candidate_runtime, dict) else None
+        )
         record["sarif_validation"] = {
-            "canonical_schema": "engine/schemas/sarif-2.1.0.json",
-            "schema_sha256": _sha256_file(self.repo_root / "engine/schemas/sarif-2.1.0.json"),
-            "per_pack_full_validation": bool(pack_validations) and all(pack_validations.values()),
-            "combined_full_validation": combined_valid,
+            "canonical_schema": _SARIF_SCHEMA_RELATIVE_PATH,
+            "schema_sha256": schema_identity.get("sha256")
+            if isinstance(schema_identity, dict) else None,
+            "schema_hash_matches": schema_identity.get("hash_matches") is True
+            if isinstance(schema_identity, dict) else False,
+            "per_pack_full_validation": per_pack_full,
+            "combined_full_validation": combined_status == "full_valid",
+            "combined_validation_status": combined_status,
             "jsonschema_distribution": "jsonschema",
-            "jsonschema_version": _distribution_version("jsonschema"),
+            "jsonschema_version": jsonschema_identity.get("version")
+            if isinstance(jsonschema_identity, dict) else None,
+            "jsonschema_version_matches": jsonschema_identity.get("version_matches") is True
+            if isinstance(jsonschema_identity, dict) else False,
         }
         record["artifact_contracts"] = _artifact_contracts(scan_out)
-
     def _add_integrated_evidence(self, record: dict[str, Any], output_root: Path) -> None:
         startup = _load_json_if_file(output_root / "credential-isolation-startup.json")
         if isinstance(startup, dict):
@@ -1012,23 +1122,6 @@ def _artifact_hashes(root: Path, *, prefix: str = "") -> dict[str, str]:
     return hashes
 
 
-def _validate_sarif(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        from core.sarif.parser import validate_sarif
-
-        return validate_sarif(path) is True
-    except Exception:
-        return False
-
-
-def _distribution_version(distribution: str) -> str:
-    try:
-        return version(distribution)
-    except PackageNotFoundError:
-        return "unavailable"
-
 
 def _artifact_contracts(scan_out: Path) -> dict[str, dict[str, str]]:
     manifest = _load_json_if_file(scan_out / "scan-manifest.json")
@@ -1073,26 +1166,439 @@ def _contains_absolute_path(value: object) -> bool:
     return False
 
 
+def _safe_sha256(value: object) -> str | None:
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        return value.lower()
+    return None
+
+
+def _safe_identifier(value: object, *, limit: int = 160) -> str | None:
+    if not isinstance(value, str) or len(value) > limit:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]*", value):
+        return value
+    return None
+
+
+def _safe_basename(value: object) -> str | None:
+    candidate = _safe_identifier(value, limit=128)
+    if candidate is None or Path(candidate).name != candidate:
+        return None
+    return candidate
+
+
+def _bounded_nonnegative_int(value: object) -> int | None:
+    if type(value) is int and 0 <= value <= 1_000_000:
+        return value
+    return None
+
+
+def _bounded_diagnostic_tail(value: object) -> str:
+    text = str(value or "")
+    text = _DIAGNOSTIC_SENSITIVE_HEADER.sub("<redacted-header>", text)
+    text = _DIAGNOSTIC_BEARER_VALUE.sub("<redacted-bearer>", text)
+    text = _DIAGNOSTIC_SENSITIVE_VALUE.sub("<redacted>", text)
+    text = _DIAGNOSTIC_PRIVATE_PATH.sub("<runtime-path>", text)
+    text = "".join(
+        character if character in "\n\t" or ord(character) >= 32 else "?"
+        for character in text
+    )
+    return text[-_MAX_PACK_STDERR_CHARS:]
+
+
+def _bounded_executable_identity(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    path_kind = value.get("path_kind")
+    return {
+        "basename": _safe_basename(value.get("basename")),
+        "executable": value.get("executable") is True,
+        "version": _safe_identifier(value.get("version"), limit=80),
+        "sha256": _safe_sha256(value.get("sha256")),
+        "path_kind": path_kind
+        if path_kind in {"system", "governed_private", "unknown"} else "unknown",
+    }
+
+
+def _executable_identities_match(left: object, right: object) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    if left.get("executable") is not True or right.get("executable") is not True:
+        return False
+    for field in ("basename", "path_kind", "version"):
+        if left.get(field) != right.get(field):
+            return False
+    left_digest = _safe_sha256(left.get("sha256"))
+    right_digest = _safe_sha256(right.get("sha256"))
+    return left_digest == right_digest if left_digest or right_digest else True
+
+
+def _summary_pack_validation_status(pack: Mapping[str, Any], version_value: object) -> str:
+    if version_value == 1:
+        if pack.get("sarif_exists") is not True:
+            return "missing"
+        return "full_valid" if pack.get("sarif_valid") is True else "invalid"
+    status = pack.get("sarif_validation_status")
+    return status if status in _SARIF_VALIDATION_STATUSES else "invalid"
+
+
+def _summary_combined_validation_status(
+    summary: Mapping[str, Any],
+    version_value: object,
+) -> str:
+    if version_value == 1:
+        if summary.get("combined_sarif_exists") is not True:
+            return "missing"
+        return "full_valid" if summary.get("combined_sarif_valid") is True else "invalid"
+    status = summary.get("combined_sarif_validation_status")
+    return status if status in _SARIF_VALIDATION_STATUSES else "invalid"
+
+
+def _bounded_pack_diagnostic(
+    pack: Mapping[str, Any],
+    summary_version: object,
+) -> dict[str, Any] | None:
+    raw_name = pack.get("pack_name")
+    pack_name = _safe_identifier(raw_name, limit=96)
+    if pack_name is None:
+        pack_name = "custom_" + hashlib.sha256(
+            str(raw_name).encode("utf-8", errors="replace")
+        ).hexdigest()[:16]
+    config_kind = pack.get("config_kind")
+    if config_kind not in {"local_file", "local_directory", "registry", "unknown"}:
+        config_kind = "unknown"
+    failure_class = _safe_identifier(pack.get("failure_class"), limit=96)
+    return {
+        "pack_name": pack_name,
+        "config_kind": config_kind,
+        "config_sha256": _safe_sha256(pack.get("config_sha256")),
+        "raw_exit_code": pack.get("raw_exit_code")
+        if type(pack.get("raw_exit_code")) is int else None,
+        "sarif_exists": pack.get("sarif_exists") is True,
+        "sarif_validation_status": _summary_pack_validation_status(
+            pack, summary_version,
+        ),
+        "failure_class": failure_class,
+        "bounded_stderr_tail": _bounded_diagnostic_tail(
+            pack.get("bounded_stderr_tail"),
+        ),
+        "sandbox_denial_count": _bounded_nonnegative_int(
+            pack.get("sandbox_denial_count"),
+        ) or 0,
+        "proxy_event_count": _bounded_nonnegative_int(
+            pack.get("proxy_event_count"),
+        ) or 0,
+    }
+
+
+def _pack_failure_evidence(
+    diagnostics: Sequence[Mapping[str, Any]],
+    failed: int | None,
+    scanner_failure: object,
+) -> tuple[str | None, dict[str, int], str, int]:
+    counts: dict[str, int] = {}
+    for diagnostic in diagnostics:
+        failure_class = diagnostic.get("failure_class")
+        if isinstance(failure_class, str):
+            counts[failure_class] = counts.get(failure_class, 0) + 1
+    counts = dict(sorted(counts.items()))
+    classified = sum(counts.values())
+    expected_failed = failed if failed is not None else classified
+    unclassified = max(0, expected_failed - classified)
+    if expected_failed == 0:
+        bounded_scanner_failure = _safe_identifier(scanner_failure, limit=96)
+        return (
+            bounded_scanner_failure,
+            counts,
+            "scanner" if bounded_scanner_failure else "no_failed_packs",
+            0,
+        )
+    if classified == 0:
+        return (
+            "pack_failure_class_unavailable",
+            counts,
+            "no_per_pack_failure_class",
+            unclassified,
+        )
+    if unclassified or len(counts) > 1:
+        return "mixed_pack_failures", counts, "mixed_pack_failure_classes", unclassified
+    return next(iter(counts)), counts, "uniform_pack_failure_class", 0
+
+
+def _bounded_candidate_runtime_record(
+    capture: ProcessCapture,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw_python = payload.get("candidate_python")
+    raw_jsonschema = payload.get("jsonschema")
+    raw_schema = payload.get("sarif_schema")
+    raw_semgrep = payload.get("semgrep")
+    python_identity = raw_python if isinstance(raw_python, dict) else {}
+    raw_version = python_identity.get("version")
+    version_parts = (
+        list(raw_version)
+        if isinstance(raw_version, list)
+        and len(raw_version) == 3
+        and all(type(part) is int and part >= 0 for part in raw_version)
+        else []
+    )
+    candidate_python = {
+        "implementation": _safe_identifier(python_identity.get("implementation"), limit=32),
+        "version": {
+            "major": version_parts[0] if version_parts else None,
+            "minor": version_parts[1] if version_parts else None,
+            "patch": version_parts[2] if version_parts else None,
+        },
+        "executable_basename": _safe_basename(python_identity.get("basename")),
+        "path_kind": python_identity.get("path_kind")
+        if python_identity.get("path_kind") in {"system", "governed_private", "unknown"}
+        else "unknown",
+        "resolved_executable_sha256": _safe_sha256(python_identity.get("sha256")),
+    }
+    jsonschema_payload = raw_jsonschema if isinstance(raw_jsonschema, dict) else {}
+    jsonschema_version = _safe_identifier(jsonschema_payload.get("version"), limit=40)
+    jsonschema_identity = {
+        "importable": jsonschema_payload.get("importable") is True,
+        "version": jsonschema_version,
+        "expected_version": _EXPECTED_JSONSCHEMA_VERSION,
+        "version_matches": jsonschema_version == _EXPECTED_JSONSCHEMA_VERSION,
+    }
+    schema_payload = raw_schema if isinstance(raw_schema, dict) else {}
+    schema_sha256 = _safe_sha256(schema_payload.get("sha256"))
+    schema_identity = {
+        "relative_path": _SARIF_SCHEMA_RELATIVE_PATH,
+        "present": schema_payload.get("present") is True
+        and schema_payload.get("relative_path") == _SARIF_SCHEMA_RELATIVE_PATH,
+        "sha256": schema_sha256,
+        "expected_sha256": _EXPECTED_SARIF_SCHEMA_SHA256,
+        "hash_matches": schema_sha256 == _EXPECTED_SARIF_SCHEMA_SHA256,
+    }
+    semgrep_identity = _bounded_executable_identity(raw_semgrep) or {
+        "basename": None,
+        "executable": False,
+        "version": None,
+        "sha256": None,
+        "path_kind": "unknown",
+    }
+    candidate_identity_valid = (
+        candidate_python["implementation"] is not None
+        and bool(version_parts)
+        and candidate_python["executable_basename"] is not None
+    )
+    if capture.timed_out:
+        failure_class = "candidate_runtime_probe_timeout"
+    elif capture.return_code != 0:
+        failure_class = "candidate_runtime_probe_failed"
+    elif payload.get("schema_version") != 1 or not candidate_identity_valid:
+        failure_class = "candidate_runtime_probe_invalid"
+    elif not jsonschema_identity["importable"]:
+        failure_class = "candidate_runtime_dependency_missing"
+    elif not jsonschema_identity["version_matches"]:
+        failure_class = "candidate_runtime_dependency_version_mismatch"
+    elif not schema_identity["present"]:
+        failure_class = "candidate_runtime_sarif_schema_missing"
+    elif not schema_identity["hash_matches"]:
+        failure_class = "candidate_runtime_sarif_schema_hash_mismatch"
+    elif semgrep_identity["executable"] is not True:
+        failure_class = "candidate_runtime_semgrep_unavailable"
+    else:
+        failure_class = None
+    return {
+        "passed": failure_class is None,
+        "failure_class": failure_class,
+        "probe_return_code": capture.return_code,
+        "probe_timed_out": capture.timed_out,
+        "probe_output_digests": {
+            "stdout_sha256": capture.stdout_sha256,
+            "stderr_sha256": capture.stderr_sha256,
+        },
+        "candidate_python": candidate_python,
+        "jsonschema": jsonschema_identity,
+        "sarif_schema": schema_identity,
+        "semgrep": semgrep_identity,
+    }
+
+
+def _candidate_runtime_probe_source() -> str:
+    return r"""
+import hashlib
+import importlib.metadata
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+OUTPUT_LIMIT = 65536
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_FSIZE, (OUTPUT_LIMIT, OUTPUT_LIMIT))
+except (ImportError, OSError, ValueError):
+    pass
+
+
+def digest(path):
+    try:
+        value = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                value.update(chunk)
+        return value.hexdigest()
+    except OSError:
+        return None
+
+
+def path_kind(path):
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return "unknown"
+    rendered = str(resolved)
+    if rendered.startswith((
+        "/bin/", "/sbin/", "/usr/", "/opt/", "/System/Library/",
+        "/Library/Frameworks/",
+    )):
+        return "system"
+    current_uid = getattr(os, "geteuid", os.getuid)()
+    for parent in (resolved.parent, *resolved.parents):
+        try:
+            observed = parent.stat()
+        except OSError:
+            continue
+        if observed.st_uid == current_uid and stat.S_IMODE(observed.st_mode) == 0o700:
+            return "governed_private"
+    return "unknown"
+
+
+python_path = Path(sys.executable)
+try:
+    import jsonschema
+    jsonschema_importable = True
+except ImportError:
+    jsonschema_importable = False
+try:
+    jsonschema_version = importlib.metadata.version("jsonschema")
+except importlib.metadata.PackageNotFoundError:
+    jsonschema_version = None
+schema_relative = "engine/schemas/sarif-2.1.0.json"
+schema_path = Path(schema_relative)
+semgrep_candidate = shutil.which("semgrep") or "/opt/homebrew/bin/semgrep"
+semgrep_path = Path(semgrep_candidate)
+semgrep_executable = semgrep_path.is_file() and os.access(semgrep_path, os.X_OK)
+semgrep_version = None
+if semgrep_executable:
+    try:
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            subprocess.run(
+                [str(semgrep_path), "--version"],
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                check=False,
+                timeout=10,
+            )
+            stdout.seek(0)
+            stderr.seek(0)
+            bounded = stdout.read(4096) or stderr.read(4096)
+        match = re.search(rb"\b\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.]+)?\b", bounded)
+        semgrep_version = match.group(0).decode("ascii") if match else None
+    except (OSError, subprocess.SubprocessError):
+        semgrep_version = None
+payload = {
+    "schema_version": 1,
+    "candidate_python": {
+        "implementation": sys.implementation.name,
+        "version": list(sys.version_info[:3]),
+        "basename": python_path.name,
+        "path_kind": path_kind(python_path),
+        "sha256": digest(python_path.resolve()),
+    },
+    "jsonschema": {
+        "importable": jsonschema_importable,
+        "version": jsonschema_version,
+    },
+    "sarif_schema": {
+        "relative_path": schema_relative,
+        "present": schema_path.is_file(),
+        "sha256": digest(schema_path) if schema_path.is_file() else None,
+    },
+    "semgrep": {
+        "basename": semgrep_path.name or "semgrep",
+        "executable": semgrep_executable,
+        "version": semgrep_version,
+        "sha256": digest(semgrep_path.resolve()) if semgrep_path.is_file() else None,
+        "path_kind": path_kind(semgrep_path),
+    },
+}
+encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+if len(encoded.encode("utf-8")) > OUTPUT_LIMIT:
+    raise SystemExit(3)
+print(encoded)
+"""
 def _direct_scan_passed(record: dict[str, Any]) -> bool:
     semgrep = record.get("semgrep")
     validation = record.get("sarif_validation")
     contracts = record.get("artifact_contracts")
+    runtime = record.get("candidate_runtime")
+    jsonschema_identity = runtime.get("jsonschema") if isinstance(runtime, dict) else None
+    schema_identity = runtime.get("sarif_schema") if isinstance(runtime, dict) else None
+    runtime_semgrep = runtime.get("semgrep") if isinstance(runtime, dict) else None
+    diagnostics = semgrep.get("pack_diagnostics") if isinstance(semgrep, dict) else None
     return (
-        record.get("process_exit_code") == 0
+        record.get("promotable") is False
+        and record.get("provider_turn_count") == 0
+        and record.get("process_exit_code") == 0
+        and record.get("scanner_exit_code") == 0
         and record.get("scanner_started") is True
+        and isinstance(runtime, dict)
+        and runtime.get("passed") is True
+        and isinstance(jsonschema_identity, dict)
+        and jsonschema_identity.get("importable") is True
+        and jsonschema_identity.get("version") == _EXPECTED_JSONSCHEMA_VERSION
+        and jsonschema_identity.get("version_matches") is True
+        and isinstance(schema_identity, dict)
+        and schema_identity.get("relative_path") == _SARIF_SCHEMA_RELATIVE_PATH
+        and schema_identity.get("present") is True
+        and schema_identity.get("sha256") == _EXPECTED_SARIF_SCHEMA_SHA256
+        and schema_identity.get("hash_matches") is True
+        and isinstance(runtime_semgrep, dict)
+        and runtime_semgrep.get("executable") is True
         and isinstance(semgrep, dict)
+        and semgrep.get("summary_schema_version") == 2
+        and semgrep.get("runtime_identity_matches_preflight") is True
         and semgrep.get("packs_dispatched") == 16
         and semgrep.get("packs_succeeded") == 16
         and semgrep.get("packs_failed") == 0
         and semgrep.get("aggregate_exit_code") == 0
+        and semgrep.get("failure_class") is None
         and semgrep.get("sandbox_engagement") == "engaged"
-        and semgrep.get("combined_sarif_valid") is True
+        and semgrep.get("combined_sarif_validation_status") == "full_valid"
         and semgrep.get("per_pack_full_validation") is True
+        and isinstance(diagnostics, list)
+        and len(diagnostics) == 16
+        and all(
+            diagnostic.get("raw_exit_code") in (0, 1)
+            and diagnostic.get("sarif_validation_status") == "full_valid"
+            and diagnostic.get("failure_class") is None
+            for diagnostic in diagnostics
+            if isinstance(diagnostic, dict)
+        )
+        and all(isinstance(diagnostic, dict) for diagnostic in diagnostics)
         and isinstance(validation, dict)
         and validation.get("combined_full_validation") is True
         and validation.get("per_pack_full_validation") is True
+        and validation.get("jsonschema_version_matches") is True
+        and validation.get("schema_hash_matches") is True
         and isinstance(contracts, dict)
-        and all(contract.get("validation") == "structural_contract_passed" for contract in contracts.values())
+        and all(
+            isinstance(contract, dict)
+            and contract.get("validation") == "structural_contract_passed"
+            for contract in contracts.values()
+        )
     )
 
 

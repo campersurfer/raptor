@@ -15,6 +15,8 @@ from qualification.controller import (
     ProcessCapture,
     QualificationController,
     QualificationControllerError,
+    _direct_scan_passed,
+    _pack_failure_evidence,
     validate_private_temp,
 )
 
@@ -74,6 +76,65 @@ def _passing_preflight() -> dict:
     }
 
 
+_SEMGREP_IDENTITY = {
+    "basename": "semgrep",
+    "executable": True,
+    "version": "1.99.0",
+    "sha256": "d" * 64,
+    "path_kind": "system",
+}
+
+
+def _passing_candidate_runtime() -> dict:
+    return {
+        "passed": True,
+        "failure_class": None,
+        "probe_return_code": 0,
+        "probe_timed_out": False,
+        "probe_output_digests": {
+            "stdout_sha256": "a" * 64,
+            "stderr_sha256": "b" * 64,
+        },
+        "candidate_python": {
+            "implementation": "cpython",
+            "version": {"major": 3, "minor": 13, "patch": 9},
+            "executable_basename": "python3.13",
+            "path_kind": "system",
+            "resolved_executable_sha256": "c" * 64,
+        },
+        "jsonschema": {
+            "importable": True,
+            "version": "4.26.0",
+            "expected_version": "4.26.0",
+            "version_matches": True,
+        },
+        "sarif_schema": {
+            "relative_path": "engine/schemas/sarif-2.1.0.json",
+            "present": True,
+            "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+            "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+            "hash_matches": True,
+        },
+        "semgrep": dict(_SEMGREP_IDENTITY),
+    }
+
+
+def _runtime_failure(failure_class: str) -> dict:
+    runtime = _passing_candidate_runtime()
+    runtime["passed"] = False
+    runtime["failure_class"] = failure_class
+    if failure_class == "candidate_runtime_dependency_missing":
+        runtime["jsonschema"].update({
+            "importable": False,
+            "version": None,
+            "version_matches": False,
+        })
+    elif failure_class == "candidate_runtime_dependency_version_mismatch":
+        runtime["jsonschema"].update({
+            "version": "4.25.1",
+            "version_matches": False,
+        })
+    return runtime
 def _isolated_environment(root: Path) -> dict[str, str]:
     root_text = str(root.resolve())
     return {
@@ -125,12 +186,17 @@ def test_private_temp_attestation_requires_exact_current_user_directory(tmp_path
     assert invalid.mode == "0755"
 
 
-def test_no_provider_preflight_uses_real_dispatcher_and_cleans_everything():
+def test_no_provider_preflight_uses_real_dispatcher_and_cleans_everything(monkeypatch):
     controller = QualificationController(
         repo_root=REPO_ROOT,
         candidate_python=Path(sys.executable),
     )
 
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda environment: _passing_candidate_runtime(),
+    )
     record = controller.run_no_provider_preflight()
 
     assert record["failure_class"] is None
@@ -178,6 +244,12 @@ def test_no_provider_preflight_forwards_attested_safe_environment(
     monkeypatch.setenv("GEMINI_API_KEY", "must-not-reach-child")
     original_safe_environment = controller._safe_worker_environment
     forwarded_environments: list[dict[str, str]] = []
+    probed_environments: list[dict[str, str]] = []
+
+    def record_candidate_runtime(environment):
+        assert environment is forwarded_environments[-1]
+        probed_environments.append(environment)
+        return _passing_candidate_runtime()
 
     def record_safe_environment(private_root):
         environment = original_safe_environment(private_root)
@@ -204,6 +276,7 @@ def test_no_provider_preflight_forwards_attested_safe_environment(
         raise AssertionError("offline preflight must not construct a provider HTTP client")
 
     monkeypatch.setattr(controller, "_safe_worker_environment", record_safe_environment)
+    monkeypatch.setattr(controller, "_candidate_runtime_preflight", record_candidate_runtime)
     monkeypatch.setattr(dispatcher_spawn, "spawn_worker", reject_provider_forwarding)
     monkeypatch.setattr(controller, "_run", scanner_sink)
     monkeypatch.setattr(dispatcher_server.httpx, "Client", provider_http_sink)
@@ -213,6 +286,7 @@ def test_no_provider_preflight_forwards_attested_safe_environment(
     assert record["failure_class"] is None
     assert record["credential_isolation_required"] is True
     assert len(forwarded_environments) == 1
+    assert probed_environments == forwarded_environments
 
 
 @pytest.mark.parametrize("broken_alias", ("TMP", "TEMP"))
@@ -327,25 +401,49 @@ def test_direct_controller_reuses_attested_environment_and_scanner_failure_class
     controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
     original_safe_environment = controller._safe_worker_environment
     worker_environments: list[dict[str, str]] = []
+    probed_environments: list[dict[str, str]] = []
 
     def record_safe_environment(private_root):
         environment = original_safe_environment(private_root)
         worker_environments.append(environment)
         return environment
 
+    def record_candidate_runtime(environment):
+        assert environment is worker_environments[-1]
+        probed_environments.append(environment)
+        return _passing_candidate_runtime()
+
     def fake_run(argv, *, env, timeout=300):
         del timeout
         assert env is worker_environments[-1]
+        assert env is probed_environments[-1]
         scan_out = Path(argv[argv.index("--out") + 1])
         scan_out.mkdir(parents=True, exist_ok=True)
         (scan_out / "semgrep-run-summary.json").write_text(
             json.dumps({
+                "schema_version": 2,
+                "scanner": _SEMGREP_IDENTITY,
                 "packs_dispatched": 1,
                 "packs_succeeded": 0,
                 "packs_failed": 1,
+                "all_semgrep_failed": True,
                 "aggregate_exit_code": 4,
                 "failure_class": "semgrep_missing",
-                "packs": [],
+                "packs": [{
+                    "pack_name": "category_auth",
+                    "config_kind": "local_file",
+                    "config_sha256": "e" * 64,
+                    "raw_exit_code": 127,
+                    "sarif_exists": False,
+                    "sarif_validation_status": "missing",
+                    "failure_class": "semgrep_missing",
+                    "bounded_stderr_tail": "semgrep: command not found",
+                    "sandbox_denial_count": 0,
+                    "proxy_event_count": 0,
+                }],
+                "combined_sarif_exists": False,
+                "combined_sarif_validation_status": "missing",
+                "sandbox_engagement": {"state": "engaged", "denial_count": 0},
             }),
             encoding="utf-8",
         )
@@ -357,14 +455,342 @@ def test_direct_controller_reuses_attested_environment_and_scanner_failure_class
         )
 
     monkeypatch.setattr(controller, "_safe_worker_environment", record_safe_environment)
+    monkeypatch.setattr(controller, "_candidate_runtime_preflight", record_candidate_runtime)
     monkeypatch.setattr(controller, "_run", fake_run)
 
     record = controller.run_direct()
 
-    assert len(worker_environments) == 1
+    assert probed_environments == worker_environments
     assert record["credential_isolation_required"] is True
     assert record["failure_class"] == "semgrep_missing"
+    assert record["semgrep"]["runtime_identity_matches_preflight"] is True
+def test_candidate_probe_uses_supplied_interpreter_and_exact_environment(
+    tmp_path, monkeypatch,
+):
+    repo = _clean_git_repo(tmp_path / "repo")
+    candidate = tmp_path / "candidate-python"
+    controller = QualificationController(repo_root=repo, candidate_python=candidate)
+    exact_environment = {"RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1"}
 
+    def fake_bounded_json(argv, *, env, timeout):
+        assert argv[0] == str(candidate.resolve())
+        assert argv[1] == "-c"
+        assert env is exact_environment
+        assert timeout == 20
+        return ProcessCapture(0, False, "a" * 64, "b" * 64), {
+            "schema_version": 1,
+            "candidate_python": {
+                "implementation": "pypy",
+                "version": [3, 11, 12],
+                "basename": "candidate-python",
+                "path_kind": "governed_private",
+                "sha256": "c" * 64,
+            },
+            "jsonschema": {"importable": True, "version": "4.26.0"},
+            "sarif_schema": {
+                "relative_path": "engine/schemas/sarif-2.1.0.json",
+                "present": True,
+                "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+            },
+            "semgrep": _SEMGREP_IDENTITY,
+        }
+
+    monkeypatch.setattr(controller, "_run_bounded_json", fake_bounded_json)
+
+    runtime = controller._candidate_runtime_preflight(exact_environment)
+
+    assert sys.implementation.name == "cpython"
+    assert runtime["passed"] is True
+    assert runtime["candidate_python"] == {
+        "implementation": "pypy",
+        "version": {"major": 3, "minor": 11, "patch": 12},
+        "executable_basename": "candidate-python",
+        "path_kind": "governed_private",
+        "resolved_executable_sha256": "c" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("jsonschema_payload", "expected_failure"),
+    [
+        ({"importable": False, "version": None}, "candidate_runtime_dependency_missing"),
+        ({"importable": True, "version": "4.25.1"}, "candidate_runtime_dependency_version_mismatch"),
+    ],
+)
+def test_candidate_probe_classifies_exact_dependency_state(
+    tmp_path, monkeypatch, jsonschema_payload, expected_failure,
+):
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=tmp_path / "candidate")
+
+    def fake_bounded_json(argv, *, env, timeout):
+        del argv, env, timeout
+        return ProcessCapture(0, False, "a" * 64, "b" * 64), {
+            "schema_version": 1,
+            "candidate_python": {
+                "implementation": "cpython",
+                "version": [3, 13, 9],
+                "basename": "candidate",
+                "path_kind": "governed_private",
+                "sha256": "c" * 64,
+            },
+            "jsonschema": jsonschema_payload,
+            "sarif_schema": {
+                "relative_path": "engine/schemas/sarif-2.1.0.json",
+                "present": True,
+                "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+            },
+            "semgrep": _SEMGREP_IDENTITY,
+        }
+
+    monkeypatch.setattr(controller, "_run_bounded_json", fake_bounded_json)
+
+    runtime = controller._candidate_runtime_preflight({})
+
+    assert runtime["passed"] is False
+    assert runtime["failure_class"] == expected_failure
+
+
+@pytest.mark.parametrize(
+    "failure_class",
+    [
+        "candidate_runtime_dependency_missing",
+        "candidate_runtime_dependency_version_mismatch",
+    ],
+)
+def test_candidate_dependency_failure_blocks_direct_dispatch_and_provider_sinks(
+    tmp_path, monkeypatch, failure_class,
+):
+    import jsonschema
+    from core.llm.dispatcher import server as dispatcher_server
+
+    assert jsonschema is not None
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+
+    def scanner_sink(*args, **kwargs):
+        raise AssertionError("candidate dependency failure must block scanner dispatch")
+
+    def provider_sink(*args, **kwargs):
+        raise AssertionError("direct qualification must not construct a provider HTTP client")
+
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda environment: _runtime_failure(failure_class),
+    )
+    monkeypatch.setattr(controller, "_run", scanner_sink)
+    monkeypatch.setattr(dispatcher_server.httpx, "Client", provider_sink)
+
+    record = controller.run_direct()
+
+    assert record["status"] == "failed"
+    assert record["failure_stage"] == "candidate_runtime_preflight"
+    assert record["failure_class"] == failure_class
+    assert record["packs_dispatched"] == 0
+    assert record["provider_turn_count"] == 0
+    assert record["scanner_started"] is False
+    assert record["private_temp_cleanup_complete"] is True
+
+
+def test_missing_candidate_dependency_blocks_no_provider_dispatch_sinks(
+    tmp_path, monkeypatch,
+):
+    from core.llm.dispatcher import server as dispatcher_server
+    from core.llm.dispatcher import spawn as dispatcher_spawn
+
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+
+    def sink(*args, **kwargs):
+        raise AssertionError("candidate runtime failure must stop before dispatch sinks")
+
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda environment: _runtime_failure("candidate_runtime_dependency_missing"),
+    )
+    monkeypatch.setattr(controller, "_run", sink)
+    monkeypatch.setattr(dispatcher_spawn, "spawn_worker", sink)
+    monkeypatch.setattr(dispatcher_server.httpx, "Client", sink)
+
+    record = controller.run_no_provider_preflight()
+
+    assert record["failure_stage"] == "candidate_runtime_preflight"
+    assert record["failure_class"] == "candidate_runtime_dependency_missing"
+    assert record["packs_dispatched"] == 0
+    assert record["provider_turn_count"] == 0
+    assert record["scanner_started"] is False
+    assert record["dispatcher_started"] is False
+
+
+def test_pack_diagnostics_survive_cleanup_with_full_redaction(
+    tmp_path, monkeypatch,
+):
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    scan_paths: list[Path] = []
+
+    def fake_run(argv, *, env, timeout=300):
+        del env, timeout
+        scan_out = Path(argv[argv.index("--out") + 1])
+        scan_paths.append(scan_out)
+        scan_out.mkdir(parents=True, exist_ok=True)
+        unsafe_tail = (
+            "api_key=alpha\n"
+            "Authorization: Bearer beta\n"
+            "Cookie: session=gamma\n"
+            "/Users/alice/a /home/alice/b /private/tmp/c "
+            "/var/folders/d /private/var/folders/e"
+        )
+        (scan_out / "semgrep-run-summary.json").write_text(json.dumps({
+            "schema_version": 2,
+            "scanner": _SEMGREP_IDENTITY,
+            "packs_dispatched": 1,
+            "packs_succeeded": 0,
+            "packs_failed": 1,
+            "all_semgrep_failed": True,
+            "aggregate_exit_code": 4,
+            "failure_class": "timeout",
+            "packs": [{
+                "pack_name": "category_auth",
+                "config_kind": "local_file",
+                "config_sha256": "e" * 64,
+                "raw_exit_code": -1,
+                "sarif_exists": False,
+                "sarif_validation_status": "missing",
+                "failure_class": "timeout",
+                "bounded_stderr_tail": unsafe_tail,
+                "sandbox_denial_count": 2,
+                "proxy_event_count": 1,
+            }],
+            "combined_sarif_exists": False,
+            "combined_sarif_validation_status": "missing",
+            "sandbox_engagement": {"state": "engaged", "denial_count": 2},
+        }), encoding="utf-8")
+        return ProcessCapture(4, False, "a" * 64, "b" * 64)
+
+    monkeypatch.setattr(
+        controller, "_candidate_runtime_preflight",
+        lambda environment: _passing_candidate_runtime(),
+    )
+    monkeypatch.setattr(controller, "_run", fake_run)
+
+    record = controller.run_direct()
+
+    assert scan_paths and not scan_paths[0].exists()
+    diagnostic = record["semgrep"]["pack_diagnostics"][0]
+    assert set(diagnostic) == {
+        "pack_name", "config_kind", "config_sha256", "raw_exit_code",
+        "sarif_exists", "sarif_validation_status", "failure_class",
+        "bounded_stderr_tail", "sandbox_denial_count", "proxy_event_count",
+    }
+    assert diagnostic["raw_exit_code"] == -1
+    assert diagnostic["sarif_validation_status"] == "missing"
+    assert diagnostic["failure_class"] == "timeout"
+    assert len(diagnostic["bounded_stderr_tail"]) <= 800
+    rendered = json.dumps(record, sort_keys=True)
+    for forbidden in (
+        "alpha", "beta", "gamma", "/Users/", "/home/", "/private/tmp/",
+        "/var/folders/", "/private/var/folders/",
+    ):
+        assert forbidden not in rendered
+    assert record["failure_class"] == "timeout"
+    assert record["semgrep"]["failure_class_counts"] == {"timeout": 1}
+    assert record["private_temp_cleanup_complete"] is True
+
+
+def test_uniform_mixed_and_unavailable_pack_failures_are_explicit():
+    uniform = _pack_failure_evidence(
+        [{"failure_class": "timeout"}, {"failure_class": "timeout"}],
+        2,
+        None,
+    )
+    mixed = _pack_failure_evidence(
+        [{"failure_class": "timeout"}, {"failure_class": "semgrep_missing"}],
+        2,
+        None,
+    )
+    unavailable = _pack_failure_evidence(
+        [{"failure_class": None}],
+        1,
+        None,
+    )
+
+    assert uniform == (
+        "timeout", {"timeout": 2}, "uniform_pack_failure_class", 0,
+    )
+    assert mixed == (
+        "mixed_pack_failures",
+        {"semgrep_missing": 1, "timeout": 1},
+        "mixed_pack_failure_classes",
+        0,
+    )
+    assert unavailable == (
+        "pack_failure_class_unavailable", {}, "no_per_pack_failure_class", 1,
+    )
+
+
+def test_direct_gate_requires_sixteen_fully_validated_packs_and_combined_sarif():
+    diagnostics = [{
+        "pack_name": f"pack_{index}",
+        "config_kind": "local_file",
+        "config_sha256": "e" * 64,
+        "raw_exit_code": index % 2,
+        "sarif_exists": True,
+        "sarif_validation_status": "full_valid",
+        "failure_class": None,
+        "bounded_stderr_tail": "",
+        "sandbox_denial_count": 0,
+        "proxy_event_count": 0,
+    } for index in range(16)]
+    record = {
+        "promotable": False,
+        "provider_turn_count": 0,
+        "process_exit_code": 0,
+        "scanner_exit_code": 0,
+        "scanner_started": True,
+        "candidate_runtime": _passing_candidate_runtime(),
+        "semgrep": {
+            "summary_schema_version": 2,
+            "runtime_identity_matches_preflight": True,
+            "packs_dispatched": 16,
+            "packs_succeeded": 16,
+            "packs_failed": 0,
+            "aggregate_exit_code": 0,
+            "failure_class": None,
+            "sandbox_engagement": "engaged",
+            "combined_sarif_validation_status": "full_valid",
+            "per_pack_full_validation": True,
+            "pack_diagnostics": diagnostics,
+        },
+        "sarif_validation": {
+            "combined_full_validation": True,
+            "per_pack_full_validation": True,
+            "jsonschema_version_matches": True,
+            "schema_hash_matches": True,
+        },
+        "artifact_contracts": {
+            name: {"validation": "structural_contract_passed"}
+            for name in ("scan_manifest", "scan_metrics", "verification")
+        },
+    }
+
+    assert _direct_scan_passed(record) is True
+
+    fifteen = json.loads(json.dumps(record))
+    fifteen["semgrep"]["pack_diagnostics"].pop()
+    assert _direct_scan_passed(fifteen) is False
+
+    unavailable = json.loads(json.dumps(record))
+    unavailable["semgrep"]["pack_diagnostics"][0][
+        "sarif_validation_status"
+    ] = "full_validation_unavailable"
+    assert _direct_scan_passed(unavailable) is False
+
+    invalid_combined = json.loads(json.dumps(record))
+    invalid_combined["semgrep"]["combined_sarif_validation_status"] = "invalid"
+    assert _direct_scan_passed(invalid_combined) is False
 def test_integrated_controller_refuses_second_live_attempt(tmp_path, monkeypatch):
     repo = _clean_git_repo(tmp_path / "repo")
     controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
