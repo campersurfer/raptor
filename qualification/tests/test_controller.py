@@ -469,11 +469,14 @@ def test_candidate_probe_uses_supplied_interpreter_and_exact_environment(
 ):
     repo = _clean_git_repo(tmp_path / "repo")
     candidate = tmp_path / "candidate-python"
+    candidate.symlink_to(Path(sys.executable))
     controller = QualificationController(repo_root=repo, candidate_python=candidate)
+    assert controller.candidate_python == candidate.absolute()
+    assert controller.candidate_python != candidate.resolve()
     exact_environment = {"RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1"}
 
     def fake_bounded_json(argv, *, env, timeout):
-        assert argv[0] == str(candidate.resolve())
+        assert argv[0] == str(candidate.absolute())
         assert argv[1] == "-c"
         assert env is exact_environment
         assert timeout == 20

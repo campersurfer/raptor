@@ -176,7 +176,8 @@ class QualificationController:
         runner: Any = subprocess.run,
     ) -> None:
         self.repo_root = repo_root.resolve()
-        self.candidate_python = (candidate_python or Path(sys.executable)).resolve()
+        selected_python = candidate_python or Path(sys.executable)
+        self.candidate_python = Path(os.path.abspath(os.fspath(selected_python)))
         self._runner = runner
         self._integrated_terminal = False
         self._canary_terminal = False
