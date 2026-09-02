@@ -68,6 +68,7 @@ _CANARY_ATTESTATION_FIELDS = (
     "provider",
     "model",
     "sdk_version",
+    "system_instruction_sha256",
     "request_schema_sha256",
     "provider_turns_started",
     "provider_turns_completed",
@@ -77,10 +78,60 @@ _CANARY_ATTESTATION_FIELDS = (
     "sink_verified",
     "language_verified",
     "semantic_relation_verified",
+    "semantic_checks",
+    "semantic_failure_reasons",
+    "section_counts",
+    "worker_cleanup_verified",
     "failure_class",
     "failure_stage",
-    "worker_cleanup_verified",
 )
+_CANARY_OUTER_SCHEMA_VERSION = 4
+_CANARY_MAX_SEMANTIC_FAILURE_REASONS = 16
+_CANARY_MAX_SECTION_COUNT = 1_024
+_CANARY_SECTION_COUNT_KEYS = (
+    "sources",
+    "sinks",
+    "trust_boundaries",
+    "entry_points",
+    "sink_details",
+    "boundary_details",
+    "unchecked_flows",
+)
+_CANARY_SEMANTIC_CHECK_KEYS = (
+    "source_type_verified",
+    "source_entry_verified",
+    "source_trust_verified",
+    "top_level_sink_type_verified",
+    "top_level_sink_callsite_verified",
+    "sink_detail_type_verified",
+    "sink_detail_callsite_verified",
+    "sink_detail_wrapper_name_verified",
+    "sink_detail_operation_verified",
+    "entry_point_callsite_verified",
+    "entry_point_relation_name_verified",
+    "flow_entry_reference_known",
+    "flow_sink_reference_known",
+    "flow_links_expected_entry_and_sink",
+    "no_declared_boundary_verified",
+)
+_CANARY_SEMANTIC_FAILURE_REASONS = frozenset({
+    "source_type_mismatch",
+    "source_entry_mismatch",
+    "source_trust_mismatch",
+    "top_level_sink_type_mismatch",
+    "top_level_sink_callsite_mismatch",
+    "sink_detail_type_mismatch",
+    "sink_detail_callsite_mismatch",
+    "sink_detail_wrapper_name_mismatch",
+    "sink_detail_operation_mismatch",
+    "entry_point_callsite_mismatch",
+    "entry_point_relation_name_mismatch",
+    "flow_entry_reference_unknown",
+    "flow_sink_reference_unknown",
+    "flow_not_linked",
+    "declared_boundary_present",
+    "semantic_evidence_mismatch",
+})
 
 
 _EXPECTED_JSONSCHEMA_VERSION = "4.26.0"
@@ -413,26 +464,23 @@ class QualificationController:
             env=self._trusted_environment(),
             timeout=300,
         )
-        attestation = {
-            name: payload.get(name)
-            for name in _CANARY_ATTESTATION_FIELDS
-            if name in payload
-        }
+        attestation = _bounded_semantic_canary_attestation(payload)
         passed = (
             capture.return_code == 0
             and not capture.timed_out
-            and attestation.get("status") == "passed"
-            and attestation.get("provider") == "gemini"
-            and attestation.get("model") == "gemini-2.5-flash"
-            and type(attestation.get("provider_turns_completed")) is int
-            and attestation["provider_turns_completed"] >= 1
-            and attestation.get("terminal_call_count") == 1
-            and attestation.get("fixture_read") is True
-            and attestation.get("source_verified") is True
-            and attestation.get("sink_verified") is True
-            and attestation.get("language_verified") is True
-            and attestation.get("semantic_relation_verified") is True
-            and attestation.get("worker_cleanup_verified") is True
+            and _semantic_canary_attestation_passed(attestation)
+        )
+        bounded_attestation = {} if attestation is None else attestation
+        failure_stage = (
+            None
+            if passed
+            else bounded_attestation.get("failure_stage") or "semantic_canary"
+        )
+        failure_class = (
+            None
+            if passed
+            else bounded_attestation.get("failure_class")
+            or "semantic_canary_contract_failed"
         )
         return {
             "schema_version": 1,
@@ -451,9 +499,9 @@ class QualificationController:
             "stderr_sha256": capture.stderr_sha256,
             "raw_output_persisted": False,
             "exactly_one_valid_submit_context_map": passed,
-            "attestation": attestation,
-            "failure_stage": None if passed else attestation.get("failure_stage") or "semantic_canary",
-            "failure_class": None if passed else attestation.get("failure_class") or "semantic_canary_contract_failed",
+            "attestation": bounded_attestation,
+            "failure_stage": failure_stage,
+            "failure_class": failure_class,
         }
 
     def run_direct(self) -> dict[str, Any]:
@@ -1192,6 +1240,150 @@ def _bounded_nonnegative_int(value: object) -> int | None:
     if type(value) is int and 0 <= value <= 1_000_000:
         return value
     return None
+
+
+def _bounded_canary_semantic_checks(value: object) -> dict[str, bool] | None:
+    if not isinstance(value, dict) or set(value) != set(_CANARY_SEMANTIC_CHECK_KEYS):
+        return None
+    if any(type(value[key]) is not bool for key in _CANARY_SEMANTIC_CHECK_KEYS):
+        return None
+    return {key: value[key] for key in _CANARY_SEMANTIC_CHECK_KEYS}
+
+
+def _bounded_canary_semantic_failure_reasons(value: object) -> list[str] | None:
+    if (
+        not isinstance(value, list)
+        or len(value) > _CANARY_MAX_SEMANTIC_FAILURE_REASONS
+        or any(
+            not isinstance(reason, str)
+            or reason not in _CANARY_SEMANTIC_FAILURE_REASONS
+            for reason in value
+        )
+        or value != sorted(set(value))
+    ):
+        return None
+    return list(value)
+
+
+def _bounded_canary_section_counts(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict) or set(value) != set(_CANARY_SECTION_COUNT_KEYS):
+        return None
+    if any(
+        type(value[key]) is not int
+        or not 0 <= value[key] <= _CANARY_MAX_SECTION_COUNT
+        for key in _CANARY_SECTION_COUNT_KEYS
+    ):
+        return None
+    return {key: value[key] for key in _CANARY_SECTION_COUNT_KEYS}
+
+
+def _bounded_semantic_canary_attestation(payload: object) -> dict[str, Any] | None:
+    """Retain only the exact v4 controller contract from child JSON."""
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != _CANARY_OUTER_SCHEMA_VERSION
+        or payload.get("status") not in {"passed", "failed"}
+        or payload.get("provider") != "gemini"
+        or payload.get("model") != "gemini-2.5-flash"
+    ):
+        return None
+    sdk_version = _safe_identifier(payload.get("sdk_version"), limit=128)
+    system_instruction_sha256 = _safe_sha256(
+        payload.get("system_instruction_sha256")
+    )
+    request_schema_sha256 = _safe_sha256(payload.get("request_schema_sha256"))
+    counters = {
+        key: payload.get(key)
+        for key in (
+            "provider_turns_started",
+            "provider_turns_completed",
+            "terminal_call_count",
+        )
+    }
+    booleans = {
+        key: payload.get(key)
+        for key in (
+            "fixture_read",
+            "source_verified",
+            "sink_verified",
+            "language_verified",
+            "semantic_relation_verified",
+            "worker_cleanup_verified",
+        )
+    }
+    semantic_checks = _bounded_canary_semantic_checks(
+        payload.get("semantic_checks")
+    )
+    semantic_failure_reasons = _bounded_canary_semantic_failure_reasons(
+        payload.get("semantic_failure_reasons")
+    )
+    section_counts = _bounded_canary_section_counts(payload.get("section_counts"))
+    if (
+        sdk_version is None
+        or system_instruction_sha256 is None
+        or request_schema_sha256 is None
+        or any(
+            type(value) is not int or not 0 <= value <= 3
+            for value in counters.values()
+        )
+        or any(type(value) is not bool for value in booleans.values())
+        or semantic_checks is None
+        or semantic_failure_reasons is None
+        or section_counts is None
+    ):
+        return None
+    status = payload["status"]
+    failure: dict[str, str] = {}
+    if status == "passed":
+        if "failure_class" in payload or "failure_stage" in payload:
+            return None
+    else:
+        failure_class = _safe_identifier(payload.get("failure_class"), limit=128)
+        failure_stage = _safe_identifier(payload.get("failure_stage"), limit=128)
+        if failure_class is None or failure_stage is None:
+            return None
+        failure = {
+            "failure_class": failure_class,
+            "failure_stage": failure_stage,
+        }
+    return {
+        "schema_version": _CANARY_OUTER_SCHEMA_VERSION,
+        "status": status,
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "sdk_version": sdk_version,
+        "system_instruction_sha256": system_instruction_sha256,
+        "request_schema_sha256": request_schema_sha256,
+        **counters,
+        **booleans,
+        "semantic_checks": semantic_checks,
+        "semantic_failure_reasons": semantic_failure_reasons,
+        "section_counts": section_counts,
+        **failure,
+    }
+
+
+def _semantic_canary_attestation_passed(attestation: dict[str, Any] | None) -> bool:
+    return bool(
+        attestation is not None
+        and attestation["status"] == "passed"
+        and attestation["provider_turns_started"] == 2
+        and attestation["provider_turns_completed"] == 2
+        and attestation["terminal_call_count"] == 1
+        and all(
+            attestation[key] is True
+            for key in (
+                "fixture_read",
+                "source_verified",
+                "sink_verified",
+                "language_verified",
+                "semantic_relation_verified",
+                "worker_cleanup_verified",
+            )
+        )
+        and all(attestation["semantic_checks"].values())
+        and attestation["semantic_failure_reasons"] == []
+    )
 
 
 def _bounded_diagnostic_tail(value: object) -> str:

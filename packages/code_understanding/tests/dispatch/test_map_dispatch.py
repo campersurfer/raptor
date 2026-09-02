@@ -289,26 +289,58 @@ def test_terminal_validator_rejects_private_canary_shape():
     assert error == "invalid submit_context_map context_map: canonical schema"
 
 
-def test_semantic_canary_and_production_tool_share_schema_builder(tmp_path):
+def test_canary_schema_is_stricter_without_changing_production_schema(tmp_path):
     import packages.code_understanding.dispatch.map_dispatch as dispatch
     from packages.code_understanding import semantic_canary
     from packages.code_understanding.dispatch.tools import SandboxedTools
 
+    default_schema = dispatch.build_context_map_schema()
+    canary_schema = dispatch.build_context_map_schema(require_canary_names=True)
     production_tools = dispatch._build_tools(SandboxedTools.for_repo(tmp_path))
-    canary_tools = semantic_canary._build_tools(SandboxedTools.for_repo(tmp_path))
-    production_submit = next(tool for tool in production_tools if tool.name == "submit_context_map")
-    canary_submit = next(tool for tool in canary_tools if tool.name == "submit_context_map")
+    canary_tools = semantic_canary._build_tools(
+        SandboxedTools.for_repo(tmp_path),
+        context_map_schema=canary_schema,
+    )
+    production_submit = next(
+        tool for tool in production_tools if tool.name == "submit_context_map"
+    )
+    canary_submit = next(
+        tool for tool in canary_tools if tool.name == "submit_context_map"
+    )
 
     assert semantic_canary._build_tools is dispatch._build_tools
-    assert production_submit.input_schema == canary_submit.input_schema
-    assert production_submit.input_schema["properties"]["context_map"] == dispatch.build_context_map_schema()
+    assert production_submit.input_schema["properties"]["context_map"] == default_schema
+    assert canary_submit.input_schema["properties"]["context_map"] == canary_schema
+    assert {"id", "type", "file", "line"} == set(
+        default_schema["properties"]["entry_points"]["items"]["required"]
+    )
+    assert {"id", "type", "file", "line", "name"} == set(
+        canary_schema["properties"]["entry_points"]["items"]["required"]
+    )
+    assert {"id", "type", "operation", "file", "line"} == set(
+        default_schema["properties"]["sink_details"]["items"]["required"]
+    )
+    assert {"id", "type", "operation", "file", "line", "name"} == set(
+        canary_schema["properties"]["sink_details"]["items"]["required"]
+    )
+    assert "additionalProperties" not in default_schema["properties"]["entry_points"]["items"]
+    assert "additionalProperties" not in canary_schema["properties"]["sink_details"]["items"]
+    assert "dangerous operation" in canary_schema["properties"]["sinks"]["items"]["properties"]["location"]["description"]
+    assert "wrapper" in canary_schema["properties"]["sink_details"]["items"]["properties"]["name"]["description"]
 
 def test_gemini_envelope_binds_every_map_tool_to_its_exact_input_schema(tmp_path):
     from core.llm.providers import GeminiProvider
-    from packages.code_understanding.dispatch.map_dispatch import _build_tools
+    from packages.code_understanding.dispatch.map_dispatch import (
+        _build_tools,
+        build_context_map_schema,
+    )
     from packages.code_understanding.dispatch.tools import SandboxedTools
 
-    tools = _build_tools(SandboxedTools.for_repo(tmp_path))
+    canary_schema = build_context_map_schema(require_canary_names=True)
+    tools = _build_tools(
+        SandboxedTools.for_repo(tmp_path),
+        context_map_schema=canary_schema,
+    )
     schema = GeminiProvider._tool_response_schema(tools)
     tool_options = {
         option["properties"]["tool"]["enum"][0]: option

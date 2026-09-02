@@ -33,6 +33,7 @@ _SUCCESS_FIELDS = {
     "provider",
     "model",
     "sdk_version",
+    "system_instruction_sha256",
     "request_schema_sha256",
     "terminal_call_count",
     "provider_turn_count",
@@ -41,6 +42,8 @@ _SUCCESS_FIELDS = {
     "source_verified",
     "sink_verified",
     "semantic_relation_verified",
+    "semantic_checks",
+    "semantic_failure_reasons",
     "section_counts",
 }
 _CLI_FAILURE_FIELDS = {
@@ -49,6 +52,8 @@ _CLI_FAILURE_FIELDS = {
     "provider",
     "model",
     "sdk_version",
+    "system_instruction_sha256",
+    "request_schema_sha256",
     "provider_turns_started",
     "provider_turns_completed",
     "terminal_call_count",
@@ -57,6 +62,9 @@ _CLI_FAILURE_FIELDS = {
     "sink_verified",
     "language_verified",
     "semantic_relation_verified",
+    "semantic_checks",
+    "semantic_failure_reasons",
+    "section_counts",
     "worker_cleanup_verified",
     "failure_class",
     "failure_stage",
@@ -175,8 +183,10 @@ def _legacy_benign_fixture() -> semantic_canary._Fixture:
         sink="legacy_sink",
         relation="legacy_relation",
         source_line=4,
-        sink_line=8,
+        sink_wrapper_line=7,
+        sink_call_line=8,
         relation_line=11,
+        operation="(void)command;",
         content=(
             "#include <string>\n\n"
             "std::string legacy_source(int argc, char** argv) {\n"
@@ -402,6 +412,115 @@ def test_private_canary_map_cannot_qualify_the_production_path():
     _assert_failure(result, "map_validation")
 
 
+@pytest.mark.parametrize("missing_section", ("sink_details", "entry_points"))
+def test_canary_schema_requires_names_without_changing_production_schema(
+    missing_section: str,
+):
+    import jsonschema
+
+    from packages.code_understanding.dispatch.map_dispatch import (
+        _validate_terminal_context_map,
+        build_context_map_schema,
+    )
+
+    context_map = _canonical_fixture_map()
+    context_map[missing_section][0].pop("name")
+
+    jsonschema.validate(instance=context_map, schema=build_context_map_schema())
+    validated, error = _validate_terminal_context_map({"context_map": context_map})
+    assert error is None
+    assert validated == context_map
+
+    strict_schema = build_context_map_schema(require_canary_names=True)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=context_map, schema=strict_schema)
+    validated, error = _validate_terminal_context_map(
+        {"context_map": context_map},
+        context_map_schema=strict_schema,
+    )
+    assert validated is None
+    assert error == "invalid submit_context_map context_map: canonical schema"
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    _assert_failure(result, "map_validation")
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_check", "expected_reason"),
+    [
+        (
+            "library_callee",
+            "sink_detail_wrapper_name_verified",
+            "sink_detail_wrapper_name_mismatch",
+        ),
+        (
+            "wrapper_line",
+            "sink_detail_callsite_verified",
+            "sink_detail_callsite_mismatch",
+        ),
+        (
+            "top_level_line",
+            "top_level_sink_callsite_verified",
+            "top_level_sink_callsite_mismatch",
+        ),
+    ],
+)
+def test_sink_anchor_mismatches_emit_exact_bounded_diagnostics(
+    variant: str, expected_check: str, expected_reason: str
+):
+    context_map = _canonical_fixture_map()
+    fixture = semantic_canary._fresh_fixture()
+
+    if variant == "library_callee":
+        context_map["sink_details"][0]["name"] = "std::system"
+    elif variant == "wrapper_line":
+        context_map["sink_details"][0]["line"] = fixture.sink_wrapper_line
+    else:
+        context_map["sinks"][0]["location"] = (
+            f"fixture.cpp:{fixture.sink_wrapper_line}"
+        )
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    _assert_failure(result, "semantic_evidence")
+    checks = result.attestation["semantic_checks"]
+    assert set(checks) == set(semantic_canary.SEMANTIC_CHECK_KEYS)
+    assert [key for key, verified in checks.items() if not verified] == [expected_check]
+    assert result.attestation["semantic_failure_reasons"] == [expected_reason]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "std::system(command.c_str())",
+        "prefix std::system(command.c_str());",
+        "std::system(command.c_str());\u0301",
+    ),
+)
+def test_sink_operation_requires_exact_call_expression(operation: str):
+    context_map = _canonical_fixture_map()
+    context_map["sink_details"][0]["operation"] = operation
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    _assert_failure(result, "semantic_evidence")
+    assert result.attestation["semantic_checks"]["sink_detail_operation_verified"] is False
+    assert result.attestation["semantic_failure_reasons"] == [
+        "sink_detail_operation_mismatch"
+    ]
+    assert operation not in repr(result.attestation)
+
+
 def test_canary_attests_only_bounded_non_sensitive_evidence():
     provider = _CanonicalSimulator()
     result = run_semantic_canary(_model(), provider_factory=lambda _: provider)
@@ -409,9 +528,10 @@ def test_canary_attests_only_bounded_non_sensitive_evidence():
 
     assert result.success is True
     assert set(result.attestation) == _SUCCESS_FIELDS
-    assert result.attestation["schema_version"] == 2
+    assert result.attestation["schema_version"] == 3
     assert result.attestation["status"] == "passed"
     assert len(result.attestation["fixture_sha256"]) == 64
+    assert len(result.attestation["system_instruction_sha256"]) == 64
     assert len(result.attestation["request_schema_sha256"]) == 64
     assert result.attestation["provider"] == "gemini"
     assert result.attestation["model"] == "test-model"
@@ -422,6 +542,11 @@ def test_canary_attests_only_bounded_non_sensitive_evidence():
     assert result.attestation["source_verified"] is True
     assert result.attestation["sink_verified"] is True
     assert result.attestation["semantic_relation_verified"] is True
+    assert set(result.attestation["semantic_checks"]) == set(
+        semantic_canary.SEMANTIC_CHECK_KEYS
+    )
+    assert all(result.attestation["semantic_checks"].values())
+    assert result.attestation["semantic_failure_reasons"] == []
     assert result.attestation["section_counts"] == {
         "sources": 1,
         "sinks": 1,
@@ -433,10 +558,16 @@ def test_canary_attests_only_bounded_non_sensitive_evidence():
     }
     assert provider.fixture_contents == [fixture.content]
     rendered = repr(result.attestation)
-    for identifier in (fixture.source, fixture.sink, fixture.relation):
-        assert identifier not in rendered
+    for value in (
+        fixture.source,
+        fixture.sink,
+        fixture.relation,
+        fixture.operation,
+        fixture.content,
+        semantic_canary._trusted_system_instruction(),
+    ):
+        assert value not in rendered
     assert "fixture.cpp" not in rendered
-
 
 def test_canary_prompt_never_discloses_hidden_fixture_identifiers():
     provider = _CanonicalSimulator()
@@ -618,10 +749,15 @@ def test_canary_rejects_noncanonical_evidence_anchors(mutate):
 
 
 @pytest.mark.parametrize(
-    "field",
-    ["entry_point", "sink"],
+    ("field", "expected_reason"),
+    [
+        ("entry_point", "flow_entry_reference_unknown"),
+        ("sink", "flow_sink_reference_unknown"),
+    ],
 )
-def test_canary_rejects_unresolved_flow_reference(field: str):
+def test_canary_rejects_unresolved_flow_reference(
+    field: str, expected_reason: str
+):
     context_map = _canonical_fixture_map()
     context_map["unchecked_flows"][0][field] = "UNKNOWN-ID"
 
@@ -631,6 +767,58 @@ def test_canary_rejects_unresolved_flow_reference(field: str):
     )
 
     _assert_failure(result, "semantic_evidence")
+    assert result.attestation["semantic_failure_reasons"] == [expected_reason]
+
+
+def test_canary_rejects_known_but_unlinked_flow_ids():
+    context_map = _canonical_fixture_map()
+    fixture = semantic_canary._fresh_fixture()
+    context_map["entry_points"].append({
+        "id": "EP-OTHER",
+        "type": "cli_arg",
+        "file": "fixture.cpp",
+        "line": fixture.relation_line + 1,
+        "name": "other_relation",
+    })
+    context_map["sink_details"].append({
+        "id": "SINK-OTHER",
+        "type": "shell_exec",
+        "operation": "other_operation()",
+        "file": "fixture.cpp",
+        "line": fixture.sink_call_line + 1,
+        "name": "other_wrapper",
+    })
+    context_map["unchecked_flows"][0].update(
+        entry_point="EP-OTHER", sink="SINK-OTHER"
+    )
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    _assert_failure(result, "semantic_evidence")
+    assert result.attestation["semantic_failure_reasons"] == ["flow_not_linked"]
+
+
+def test_semantic_composition_mismatch_has_only_generic_reason():
+    context_map = _canonical_fixture_map()
+    source = context_map["sources"][0]
+    context_map["sources"] = [
+        {**source, "entry": "fixture.cpp:5 other_source argv[1]"},
+        {**source, "type": "other"},
+    ]
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: _Provider(_terminal_turns(context_map=context_map)),
+    )
+
+    _assert_failure(result, "semantic_evidence")
+    assert all(result.attestation["semantic_checks"].values())
+    assert result.attestation["semantic_failure_reasons"] == [
+        "semantic_evidence_mismatch"
+    ]
 
 
 def test_canary_rejects_non_attacker_controlled_source():
@@ -644,6 +832,9 @@ def test_canary_rejects_non_attacker_controlled_source():
 
     _assert_failure(result, "semantic_evidence")
     assert result.attestation["source_verified"] is False
+    assert result.attestation["semantic_failure_reasons"] == [
+        "source_trust_mismatch"
+    ]
 
 
 def test_canary_rejects_non_dangerous_sink():
@@ -658,6 +849,10 @@ def test_canary_rejects_non_dangerous_sink():
 
     _assert_failure(result, "semantic_evidence")
     assert result.attestation["sink_verified"] is False
+    assert result.attestation["semantic_failure_reasons"] == [
+        "sink_detail_type_mismatch",
+        "top_level_sink_type_mismatch",
+    ]
 
 
 def test_canary_rejects_declared_validation_boundary():
@@ -673,7 +868,9 @@ def test_canary_rejects_declared_validation_boundary():
     )
 
     _assert_failure(result, "semantic_evidence")
-
+    assert result.attestation["semantic_failure_reasons"] == [
+        "declared_boundary_present"
+    ]
 
 def test_canary_rejects_scalar_language_label():
     context_map = _canonical_fixture_map()
@@ -856,9 +1053,16 @@ def test_semantic_canary_cli_rejects_unapproved_model_as_bounded_json(capsys):
     assert exit_code == 1
     attestation = json.loads(capsys.readouterr().out)
     assert set(attestation) == _CLI_FAILURE_FIELDS
-    assert attestation["schema_version"] == 3
+    assert attestation["schema_version"] == 4
     assert attestation["failure_class"] == "unsupported_model"
     assert attestation["failure_stage"] == "provider_init"
+    assert attestation["semantic_checks"] == {
+        key: False for key in semantic_canary.SEMANTIC_CHECK_KEYS
+    }
+    assert attestation["semantic_failure_reasons"] == []
+    assert attestation["section_counts"] == {
+        key: 0 for key in semantic_canary.SECTION_COUNT_KEYS
+    }
     assert attestation["worker_cleanup_verified"] is True
 
 
@@ -867,12 +1071,13 @@ def test_semantic_canary_cli_uses_resolved_model(monkeypatch: pytest.MonkeyPatch
 
     resolved = _model()
     expected = semantic_canary.SemanticCanaryResult(True, {
-        "schema_version": 3,
+        "schema_version": 4,
         "status": "passed",
         "provider": "gemini",
         "model": "gemini-2.5-flash",
         "sdk_version": "test",
-        "request_schema_sha256": "s" * 64,
+        "system_instruction_sha256": "a" * 64,
+        "request_schema_sha256": "b" * 64,
         "provider_turns_started": 2,
         "provider_turns_completed": 2,
         "terminal_call_count": 1,
@@ -881,6 +1086,13 @@ def test_semantic_canary_cli_uses_resolved_model(monkeypatch: pytest.MonkeyPatch
         "source_verified": True,
         "sink_verified": True,
         "semantic_relation_verified": True,
+        "semantic_checks": {
+            key: True for key in semantic_canary.SEMANTIC_CHECK_KEYS
+        },
+        "semantic_failure_reasons": [],
+        "section_counts": {
+            key: 0 for key in semantic_canary.SECTION_COUNT_KEYS
+        },
         "worker_cleanup_verified": True,
     })
     seen: list[ModelConfig] = []
@@ -896,8 +1108,6 @@ def test_semantic_canary_cli_uses_resolved_model(monkeypatch: pytest.MonkeyPatch
     assert exit_code == 0
     assert seen == [resolved]
     assert json.loads(capsys.readouterr().out) == expected.attestation
-
-
 
 def test_canary_preserves_explicit_local_jsonschema_failures():
     from core.llm.providers import (

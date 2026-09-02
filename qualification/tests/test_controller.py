@@ -135,6 +135,35 @@ def _runtime_failure(failure_class: str) -> dict:
             "version_matches": False,
         })
     return runtime
+def _passing_canary_attestation() -> dict:
+    from packages.code_understanding.semantic_canary import (
+        SECTION_COUNT_KEYS,
+        SEMANTIC_CHECK_KEYS,
+    )
+
+    return {
+        "schema_version": 4,
+        "status": "passed",
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "sdk_version": "test",
+        "system_instruction_sha256": "a" * 64,
+        "request_schema_sha256": "b" * 64,
+        "provider_turns_started": 2,
+        "provider_turns_completed": 2,
+        "terminal_call_count": 1,
+        "fixture_read": True,
+        "source_verified": True,
+        "sink_verified": True,
+        "language_verified": True,
+        "semantic_relation_verified": True,
+        "semantic_checks": {key: True for key in SEMANTIC_CHECK_KEYS},
+        "semantic_failure_reasons": [],
+        "section_counts": {key: 0 for key in SECTION_COUNT_KEYS},
+        "worker_cleanup_verified": True,
+    }
+
+
 def _isolated_environment(root: Path) -> dict[str, str]:
     root_text = str(root.resolve())
     return {
@@ -144,6 +173,25 @@ def _isolated_environment(root: Path) -> dict[str, str]:
         "TMP": root_text,
         "TEMP": root_text,
     }
+
+
+def test_qualification_canary_contract_matches_inner_protocol() -> None:
+    from packages.code_understanding import semantic_canary
+    from qualification import controller as qualification_controller
+
+    assert qualification_controller._CANARY_OUTER_SCHEMA_VERSION == 4
+    assert (
+        qualification_controller._CANARY_SECTION_COUNT_KEYS
+        == semantic_canary.SECTION_COUNT_KEYS
+    )
+    assert (
+        qualification_controller._CANARY_SEMANTIC_CHECK_KEYS
+        == semantic_canary.SEMANTIC_CHECK_KEYS
+    )
+    assert (
+        qualification_controller._CANARY_SEMANTIC_FAILURE_REASONS
+        == semantic_canary.SEMANTIC_FAILURE_REASONS
+    )
 
 
 def test_private_temp_attestation_requires_exact_current_user_directory(tmp_path):
@@ -349,22 +397,11 @@ def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
     repo = _clean_git_repo(tmp_path / "repo")
     controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
     calls: list[list[str]] = []
-    attestation = {
-        "schema_version": 3,
-        "status": "passed",
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "provider_turns_started": 2,
-        "provider_turns_completed": 2,
-        "terminal_call_count": 1,
-        "fixture_read": True,
-        "source_verified": True,
-        "sink_verified": True,
-        "language_verified": True,
-        "semantic_relation_verified": True,
-        "worker_cleanup_verified": True,
+    attestation = _passing_canary_attestation()
+    attestation.update({
+        "fixture_sha256": "c" * 64,
         "untrusted_extra": "must-not-persist",
-    }
+    })
 
     def fake_run_json(argv, *, env, timeout):
         del env, timeout
@@ -385,6 +422,11 @@ def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
 
     assert record["status"] == "passed"
     assert record["exactly_one_valid_submit_context_map"] is True
+    assert set(record["attestation"]) == set(_passing_canary_attestation())
+    assert record["attestation"]["schema_version"] == 4
+    assert all(record["attestation"]["semantic_checks"].values())
+    assert record["attestation"]["semantic_failure_reasons"] == []
+    assert "fixture_sha256" not in record["attestation"]
     assert "untrusted_extra" not in record["attestation"]
     assert calls[0][1:] == [
         "raptor.py", "semantic-canary", "--model", "gemini-2.5-flash", "--format", "json",
@@ -393,6 +435,66 @@ def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
         controller.run_canary()
     assert len(calls) == 1
 
+
+@pytest.mark.parametrize("schema_version", (3, 5))
+def test_canary_controller_rejects_stale_or_future_outer_schema(
+    tmp_path, monkeypatch, schema_version
+):
+    repo = _clean_git_repo(tmp_path / f"repo-{schema_version}")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    attestation = _passing_canary_attestation()
+    attestation["schema_version"] = schema_version
+
+    monkeypatch.setattr(
+        controller,
+        "_run_bounded_json",
+        lambda *args, **kwargs: (
+            ProcessCapture(0, False, "a" * 64, "b" * 64),
+            attestation,
+        ),
+    )
+
+    record = controller.run_canary()
+
+    assert record["status"] == "failed"
+    assert record["attestation"] == {}
+    assert record["failure_class"] == "semantic_canary_contract_failed"
+
+
+def test_canary_controller_keeps_allowlisted_failed_diagnostics(tmp_path, monkeypatch):
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    attestation = _passing_canary_attestation()
+    attestation.update({
+        "status": "failed",
+        "semantic_checks": {
+            **attestation["semantic_checks"],
+            "sink_detail_operation_verified": False,
+        },
+        "semantic_failure_reasons": ["sink_detail_operation_mismatch"],
+        "failure_class": "semantic_evidence",
+        "failure_stage": "terminal_validation",
+        "untrusted_extra": "must-not-persist",
+    })
+
+    monkeypatch.setattr(
+        controller,
+        "_run_bounded_json",
+        lambda *args, **kwargs: (
+            ProcessCapture(1, False, "a" * 64, "b" * 64),
+            attestation,
+        ),
+    )
+
+    record = controller.run_canary()
+
+    assert record["status"] == "failed"
+    assert record["failure_class"] == "semantic_evidence"
+    assert record["attestation"]["semantic_failure_reasons"] == [
+        "sink_detail_operation_mismatch"
+    ]
+    assert record["attestation"]["semantic_checks"]["sink_detail_operation_verified"] is False
+    assert "untrusted_extra" not in record["attestation"]
 
 def test_direct_controller_reuses_attested_environment_and_scanner_failure_class(
     tmp_path, monkeypatch,

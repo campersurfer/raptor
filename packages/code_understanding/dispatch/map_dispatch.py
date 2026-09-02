@@ -55,12 +55,12 @@ _CONTEXT_MAP_LIST_FIELDS = (
 _CONTEXT_MAP_FIELDS = frozenset((*_CONTEXT_MAP_LIST_FIELDS, "meta"))
 
 _TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 4.0)
-def build_context_map_schema() -> dict[str, Any]:
+def build_context_map_schema(*, require_canary_names: bool = False) -> dict[str, Any]:
     """Build the canonical terminal ``context_map`` JSON schema.
 
-    The top-level map is closed so a tool turn cannot smuggle unrelated data.
-    Evidence objects intentionally stay extensible: normalizers and enrichers
-    attach machine-derived fields after terminal submission.
+    The default schema stays compatible with production ``/understand`` callers.
+    The canary passes ``require_canary_names=True`` to bind model output to the
+    exact function anchors its semantic predicate evaluates.
     """
     text = {"type": "string", "minLength": 1}
     text_list = {
@@ -90,11 +90,59 @@ def build_context_map_schema() -> dict[str, Any]:
             "required": ["type", "entry", "trust_level"],
         },
     }
+    sink_location = text
+    sink_detail_name = text
+    sink_detail_operation = text
+    sink_detail_file = text
+    sink_detail_line: dict[str, Any] = {"type": "integer", "minimum": 1}
+    entry_point_name = text
+    if require_canary_names:
+        sink_location = {
+            **text,
+            "description": (
+                "The line containing the actual dangerous operation."
+            ),
+        }
+        sink_detail_name = {
+            **text,
+            "description": (
+                "The enclosing user-defined wrapper function containing the "
+                "dangerous operation, not a library callee such as std::system."
+            ),
+        }
+        sink_detail_operation = {
+            **text,
+            "description": (
+                "A concise representation of the dangerous call expression."
+            ),
+        }
+        sink_detail_file = {
+            **text,
+            "description": (
+                "The repository-relative file containing the dangerous operation "
+                "on the recorded line."
+            ),
+        }
+        sink_detail_line = {
+            "type": "integer",
+            "minimum": 1,
+            "description": (
+                "The line containing the actual dangerous operation, not the "
+                "enclosing function declaration."
+            ),
+        }
+        entry_point_name = {
+            **text,
+            "description": (
+                "The enclosing user-defined relation or entry function identifier "
+                "at the recorded location."
+            ),
+        }
     sinks = {
         "type": "array",
         "items": {
             "type": "object",
-            "properties": {"type": text, "location": text},
+            "properties": {"type": text, "location": sink_location},
             "required": ["type", "location"],
         },
     }
@@ -125,12 +173,16 @@ def build_context_map_schema() -> dict[str, Any]:
                 "type": text,
                 "file": text,
                 "line": {"type": "integer", "minimum": 1},
-                "name": text,
+                "name": entry_point_name,
                 "accepts": text,
                 "auth_required": {"type": "boolean"},
                 "notes": text,
             },
-            "required": ["id", "type", "file", "line"],
+            "required": (
+                ["id", "type", "file", "line", "name"]
+                if require_canary_names
+                else ["id", "type", "file", "line"]
+            ),
         },
     }
     sink_details = {
@@ -140,15 +192,19 @@ def build_context_map_schema() -> dict[str, Any]:
             "properties": {
                 "id": text,
                 "type": text,
-                "operation": text,
-                "file": text,
-                "line": {"type": "integer", "minimum": 1},
-                "name": text,
+                "operation": sink_detail_operation,
+                "file": sink_detail_file,
+                "line": sink_detail_line,
+                "name": sink_detail_name,
                 "reaches_from": {"type": "array", "items": text},
                 "trust_boundaries_crossed": {"type": "array", "items": text},
                 "notes": text,
             },
-            "required": ["id", "type", "operation", "file", "line"],
+            "required": (
+                ["id", "type", "operation", "file", "line", "name"]
+                if require_canary_names
+                else ["id", "type", "operation", "file", "line"]
+            ),
         },
     }
     boundary_details = {
@@ -203,7 +259,6 @@ def build_context_map_schema() -> dict[str, Any]:
         "additionalProperties": False,
     }
 
-
 class _RetryingMapProvider:
     """Retry transient map-turn transport failures without replaying tool state."""
 
@@ -231,8 +286,14 @@ class _RetryingMapProvider:
 
 
 
-def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None, str | None]:
-    """Apply canonical schema validation and terminal-size limits."""
+def _validate_terminal_context_map(
+    payload: Any, *, context_map_schema: dict[str, Any] | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Apply a terminal context-map schema and size limits.
+
+    Production callers use the canonical schema. The semantic canary passes its
+    stricter request schema so a simulated provider cannot bypass its contract.
+    """
     if not isinstance(payload, dict):
         return None, "submit_context_map payload must be an object"
     context_map = payload.get("context_map")
@@ -254,7 +315,12 @@ def _validate_terminal_context_map(payload: Any) -> tuple[dict[str, Any] | None,
     except ImportError:
         return None, "submit_context_map JSON schema validator unavailable"
     try:
-        jsonschema.validate(instance=context_map, schema=build_context_map_schema())
+        schema = (
+            build_context_map_schema()
+            if context_map_schema is None
+            else context_map_schema
+        )
+        jsonschema.validate(instance=context_map, schema=schema)
     except jsonschema.ValidationError:
         return None, "invalid submit_context_map context_map: canonical schema"
     except jsonschema.SchemaError:
@@ -374,8 +440,19 @@ def default_map_dispatch(
     return context_map
 
 
-def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
-    """Expose source inspection plus one terminal map-submission tool."""
+def _build_tools(
+    sandbox: SandboxedTools, *, context_map_schema: dict[str, Any] | None = None
+) -> list[ToolDef]:
+    """Expose source inspection plus one terminal map-submission tool.
+
+    The default keeps the production schema unchanged. Callers with a stricter
+    terminal contract pass a fresh schema for this exact tool definition.
+    """
+    schema = (
+        build_context_map_schema()
+        if context_map_schema is None
+        else context_map_schema
+    )
     return [
         *build_shared_tools(sandbox),
         ToolDef(
@@ -386,15 +463,13 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
             ),
             input_schema={
                 "type": "object",
-                "properties": {"context_map": build_context_map_schema()},
+                "properties": {"context_map": schema},
                 "required": ["context_map"],
                 "additionalProperties": False,
             },
             handler=lambda args: json.dumps({"received": bool(args)}),
         ),
     ]
-
-
 def _format_user_message(checklist: Optional[dict[str, Any]]) -> str:
     inventory = _inventory_summary(checklist)
     return (

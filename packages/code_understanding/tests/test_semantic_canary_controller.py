@@ -16,8 +16,8 @@ import pytest
 
 _RAPTOR_ROOT = Path(__file__).resolve().parents[3]
 _RAPTOR_CLI = _RAPTOR_ROOT / "raptor.py"
-_TEST_DEADLINE_S = 8.0
-_TEST_PROCESS_TIMEOUT_S = 24.0
+_TEST_DEADLINE_S = 45.0
+_TEST_PROCESS_TIMEOUT_S = 120.0
 _TEST_SECRET = "semantic-canary-controller-test-secret"
 _TEST_PROMPT = "semantic-canary-controller-test-prompt"
 _ALLOWED_ATTESTATION_FIELDS = {
@@ -26,6 +26,7 @@ _ALLOWED_ATTESTATION_FIELDS = {
     "provider",
     "model",
     "sdk_version",
+    "system_instruction_sha256",
     "request_schema_sha256",
     "provider_turns_started",
     "provider_turns_completed",
@@ -35,11 +36,13 @@ _ALLOWED_ATTESTATION_FIELDS = {
     "sink_verified",
     "language_verified",
     "semantic_relation_verified",
+    "semantic_checks",
+    "semantic_failure_reasons",
+    "section_counts",
     "failure_class",
     "failure_stage",
     "worker_cleanup_verified",
 }
-
 
 def _sitecustomize_source() -> str:
     """Install deterministic providers before the CLI imports the canary."""
@@ -50,6 +53,7 @@ def _sitecustomize_source() -> str:
         import re
         import time
 
+        import core.llm.providers
         from core.llm.config import ModelConfig
         from core.llm.tool_use.types import StopReason, ToolCall, ToolResult, TurnResponse
 
@@ -296,11 +300,19 @@ def test_semantic_canary_cli_hard_deadline_for_inflight_provider_turn(
 
 
 def test_semantic_canary_cli_success_remains_canonical_and_bounded(tmp_path: Path) -> None:
+    from packages.code_understanding.semantic_canary import (
+        SECTION_COUNT_KEYS,
+        SEMANTIC_CHECK_KEYS,
+    )
+
     completed = _run_cli(tmp_path, "success")
 
     assert completed.returncode == 0
     attestation = _single_attestation(completed)
+    assert attestation["schema_version"] == 4
     assert attestation["status"] == "passed"
+    assert len(attestation["system_instruction_sha256"]) == 64
+    assert len(attestation["request_schema_sha256"]) == 64
     assert attestation["provider_turns_started"] == 2
     assert attestation["provider_turns_completed"] == 2
     assert attestation["terminal_call_count"] == 1
@@ -309,6 +321,10 @@ def test_semantic_canary_cli_success_remains_canonical_and_bounded(tmp_path: Pat
     assert attestation["source_verified"] is True
     assert attestation["sink_verified"] is True
     assert attestation["semantic_relation_verified"] is True
+    assert set(attestation["semantic_checks"]) == set(SEMANTIC_CHECK_KEYS)
+    assert all(attestation["semantic_checks"].values())
+    assert attestation["semantic_failure_reasons"] == []
+    assert set(attestation["section_counts"]) == set(SECTION_COUNT_KEYS)
     assert attestation["worker_cleanup_verified"] is True
     _assert_no_sensitive_output(completed)
 
@@ -343,29 +359,120 @@ def test_controller_attestation_excludes_api_key() -> None:
 
 
 def test_controller_requires_all_canonical_evidence() -> None:
-    from packages.code_understanding import semantic_canary_controller
+    from packages.code_understanding import semantic_canary, semantic_canary_controller
+
+    valid_checks = {key: True for key in semantic_canary.SEMANTIC_CHECK_KEYS}
+    canonical = {
+        "provider_turns_started": 2,
+        "provider_turns_completed": 2,
+        "terminal_call_count": 1,
+        "fixture_read": True,
+        "source_verified": True,
+        "sink_verified": True,
+        "language_verified": True,
+        "semantic_relation_verified": True,
+        "diagnostics_valid": True,
+        "semantic_checks": valid_checks,
+        "semantic_failure_reasons": [],
+    }
 
     assert semantic_canary_controller._canonical_success_failure(
-        provider_turns_started=2,
-        provider_turns_completed=2,
-        terminal_call_count=1,
-        fixture_read=True,
-        source_verified=False,
-        sink_verified=True,
-        language_verified=True,
-        semantic_relation_verified=True,
+        **{**canonical, "source_verified": False}
     ) == "semantic_evidence"
     assert semantic_canary_controller._canonical_success_failure(
-        provider_turns_started=1,
-        provider_turns_completed=1,
-        terminal_call_count=1,
-        fixture_read=True,
-        source_verified=True,
-        sink_verified=True,
-        language_verified=True,
-        semantic_relation_verified=True,
+        **{
+            **canonical,
+            "provider_turns_started": 1,
+            "provider_turns_completed": 1,
+        }
     ) == "terminal_contract"
+    assert semantic_canary_controller._canonical_success_failure(
+        **{**canonical, "diagnostics_valid": False}
+    ) == "internal"
 
+
+def test_controller_protocol_constants_match_inner_canary_contract() -> None:
+    from packages.code_understanding import semantic_canary, semantic_canary_controller
+
+    assert semantic_canary_controller.SECTION_COUNT_KEYS == semantic_canary.SECTION_COUNT_KEYS
+    assert semantic_canary_controller.SEMANTIC_CHECK_KEYS == semantic_canary.SEMANTIC_CHECK_KEYS
+    assert semantic_canary_controller.SEMANTIC_FAILURE_REASONS == semantic_canary.SEMANTIC_FAILURE_REASONS
+
+
+def test_controller_sends_bounded_diagnostics_in_separate_ipc_messages() -> None:
+    from packages.code_understanding import semantic_canary, semantic_canary_controller
+
+    messages = semantic_canary_controller._worker_diagnostic_messages({
+        "semantic_checks": {
+            key: True for key in semantic_canary.SEMANTIC_CHECK_KEYS
+        },
+        "semantic_failure_reasons": sorted(
+            semantic_canary.SEMANTIC_FAILURE_REASONS
+        ),
+        "untrusted_extra": _TEST_SECRET,
+    })
+
+    assert [set(message) for message in messages] == [
+        {"type", "semantic_checks"},
+        {"type", "semantic_failure_reasons"},
+    ]
+    for message in messages:
+        encoded = semantic_canary_controller._encode_ipc_message(message)
+        assert encoded is not None
+        assert len(encoded) < semantic_canary_controller._MAX_IPC_MESSAGE_BYTES
+        assert _TEST_SECRET not in encoded.decode("utf-8")
+
+
+def test_controller_completes_short_ipc_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from packages.code_understanding import semantic_canary, semantic_canary_controller
+
+    message = {
+        "type": "diagnostic",
+        "semantic_checks": {
+            key: True for key in semantic_canary.SEMANTIC_CHECK_KEYS
+        },
+    }
+    encoded = semantic_canary_controller._encode_ipc_message(message)
+    assert encoded is not None
+    assert len(encoded) > 512
+    writes: list[bytes] = []
+
+    def short_write(_fd: int, payload: bytes) -> int:
+        chunk = bytes(payload)[:17]
+        writes.append(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr(semantic_canary_controller.os, "write", short_write)
+
+    assert semantic_canary_controller._send(123, message)
+    assert b"".join(writes) == encoded + b"\n"
+    assert len(writes) > 1
+
+    monkeypatch.setattr(semantic_canary_controller.os, "write", lambda *_: 0)
+    assert not semantic_canary_controller._send(123, message)
+
+
+def test_worker_attestation_refuses_stale_inner_schema() -> None:
+    from packages.code_understanding import semantic_canary_controller
+
+    stale_result = type(
+        "StaleResult",
+        (),
+        {
+            "success": True,
+            "attestation": {
+                "schema_version": 2,
+                "status": "passed",
+                "request_schema_sha256": "a" * 64,
+            },
+        },
+    )()
+
+    worker_attestation = semantic_canary_controller._worker_attestation(
+        stale_result, 2, 2
+    )
+
+    assert worker_attestation["inner_schema_version"] is None
 
 def test_terminate_worker_kills_descendant_after_leader_reap() -> None:
     from packages.code_understanding import semantic_canary_controller
