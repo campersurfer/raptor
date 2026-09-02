@@ -1,0 +1,351 @@
+{
+  "artifact_contracts": {
+    "scan_manifest": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "scan_metrics": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "verification": {
+      "status": "declared",
+      "validation": "structural_contract_passed"
+    }
+  },
+  "candidate_runtime": {
+    "candidate_python": {
+      "executable_basename": "python",
+      "implementation": "cpython",
+      "path_kind": "system",
+      "resolved_executable_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+      "version": {
+        "major": 3,
+        "minor": 13,
+        "patch": 15
+      }
+    },
+    "failure_class": null,
+    "jsonschema": {
+      "expected_version": "4.26.0",
+      "importable": true,
+      "version": "4.26.0",
+      "version_matches": true
+    },
+    "passed": true,
+    "probe_output_digests": {
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "bee01df8d3a8590666e60ecaa30255d7e8a0c684cc671972cb30dd2d981d85e8"
+    },
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "sarif_schema": {
+      "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+      "hash_matches": true,
+      "present": true,
+      "relative_path": "engine/schemas/sarif-2.1.0.json",
+      "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "semgrep": {
+      "basename": "semgrep",
+      "executable": true,
+      "path_kind": "system",
+      "sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
+      "version": "0.26"
+    }
+  },
+  "child_started": false,
+  "command": {
+    "argv": [
+      "candidate-python",
+      "packages/static-analysis/scanner.py",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_empty_output>",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--policy-groups",
+      "all"
+    ],
+    "argv_sha256": "6c383e8005bf9b86041cc33eea0baffff918ca7e4df257f1fa422e4ae4dbcc26"
+  },
+  "consumed_artifact_hashes": {
+    "scan/combined.sarif": "a95f5e0586b362ae9413efb5cc3f0193626668a2e4bbcaa66cf737fabb22e80e",
+    "scan/scan-manifest.json": "051bcc32ccd2405ea64206b98e6c0d7ad2dafc09bc138e250ddf4ec19b1514a3",
+    "scan/scan_metrics.json": "ee8b5a3df6515dd2d7050b3878dad419c103c143f1b8a4e950f080f6131c6200",
+    "scan/semgrep-run-summary.json": "fdd7ea8e8111f496a6f2b49a218f7a0f47e1bb8d5e3ff76a4b4dc945dde53932",
+    "scan/verification.json": "46612b40c5945486f1b43a6fc19f9d0fc17736db67cfb282021615cda78f00de"
+  },
+  "credential_isolation_required": true,
+  "direct_fallback_occurred": false,
+  "dispatcher_started": false,
+  "execution": {
+    "commit": "ff398c83ceb37af4b5835fcacf189bdd7d7fb66b",
+    "tree": "f07f8a92055f954bddc2dc146439d2973d4c422d"
+  },
+  "failure_class": "sarif_invalid",
+  "failure_stage": "direct_semgrep_qualification",
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "bb9b64d2ffa4820531bfd4067f5ae077791bc52b"
+  },
+  "immutable": true,
+  "output_digests": {
+    "stderr_sha256": "e37f8d65284edb1cde78a71dffaaac3659714483414818ac97dc2da9fa6e481d",
+    "stdout_sha256": "9327559ececb4f50c3c4637269c6553c54b1fb314ab07c4d8ea0174648ac6f9f"
+  },
+  "packs_dispatched": 16,
+  "private_temp_absolute": true,
+  "private_temp_canonical": true,
+  "private_temp_cleanup_complete": true,
+  "private_temp_current_user_owned": true,
+  "private_temp_mode": "0700",
+  "private_temp_non_symlink": true,
+  "private_temp_present": true,
+  "process_exit_code": 4,
+  "promotable": false,
+  "provider_turn_count": 0,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "retention": {
+    "fixture_and_raw_run_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "sarif_validation": {
+    "canonical_schema": "engine/schemas/sarif-2.1.0.json",
+    "combined_full_validation": true,
+    "combined_validation_status": "full_valid",
+    "jsonschema_distribution": "jsonschema",
+    "jsonschema_version": "4.26.0",
+    "jsonschema_version_matches": true,
+    "per_pack_full_validation": false,
+    "schema_hash_matches": true,
+    "schema_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+  },
+  "scanner_exit_code": 4,
+  "scanner_started": true,
+  "schema_version": 1,
+  "semgrep": {
+    "aggregate_exit_code": 4,
+    "combined_sarif_validation_status": "full_valid",
+    "failure_class": "sarif_invalid",
+    "failure_class_counts": {
+      "sarif_invalid": 16
+    },
+    "failure_class_source": "uniform_pack_failure_class",
+    "pack_diagnostics": [
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "739ce238e726589ea0071019931890c2fbd8bb7156d8d83f54ea582a0bf75763",
+        "failure_class": "sarif_invalid",
+        "pack_name": "category_auth",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "d368619399741bc45e5ec5bda5945f8999601e9248b8b7ad01f6be3aff97fc8c",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_auth",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "ef4e0efa7b3f6bd5c1b683ee896c8400c424f12e7925652622e738335cc2220c",
+        "failure_class": "sarif_invalid",
+        "pack_name": "custom_e54e13ee642eff13",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "515fd10b97231c0d7d25e13a73c049b88053cab51b63eb4b56ba9a6db7bdd1ae",
+        "failure_class": "sarif_invalid",
+        "pack_name": "custom_fac7d4a8a3e5d001",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "a7c591fe8a7ce436117c7d7b1cc9e902f7ee6c56688de7bbecd5b3e4b98d7f7c",
+        "failure_class": "sarif_invalid",
+        "pack_name": "custom_d2a0d143a1989c57",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "970996554f3ce3377f0b17a69bc778230afac0f290acad92ac01ba9cb210b102",
+        "failure_class": "sarif_invalid",
+        "pack_name": "category_flows",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "99e335a57d5da38d508a740f8b4fb048cfd1569f44ad56f044defe2735cd8e16",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_dataflow",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "1d29da7932fa6c25ff8271d90870a8ce7836d41db7c9df632d72a392192a1304",
+        "failure_class": "sarif_invalid",
+        "pack_name": "category_injection",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "c306782cf67427a7ef261de48ffd98de6594ffe4cc7f5fa367ec44233250b270",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_injection",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "f72d92fb3cd4bdc1f6319629254de1c1617c9a7e749176b2eba7cd47bc8912a2",
+        "failure_class": "sarif_invalid",
+        "pack_name": "custom_b616509922abed54",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "c1f2a8298bbf45e867190c671b822cab40a4c458fb6d30411af277b8b64c8c82",
+        "failure_class": "sarif_invalid",
+        "pack_name": "category_secrets",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "485a563532973a770e1bbbdf2a9d01ffd1733eecadee3d324c3757aec46643ec",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_secrets",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_directory",
+        "config_sha256": "6eeaa583b7e4ad18e92f2ecdecdcf1daae4199a0a806f38d77000634015408dc",
+        "failure_class": "sarif_invalid",
+        "pack_name": "category_sinks",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "20e597c3e0c1dcae8e106b61265fcf564e56ecd5f1ee9b6fd902b07898565c3c",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_sinks",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "c39c49b23ae2a3d1e069be1979129db7a5b75d0e1712bebfadedffcc5cec0719",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_security_audit",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      },
+      {
+        "bounded_stderr_tail": " Library not loaded: /usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib\n  Referenced from: <D6F46C83-968E-37E3-8A7D-C7CB969267CB> /usr/local/Cellar/semgrep/1.174.0/libexec/lib/python3.14/site-packages/semgrep/bin/semgrep-core\n  Reason: tried: '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/opt/tree-sitter/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file), '/usr/local/Cellar/tree-sitter/0.27.0/lib/libtree-sitter.0.26.dylib' (no such file)\n",
+        "config_kind": "local_file",
+        "config_sha256": "b4a9f044eeba7eb8b203dd68dd4826dbd109fcdb413994f077172cbf6a530371",
+        "failure_class": "sarif_invalid",
+        "pack_name": "semgrep_owasp_top_10",
+        "proxy_event_count": 0,
+        "raw_exit_code": 134,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "invalid"
+      }
+    ],
+    "packs_dispatched": 16,
+    "packs_failed": 16,
+    "packs_succeeded": 0,
+    "per_pack_full_validation": false,
+    "runtime_identity_matches_preflight": false,
+    "sandbox_engagement": "engaged",
+    "scanner": {
+      "basename": "semgrep",
+      "executable": true,
+      "path_kind": "system",
+      "sha256": "1ec97e1b70449d8f919cc7c9d5abaa5575a0598c05369241b76b862b3279f1c1",
+      "version": null
+    },
+    "summary_schema_version": 2,
+    "unclassified_pack_count": 0
+  },
+  "socket_path_bytes": null,
+  "status": "failed",
+  "tcp_fallback_occurred": false,
+  "temp_aliases_equal": true
+}
