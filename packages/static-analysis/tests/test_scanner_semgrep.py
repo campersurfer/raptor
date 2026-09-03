@@ -16,6 +16,7 @@ Dropped in adaptation:
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -104,6 +105,27 @@ class TestRunSingleSemgrep:
 
         assert len(callback_calls) > 0
         assert any("test" in call for call in callback_calls)
+
+@patch('shutil.which')
+@patch.object(_scanner_mod, "run")
+@patch.object(_scanner_mod, "validate_sarif")
+def test_explicit_launcher_bin_precedes_worker_path(
+    mock_validate, mock_run, mock_which, tmp_path,
+):
+    explicit = tmp_path / "private-runtime" / "bin" / "semgrep"
+    explicit.parent.mkdir(parents=True)
+    explicit.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mock_run.return_value = (0, '{"runs": []}', "")
+    mock_validate.return_value = True
+
+    run_single_semgrep(
+        name="explicit", config="p/default", repo_path=tmp_path,
+        out_dir=tmp_path, timeout=300, semgrep_bin=str(explicit),
+    )
+
+    environment = mock_run.call_args.kwargs["env"]
+    assert environment["PATH"].split(os.pathsep)[0] == str(explicit.parent)
+    assert environment["SEMGREP_ENABLE_VERSION_CHECK"] == "0"
 
 
 class TestSandboxFakeHomeWiring:

@@ -121,8 +121,10 @@ def test_healthy_exact_stdout_version_and_engine_smoke_pass(
 ) -> None:
     launcher = _launcher(tmp_path)
     monkeypatch.setattr(runtime, "inspect_dependency_closure", lambda _launcher: dict(_HEALTHY_CLOSURE))
+    environments: list[dict[str, str]] = []
 
-    def runner(argv, **_kwargs):
+    def runner(argv, **kwargs):
+        environments.append(dict(kwargs["env"]))
         if argv[-1] == "--version":
             return _completed(0, stdout=f"{EXPECTED_SEMGREP_VERSION}\n")
         assert argv[1] == "scan"
@@ -146,6 +148,12 @@ def test_healthy_exact_stdout_version_and_engine_smoke_pass(
     assert health["engine_smoke_sarif_status"] == "full_valid"
     assert health["engine_smoke_raw_output_persisted"] is False
     assert health["healthy"] is True
+    assert len(environments) == 2
+    expected_bin = str(launcher.lexical_path.parent)
+    assert environments[0]["PATH"].split(os.pathsep)[0] == expected_bin
+    assert environments[1]["PATH"].split(os.pathsep)[0] == expected_bin
+    assert environments[0]["SEMGREP_ENABLE_VERSION_CHECK"] == "0"
+    assert environments[1]["SEMGREP_ENABLE_VERSION_CHECK"] == "0"
 
 
 def test_fixed_version_cannot_be_overridden(tmp_path: Path) -> None:
@@ -283,10 +291,20 @@ def test_darwin_closure_recurses_rpaths_without_retaining_paths(
                 library_a: ["@loader_path/libb.dylib"],
                 library_b: [],
             }[binary]
-            output = "\n".join([f"{binary}:", *[
+            install_names = {
+                library_a: "/build/lib/liba.dylib",
+                library_b: "/build/lib/libb.dylib",
+            }
+            rows = [f"{binary}:"]
+            if binary.suffix == ".dylib":
+                rows.append(
+                    f"\t{install_names[binary]} (compatibility version 1.0.0)"
+                )
+            rows.extend(
                 f"\t{dependency} (compatibility version 1.0.0)"
                 for dependency in dependencies
-            ]])
+            )
+            output = "\n".join(rows)
             return _completed(0, stdout=output)
         assert argv[1] == "-l"
         return _completed(
@@ -312,6 +330,22 @@ def test_darwin_closure_recurses_rpaths_without_retaining_paths(
         {"basename": "libb.dylib", "sha256": runtime._sha256_file(library_b)},
     ]
 
+def test_darwin_executable_path_is_anchored_at_core(tmp_path: Path) -> None:
+    core = tmp_path / "bin" / "semgrep-core"
+    nested = tmp_path / "nested" / "libnested.dylib"
+    target = tmp_path / "bin" / "runtime-libs" / "libdep.dylib"
+    core.parent.mkdir()
+    nested.parent.mkdir()
+    target.parent.mkdir()
+    for path in (core, nested, target):
+        path.write_bytes(path.name.encode("utf-8"))
+
+    assert runtime._resolve_macho_token(
+        nested,
+        "@executable_path/runtime-libs/libdep.dylib",
+        executable_path=core,
+    ) == target.resolve()
+
 
 def test_darwin_closure_rejects_missing_transitive_library(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -328,10 +362,14 @@ def test_darwin_closure_rejects_missing_transitive_library(
                 core: ["@rpath/liba.dylib"],
                 library: ["@loader_path/missing.dylib"],
             }[binary]
-            output = "\n".join([f"{binary}:", *[
+            rows = [f"{binary}:"]
+            if binary.suffix == ".dylib":
+                rows.append("\t/build/lib/liba.dylib (compatibility version 1.0.0)")
+            rows.extend(
                 f"\t{dependency} (compatibility version 1.0.0)"
                 for dependency in dependencies
-            ]])
+            )
+            output = "\n".join(rows)
             return _completed(0, stdout=output)
         return _completed(
             0,

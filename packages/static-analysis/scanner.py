@@ -41,6 +41,7 @@ from packages.semgrep.runtime import (
     VerifiedSemgrepLauncher,
     classify_semgrep_process_failure,
     collect_runtime_health,
+    environment_for_launcher,
     verify_explicit_launcher,
 )
 
@@ -144,15 +145,17 @@ def _semgrep_executable_identity() -> dict[str, object]:
         "version": version,
         "sha256": digest,
     }
-def _semgrep_clean_environment() -> dict[str, str]:
-    """Build the exact Semgrep worker environment without venv contamination."""
+def _semgrep_clean_environment(semgrep_bin: str | None = None) -> dict[str, str]:
+    """Build the Semgrep worker environment without venv contamination."""
     clean_env = RaptorConfig.get_safe_env()
     if "PATH" in clean_env:
-        clean_env["PATH"] = ":".join(
+        clean_env["PATH"] = os.pathsep.join(
             part
-            for part in clean_env["PATH"].split(":")
+            for part in clean_env["PATH"].split(os.pathsep)
             if "venv" not in part.lower() and "/bin/pysemgrep" not in part
         )
+    if semgrep_bin is not None:
+        clean_env = environment_for_launcher(semgrep_bin, clean_env)
     return clean_env
 
 
@@ -1267,7 +1270,9 @@ def run_single_semgrep(
         semgrep_bin=semgrep_cmd,
     )
 
-    clean_env = _semgrep_clean_environment()
+    clean_env = _semgrep_clean_environment(
+        semgrep_cmd if semgrep_bin is not None else None
+    )
 
     # HOME + XDG basedirs are redirected via the sandbox layer's
     # ``fake_home=True`` primitive (passed below to ``run()``). The

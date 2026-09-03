@@ -144,6 +144,25 @@ def resolve_default_launcher() -> VerifiedSemgrepLauncher:
     )
 
 
+def environment_for_launcher(
+    launcher_path: Path | str,
+    environment: Mapping[str, str],
+) -> dict[str, str]:
+    """Bind subprocess lookup to the launcher's private bin directory."""
+    bound = dict(environment)
+    private_bin = str(Path(launcher_path).parent)
+    existing_path = bound.get("PATH", "")
+    entries = [private_bin]
+    entries.extend(
+        entry
+        for entry in existing_path.split(os.pathsep)
+        if entry and entry != private_bin
+    )
+    bound["PATH"] = os.pathsep.join(entries)
+    bound["SEMGREP_ENABLE_VERSION_CHECK"] = "0"
+    return bound
+
+
 def collect_runtime_health(
     launcher: VerifiedSemgrepLauncher,
     *,
@@ -158,9 +177,10 @@ def collect_runtime_health(
     """Return a bounded health record for one already-resolved launcher."""
     identity = launcher.base_identity()
     validator = sarif_validator or _validate_sarif_text
+    runtime_environment = environment_for_launcher(launcher.lexical_path, environment)
     version_capture = _run_bounded(
         [str(launcher.lexical_path), "--version"],
-        environment=environment,
+        environment=runtime_environment,
         timeout=version_timeout,
         runner=runner,
     )
@@ -217,7 +237,7 @@ def collect_runtime_health(
 
     smoke = _run_engine_smoke(
         launcher,
-        environment=environment,
+        environment=runtime_environment,
         runner=engine_runner,
         sarif_validator=validator,
         workspace_root=workspace_root,
@@ -343,7 +363,11 @@ def inspect_dependency_closure(launcher: VerifiedSemgrepLauncher) -> dict[str, o
         for dependency in dependencies:
             if dependency.startswith(_SYSTEM_LIBRARY_PREFIXES):
                 continue
-            resolved = _resolve_macho_dependency(binary, dependency)
+            resolved = _resolve_macho_dependency(
+                binary,
+                dependency,
+                executable_path=core,
+            )
             if resolved is None:
                 return _closure_failure(core_digest)
             if _is_system_library(resolved):
@@ -620,8 +644,12 @@ def _macho_dependencies(binary: Path) -> list[str] | None:
     if proc.returncode != 0:
         return None
     output = _bounded_bytes(proc.stdout).decode("utf-8", errors="replace")
+    lines = output.splitlines()[1:]
+    if binary.suffix == ".dylib":
+        # otool -L reports a dylib install name before its dependencies.
+        lines = lines[1:]
     dependencies: list[str] = []
-    for raw_line in output.splitlines()[1:]:
+    for raw_line in lines:
         dependency = raw_line.strip().split(" (", 1)[0].strip()
         if dependency:
             dependencies.append(dependency)
@@ -657,14 +685,23 @@ def _macho_rpaths(binary: Path) -> list[str] | None:
     return rpaths
 
 
-def _resolve_macho_dependency(binary: Path, dependency: str) -> Path | None:
+def _resolve_macho_dependency(
+    binary: Path,
+    dependency: str,
+    *,
+    executable_path: Path | None = None,
+) -> Path | None:
     if dependency.startswith("@rpath/"):
         suffix = dependency.removeprefix("@rpath/")
         rpaths = _macho_rpaths(binary)
         if rpaths is None:
             return None
         for rpath in rpaths:
-            root = _resolve_macho_token(binary, rpath)
+            root = _resolve_macho_token(
+                binary,
+                rpath,
+                executable_path=executable_path,
+            )
             if root is None:
                 continue
             try:
@@ -672,14 +709,24 @@ def _resolve_macho_dependency(binary: Path, dependency: str) -> Path | None:
             except OSError:
                 continue
         return None
-    return _resolve_macho_token(binary, dependency)
+    return _resolve_macho_token(
+        binary,
+        dependency,
+        executable_path=executable_path,
+    )
 
 
-def _resolve_macho_token(binary: Path, value: str) -> Path | None:
+def _resolve_macho_token(
+    binary: Path,
+    value: str,
+    *,
+    executable_path: Path | None = None,
+) -> Path | None:
     if value.startswith("@loader_path/"):
         candidate = binary.parent / value.removeprefix("@loader_path/")
     elif value.startswith("@executable_path/"):
-        candidate = binary.parent / value.removeprefix("@executable_path/")
+        executable = executable_path or binary
+        candidate = executable.parent / value.removeprefix("@executable_path/")
     else:
         candidate = Path(value)
         if not candidate.is_absolute():
