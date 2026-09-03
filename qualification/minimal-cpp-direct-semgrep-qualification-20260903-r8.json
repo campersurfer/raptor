@@ -1,0 +1,395 @@
+{
+  "artifact_contracts": {
+    "scan_manifest": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "scan_metrics": {
+      "status": "not_declared",
+      "validation": "structural_contract_passed"
+    },
+    "verification": {
+      "status": "declared",
+      "validation": "structural_contract_passed"
+    }
+  },
+  "candidate_runtime": {
+    "candidate_python": {
+      "executable_basename": "python",
+      "implementation": "cpython",
+      "path_kind": "system",
+      "resolved_executable_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+      "version": {
+        "major": 3,
+        "minor": 13,
+        "patch": 15
+      }
+    },
+    "failure_class": null,
+    "jsonschema": {
+      "expected_version": "4.26.0",
+      "importable": true,
+      "version": "4.26.0",
+      "version_matches": true
+    },
+    "passed": true,
+    "probe_output_digests": {
+      "stderr_sha256": "f7cc1ccff29727eedcce2e159408e7719141e6ab0c4ec7bbebfad89ecaa89f7a",
+      "stdout_sha256": "7ddd8347f7ffbba6e2c651ed77348a7b288fe2b87c5c8ad616917f9481627e41"
+    },
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "sarif_schema": {
+      "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+      "hash_matches": true,
+      "present": true,
+      "relative_path": "engine/schemas/sarif-2.1.0.json",
+      "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "semgrep": {
+      "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+      "engine_smoke_raw_output_persisted": false,
+      "engine_smoke_return_code": 0,
+      "engine_smoke_sarif_status": "full_valid",
+      "engine_smoke_stderr_sha256": "8e26b7bd21449b8b3068120653129817ee8ae5f31cf18c182bacc2935291233f",
+      "engine_smoke_stdout_sha256": "03621322bfd303319f54dfd5d862269f6de787c27432bf41319054e404c14a1d",
+      "engine_smoke_timed_out": false,
+      "failure_class": null,
+      "healthy": true,
+      "identity_schema_version": 1,
+      "launcher_basename": "semgrep",
+      "launcher_lstat_mode": "0700",
+      "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+      "launcher_symlink": false,
+      "linker_family": null,
+      "missing_library_basename": null,
+      "path_kind": "governed_private",
+      "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+      "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+      "version": "1.174.0",
+      "version_parse_source": "stdout",
+      "version_probe_return_code": 0,
+      "version_probe_stderr_sha256": "397f6e38b918625fe021b6ebbfcfaa8fd7f0687de2153caeba0a55d94d45ffb4",
+      "version_probe_stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+      "version_probe_timed_out": false
+    }
+  },
+  "child_started": false,
+  "command": {
+    "argv": [
+      "candidate-python",
+      "packages/static-analysis/scanner.py",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_empty_output>",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--policy-groups",
+      "all",
+      "--semgrep-bin",
+      "<verified-semgrep-bin>"
+    ],
+    "argv_sha256": "d73594031ac0a4bcfe92419adab9a13322e120b20dc582750c2bb26499a9b621"
+  },
+  "consumed_artifact_hashes": {
+    "scan/combined.sarif": "3e3b6240482f3474c960f7afbbf11c4d7d37e796432a27292234a268160b0a98",
+    "scan/scan-manifest.json": "55fb19515087cf41c6ba8c93b5bdc222ed5d624e1ab86c7e88f8a4cb6b109c3a",
+    "scan/scan_metrics.json": "6924c2e36150a0caa6dba290798265b8ba2d2f8d1d579563ae593fa6759a0995",
+    "scan/semgrep-run-summary.json": "24977d436bd4431be85a17132163209cd35a08579810bcfe7b045b96ee961074",
+    "scan/verification.json": "4da10df51bb45d962acde6af46c9426ee39c6fb5ec1fcb9c1212c97d71adcb7c"
+  },
+  "credential_isolation_required": true,
+  "direct_fallback_occurred": false,
+  "dispatcher_started": false,
+  "execution": {
+    "commit": "15c35eb913a33f83874c1ce9de605b2f42136315",
+    "tree": "4dc4cb100322ae0eb60e51ec8e8d687934504b36"
+  },
+  "failure_class": null,
+  "failure_stage": null,
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "bb9b64d2ffa4820531bfd4067f5ae077791bc52b"
+  },
+  "immutable": true,
+  "output_digests": {
+    "stderr_sha256": "28857eb08d8b76cf2c764ebf17265fe166d5148d9615b0f2807abf6139430b1b",
+    "stdout_sha256": "4c57f4cfdf2dd2b290974582ba1c9d74579bc3bdfb304ad00d4eb534e0bc87af"
+  },
+  "packs_dispatched": 16,
+  "private_temp_absolute": true,
+  "private_temp_canonical": true,
+  "private_temp_cleanup_complete": true,
+  "private_temp_current_user_owned": true,
+  "private_temp_mode": "0700",
+  "private_temp_non_symlink": true,
+  "private_temp_present": true,
+  "process_exit_code": 0,
+  "promotable": false,
+  "provider_turn_count": 0,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "retention": {
+    "fixture_and_raw_run_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "sarif_validation": {
+    "canonical_schema": "engine/schemas/sarif-2.1.0.json",
+    "combined_full_validation": true,
+    "combined_inputs_complete": true,
+    "combined_usable": true,
+    "combined_validation_status": "full_valid",
+    "jsonschema_distribution": "jsonschema",
+    "jsonschema_version": "4.26.0",
+    "jsonschema_version_matches": true,
+    "per_pack_full_validation": true,
+    "schema_hash_matches": true,
+    "schema_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+  },
+  "scanner_exit_code": 0,
+  "scanner_started": true,
+  "schema_version": 1,
+  "semgrep": {
+    "aggregate_exit_code": 0,
+    "combined_inputs_complete": true,
+    "combined_sarif_validation_status": "full_valid",
+    "combined_usable": true,
+    "failure_class": null,
+    "failure_class_counts": {},
+    "failure_class_source": "no_failed_packs",
+    "pack_diagnostics": [
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 9519105\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "739ce238e726589ea0071019931890c2fbd8bb7156d8d83f54ea582a0bf75763",
+        "failure_class": null,
+        "pack_name": "category_auth",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 13008897\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "d368619399741bc45e5ec5bda5945f8999601e9248b8b7ad01f6be3aff97fc8c",
+        "failure_class": null,
+        "pack_name": "semgrep_auth",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 8634369\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "ef4e0efa7b3f6bd5c1b683ee896c8400c424f12e7925652622e738335cc2220c",
+        "failure_class": null,
+        "pack_name": "custom_e54e13ee642eff13",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 12255489\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "515fd10b97231c0d7d25e13a73c049b88053cab51b63eb4b56ba9a6db7bdd1ae",
+        "failure_class": null,
+        "pack_name": "custom_fac7d4a8a3e5d001",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 57982977\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "a7c591fe8a7ce436117c7d7b1cc9e902f7ee6c56688de7bbecd5b3e4b98d7f7c",
+        "failure_class": null,
+        "pack_name": "custom_d2a0d143a1989c57",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 55446017\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "970996554f3ce3377f0b17a69bc778230afac0f290acad92ac01ba9cb210b102",
+        "failure_class": null,
+        "pack_name": "category_flows",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 28745217\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "99e335a57d5da38d508a740f8b4fb048cfd1569f44ad56f044defe2735cd8e16",
+        "failure_class": null,
+        "pack_name": "semgrep_dataflow",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 3096833\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "1d29da7932fa6c25ff8271d90870a8ce7836d41db7c9df632d72a392192a1304",
+        "failure_class": null,
+        "pack_name": "category_injection",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 50987009\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "c306782cf67427a7ef261de48ffd98de6594ffe4cc7f5fa367ec44233250b270",
+        "failure_class": null,
+        "pack_name": "semgrep_injection",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 3457281\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "f72d92fb3cd4bdc1f6319629254de1c1617c9a7e749176b2eba7cd47bc8912a2",
+        "failure_class": null,
+        "pack_name": "custom_b616509922abed54",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 15335425\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "c1f2a8298bbf45e867190c671b822cab40a4c458fb6d30411af277b8b64c8c82",
+        "failure_class": null,
+        "pack_name": "category_secrets",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 65650689\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "485a563532973a770e1bbbdf2a9d01ffd1733eecadee3d324c3757aec46643ec",
+        "failure_class": null,
+        "pack_name": "semgrep_secrets",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 59031553\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_directory",
+        "config_sha256": "6eeaa583b7e4ad18e92f2ecdecdcf1daae4199a0a806f38d77000634015408dc",
+        "failure_class": null,
+        "pack_name": "category_sinks",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 17874945\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "20e597c3e0c1dcae8e106b61265fcf564e56ecd5f1ee9b6fd902b07898565c3c",
+        "failure_class": null,
+        "pack_name": "semgrep_sinks",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 38092801\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "c39c49b23ae2a3d1e069be1979129db7a5b75d0e1712bebfadedffcc5cec0719",
+        "failure_class": null,
+        "pack_name": "semgrep_security_audit",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      },
+      {
+        "bounded_stderr_tail": "Failed to register segfault signal handler! exit_code: 52838401\nFailed to register unwind handler for some critical signals, such as SIGSEGV. If we segfault you are on your own and you will receive no backtraces\n",
+        "config_kind": "local_file",
+        "config_sha256": "b4a9f044eeba7eb8b203dd68dd4826dbd109fcdb413994f077172cbf6a530371",
+        "failure_class": null,
+        "pack_name": "semgrep_owasp_top_10",
+        "proxy_event_count": 0,
+        "raw_exit_code": 0,
+        "sandbox_denial_count": 0,
+        "sarif_exists": true,
+        "sarif_validation_status": "full_valid"
+      }
+    ],
+    "packs_dispatched": 16,
+    "packs_failed": 0,
+    "packs_succeeded": 16,
+    "per_pack_full_validation": true,
+    "runtime_identity_matches_preflight": true,
+    "sandbox_engagement": "engaged",
+    "scanner": {
+      "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+      "engine_smoke_raw_output_persisted": false,
+      "engine_smoke_return_code": 0,
+      "engine_smoke_sarif_status": "full_valid",
+      "engine_smoke_stderr_sha256": "b7336a411c68285073c982ab96c1a32534d509573bbbc2ad882ed9e27dcad03a",
+      "engine_smoke_stdout_sha256": "ff1810e59f4462ee27f71934cfc220fa777d40ba6e63d1ecf5e8a6bbd68fa44f",
+      "engine_smoke_timed_out": false,
+      "failure_class": null,
+      "healthy": true,
+      "identity_schema_version": 1,
+      "launcher_basename": "semgrep",
+      "launcher_lstat_mode": "0700",
+      "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+      "launcher_symlink": false,
+      "linker_family": null,
+      "missing_library_basename": null,
+      "path_kind": "governed_private",
+      "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+      "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+      "version": "1.174.0",
+      "version_parse_source": "stdout",
+      "version_probe_return_code": 0,
+      "version_probe_stderr_sha256": "c63cf0c1d8eaf7bf135092caf4be900ef3499b9be20c1bdc0583df5ff21ed52d",
+      "version_probe_stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+      "version_probe_timed_out": false
+    },
+    "summary_schema_version": 3,
+    "unclassified_pack_count": 0
+  },
+  "socket_path_bytes": null,
+  "status": "qualified",
+  "tcp_fallback_occurred": false,
+  "temp_aliases_equal": true
+}
