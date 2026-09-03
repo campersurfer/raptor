@@ -27,6 +27,12 @@ from typing import Any, Iterable, Mapping, Sequence
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+from packages.semgrep.runtime import (
+    EXPECTED_SEMGREP_VERSION,
+    SemgrepRuntimeError,
+    VerifiedSemgrepLauncher,
+    verify_explicit_launcher,
+)
 
 
 _PRIVATE_TEMP_ENV = (
@@ -143,6 +149,11 @@ _MAX_PACK_STDERR_CHARS = 800
 _SARIF_VALIDATION_STATUSES = frozenset({
     "full_valid", "invalid", "full_validation_unavailable", "missing",
 })
+_SEMGREP_RUNTIME_IDENTITY_SCHEMA_VERSION = 1
+_SEMGREP_RUNTIME_PATH_KINDS = frozenset({"governed_private", "unknown", "system"})
+_SEMGREP_RUNTIME_SMOKE_STATUSES = frozenset({
+    "full_valid", "invalid", "full_validation_unavailable", "missing", "not_run",
+})
 _DIAGNOSTIC_SENSITIVE_VALUE = re.compile(
     r"(?i)\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|"
     r"cookie|password|secret|session(?:_id)?|token)\b\s*(?:=|:)\s*[^\s,;]+"
@@ -224,6 +235,8 @@ class QualificationController:
         *,
         repo_root: Path = _REPO_ROOT,
         candidate_python: Path | None = None,
+        semgrep_bin: Path | None = None,
+        direct_record: Path | None = None,
         runner: Any = subprocess.run,
     ) -> None:
         self.repo_root = repo_root.resolve()
@@ -232,6 +245,18 @@ class QualificationController:
         self._runner = runner
         self._integrated_terminal = False
         self._canary_terminal = False
+        self._semgrep_launcher: VerifiedSemgrepLauncher | None = None
+        self._direct_record = (
+            Path(os.path.abspath(os.fspath(direct_record)))
+            if direct_record is not None else None
+        )
+        if semgrep_bin is not None:
+            try:
+                self._semgrep_launcher = verify_explicit_launcher(semgrep_bin)
+            except SemgrepRuntimeError as exc:
+                raise QualificationControllerError(
+                    "governed Semgrep launcher contract failed"
+                ) from exc
 
     def execution_identity(self) -> ExecutionIdentity:
         """Return the clean checked-out commit and tree for new evidence."""
@@ -247,11 +272,18 @@ class QualificationController:
         self,
         environment: dict[str, str],
     ) -> dict[str, Any]:
-        """Attest the exact candidate interpreter and worker environment."""
+        """Attest the exact candidate interpreter and governed Semgrep runtime."""
+        if self._semgrep_launcher is None:
+            return _candidate_runtime_launcher_required_record()
         capture, payload = self._run_bounded_json(
-            [str(self.candidate_python), "-c", _candidate_runtime_probe_source()],
+            [
+                str(self.candidate_python),
+                "-c",
+                _candidate_runtime_probe_source(),
+                str(self._semgrep_launcher.lexical_path),
+            ],
             env=environment,
-            timeout=20,
+            timeout=30,
         )
         return _bounded_candidate_runtime_record(capture, payload)
     def run_no_provider_preflight(self) -> dict[str, Any]:
@@ -311,12 +343,11 @@ class QualificationController:
 
             candidate_runtime = self._candidate_runtime_preflight(worker_environment)
             record["candidate_runtime"] = candidate_runtime
-            if candidate_runtime.get("passed") is not True:
+            if not _candidate_runtime_ready(candidate_runtime):
                 record.update({
                     "process_exit_code": 2,
                     "failure_stage": "candidate_runtime_preflight",
-                    "failure_class": candidate_runtime.get("failure_class")
-                    or "candidate_runtime_probe_invalid",
+                    "failure_class": _candidate_runtime_failure_class(candidate_runtime),
                 })
                 return record
             from core.llm.dispatcher.auth import CredentialStore
@@ -444,12 +475,25 @@ class QualificationController:
             self._cleanup_workspace(workspace, record)
         return record
 
+    def _direct_qualification_gate(self, identity: ExecutionIdentity) -> bool:
+        """Accept only a clean, matching, fully-qualified direct record."""
+        if self._direct_record is None:
+            return False
+        try:
+            record = _load_json(self._direct_record)
+        except (OSError, json.JSONDecodeError, QualificationControllerError):
+            return False
+        return _qualified_direct_record(record, identity)
+
     def run_canary(self) -> dict[str, Any]:
-        """Run at most one standalone Gemini semantic canary per instance."""
+        """Run at most one Gemini canary after exact runtime attestations."""
         if self._canary_terminal:
             raise QualificationControllerError("semantic canary already reached a terminal result")
         self._canary_terminal = True
         identity = self.execution_identity()
+        workspace = self._workspace()
+        private_root = self._new_private_root(workspace)
+        environment = self._single_gemini_environment(private_root)
         argv = [
             str(self.candidate_python),
             "raptor.py",
@@ -459,51 +503,104 @@ class QualificationController:
             "--format",
             "json",
         ]
-        capture, payload = self._run_bounded_json(
-            argv,
-            env=self._trusted_environment(),
-            timeout=300,
-        )
-        attestation = _bounded_semantic_canary_attestation(payload)
-        passed = (
-            capture.return_code == 0
-            and not capture.timed_out
-            and _semantic_canary_attestation_passed(attestation)
-        )
-        bounded_attestation = {} if attestation is None else attestation
-        failure_stage = (
-            None
-            if passed
-            else bounded_attestation.get("failure_stage") or "semantic_canary"
-        )
-        failure_class = (
-            None
-            if passed
-            else bounded_attestation.get("failure_class")
-            or "semantic_canary_contract_failed"
-        )
-        return {
-            "schema_version": 1,
+        record: dict[str, Any] = {
+            "schema_version": 2,
             "record_kind": "semantic_canary_attestation",
             "immutable": True,
             "promotable": False,
-            "status": "passed" if passed else "failed",
+            "status": "failed",
             "execution": {"commit": identity.commit, "tree": identity.tree},
             "command": {
                 "argv": _redact_argv(argv),
                 "argv_sha256": _sha256_json(argv),
             },
-            "return_code": capture.return_code,
-            "timed_out": capture.timed_out,
-            "stdout_sha256": capture.stdout_sha256,
-            "stderr_sha256": capture.stderr_sha256,
             "raw_output_persisted": False,
-            "exactly_one_valid_submit_context_map": passed,
-            "attestation": bounded_attestation,
-            "failure_stage": failure_stage,
-            "failure_class": failure_class,
+            "exactly_one_valid_submit_context_map": False,
+            "direct_qualification_attested": False,
+            "semgrep_runtime_preflight": None,
+            "semgrep_runtime_postflight": None,
+            "semgrep_runtime_identity_matches": False,
+            "attestation": {},
+            "return_code": None,
+            "timed_out": False,
+            "stdout_sha256": None,
+            "stderr_sha256": None,
+            "failure_stage": None,
+            "failure_class": None,
         }
-
+        try:
+            direct_attested = self._direct_qualification_gate(identity)
+            record["direct_qualification_attested"] = direct_attested
+            if not direct_attested:
+                record.update({
+                    "failure_stage": "direct_qualification_gate",
+                    "failure_class": "direct_qualification_required",
+                })
+                return record
+            preflight = self._candidate_runtime_preflight(environment)
+            record["semgrep_runtime_preflight"] = preflight
+            if not _candidate_runtime_ready(preflight):
+                record.update({
+                    "failure_stage": "candidate_runtime_preflight",
+                    "failure_class": _candidate_runtime_failure_class(preflight),
+                })
+                return record
+            capture, payload = self._run_bounded_json(
+                argv,
+                env=environment,
+                timeout=300,
+            )
+            postflight = self._candidate_runtime_preflight(environment)
+            record.update({
+                "return_code": capture.return_code,
+                "timed_out": capture.timed_out,
+                "stdout_sha256": capture.stdout_sha256,
+                "stderr_sha256": capture.stderr_sha256,
+                "semgrep_runtime_postflight": postflight,
+                "semgrep_runtime_identity_matches": _executable_identities_match(
+                    preflight.get("semgrep"),
+                    postflight.get("semgrep"),
+                ),
+            })
+            attestation = _bounded_semantic_canary_attestation(payload)
+            bounded_attestation = {} if attestation is None else attestation
+            record["attestation"] = bounded_attestation
+            canary_passed = (
+                capture.return_code == 0
+                and not capture.timed_out
+                and _semantic_canary_attestation_passed(attestation)
+            )
+            runtime_postflight_passed = _candidate_runtime_ready(postflight)
+            passed = (
+                canary_passed
+                and runtime_postflight_passed
+                and record["semgrep_runtime_identity_matches"] is True
+            )
+            if passed:
+                record.update({
+                    "status": "passed",
+                    "exactly_one_valid_submit_context_map": True,
+                })
+            elif not runtime_postflight_passed:
+                record.update({
+                    "failure_stage": "candidate_runtime_postflight",
+                    "failure_class": _candidate_runtime_failure_class(postflight),
+                })
+            elif not record["semgrep_runtime_identity_matches"]:
+                record.update({
+                    "failure_stage": "candidate_runtime_postflight",
+                    "failure_class": "candidate_runtime_semgrep_identity_mismatch",
+                })
+            else:
+                record.update({
+                    "failure_stage": bounded_attestation.get("failure_stage")
+                    or "semantic_canary",
+                    "failure_class": bounded_attestation.get("failure_class")
+                    or "semantic_canary_contract_failed",
+                })
+        finally:
+            self._cleanup_workspace(workspace, record)
+        return record
     def run_direct(self) -> dict[str, Any]:
         """Run one direct strict-Semgrep qualification without a provider."""
         identity = self.execution_identity()
@@ -524,6 +621,8 @@ class QualificationController:
             "--no-codeql",
             "--policy-groups", "all",
         ]
+        if self._semgrep_launcher is not None:
+            argv.extend(["--semgrep-bin", str(self._semgrep_launcher.lexical_path)])
         record = self._base_record(
             kind="minimal_cpp_direct_semgrep_qualification",
             identity=identity,
@@ -536,14 +635,13 @@ class QualificationController:
                 return self._set_contract_failure(record)
             candidate_runtime = self._candidate_runtime_preflight(worker_environment)
             record["candidate_runtime"] = candidate_runtime
-            if candidate_runtime.get("passed") is not True:
+            if not _candidate_runtime_ready(candidate_runtime):
                 record.update({
                     "process_exit_code": 2,
                     "scanner_exit_code": None,
                     "packs_dispatched": 0,
                     "failure_stage": "candidate_runtime_preflight",
-                    "failure_class": candidate_runtime.get("failure_class")
-                    or "candidate_runtime_probe_invalid",
+                    "failure_class": _candidate_runtime_failure_class(candidate_runtime),
                 })
                 return record
             capture = self._run(argv, env=worker_environment)
@@ -608,6 +706,8 @@ class QualificationController:
             "--no-patches",
             "--phase-timeout", "180",
         ]
+        if self._semgrep_launcher is not None:
+            argv.extend(["--semgrep-bin", str(self._semgrep_launcher.lexical_path)])
         record = self._base_record(
             kind="minimal_cpp_integrated_agentic_qualification",
             identity=identity,
@@ -782,6 +882,23 @@ class QualificationController:
         env.pop("RAPTOR_LLM_SOCKET", None)
         env.pop("RAPTOR_LLM_TOKEN_FD", None)
         return env
+    def _single_gemini_environment(self, private_root: Path) -> dict[str, str]:
+        """Return the canary environment with only its one Gemini credential."""
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if not _is_provider_environment_name(name)
+        }
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        if gemini_key:
+            env["GEMINI_API_KEY"] = gemini_key
+        env.pop("RAPTOR_LLM_SOCKET", None)
+        env.pop("RAPTOR_LLM_TOKEN_FD", None)
+        env["RAPTOR_REQUIRE_CREDENTIAL_ISOLATION"] = "1"
+        root_text = str(private_root)
+        for name in _PRIVATE_TEMP_ENV:
+            env[name] = root_text
+        return env
 
     def _launcher_environment(self, private_root: Path) -> dict[str, str]:
         """Preserve the trusted launcher's credentials, never its worker's."""
@@ -913,7 +1030,19 @@ class QualificationController:
                 for diagnostic in diagnostics
             )
         )
-        scanner_identity = _bounded_executable_identity(summary.get("scanner"))
+        scanner_identity = (
+            _bounded_semgrep_runtime_identity(summary.get("scanner"))
+            if summary_version == 3
+            else _bounded_executable_identity(summary.get("scanner"))
+        )
+        combined_inputs_complete = (
+            summary.get("combined_inputs_complete") is True
+            if summary_version == 3 else False
+        )
+        combined_usable = (
+            summary.get("combined_usable") is True
+            if summary_version == 3 else False
+        )
         candidate_runtime = record.get("candidate_runtime")
         candidate_semgrep = (
             candidate_runtime.get("semgrep")
@@ -938,6 +1067,8 @@ class QualificationController:
             "unclassified_pack_count": unclassified,
             "pack_diagnostics": diagnostics,
             "combined_sarif_validation_status": combined_status,
+            "combined_inputs_complete": combined_inputs_complete,
+            "combined_usable": combined_usable,
             "per_pack_full_validation": per_pack_full,
             "sandbox_engagement": sandbox_state,
         }
@@ -958,6 +1089,8 @@ class QualificationController:
             "per_pack_full_validation": per_pack_full,
             "combined_full_validation": combined_status == "full_valid",
             "combined_validation_status": combined_status,
+            "combined_inputs_complete": combined_inputs_complete,
+            "combined_usable": combined_usable,
             "jsonschema_distribution": "jsonschema",
             "jsonschema_version": jsonschema_identity.get("version")
             if isinstance(jsonschema_identity, dict) else None,
@@ -1101,17 +1234,22 @@ def _write_no_provider_child(path: Path, report: Path) -> None:
 
 def _redact_argv(argv: Sequence[str]) -> list[str]:
     redacted: list[str] = []
+    placeholders = {
+        "--repo": "<fresh_inert_cpp_git_fixture>",
+        "--out": "<fresh_empty_output>",
+        "--semgrep-bin": "<verified-semgrep-bin>",
+    }
     redact_next = False
     for index, value in enumerate(argv):
         if index == 0:
             redacted.append("candidate-python")
             continue
         if redact_next:
-            redacted.append("<fresh_inert_cpp_git_fixture>" if argv[index - 1] == "--repo" else "<fresh_empty_output>")
+            redacted.append(placeholders[argv[index - 1]])
             redact_next = False
             continue
         redacted.append(value)
-        if value in {"--repo", "--out"}:
+        if value in placeholders:
             redact_next = True
     return redacted
 
@@ -1400,6 +1538,7 @@ def _bounded_diagnostic_tail(value: object) -> str:
 
 
 def _bounded_executable_identity(value: object) -> dict[str, Any] | None:
+    """Retain historical v1/v2 scanner identity without treating it as healthy."""
     if not isinstance(value, dict):
         return None
     path_kind = value.get("path_kind")
@@ -1413,19 +1552,141 @@ def _bounded_executable_identity(value: object) -> dict[str, Any] | None:
     }
 
 
+def _bounded_semgrep_runtime_identity(value: object) -> dict[str, Any] | None:
+    """Retain the v3 governed runtime contract without its lexical path."""
+    if not isinstance(value, dict):
+        return None
+    launcher_mode = value.get("launcher_lstat_mode")
+    return {
+        "identity_schema_version": (
+            value.get("identity_schema_version")
+            if value.get("identity_schema_version") == _SEMGREP_RUNTIME_IDENTITY_SCHEMA_VERSION
+            else None
+        ),
+        "launcher_basename": _safe_basename(value.get("launcher_basename")),
+        "launcher_string_sha256": _safe_sha256(value.get("launcher_string_sha256")),
+        "launcher_lstat_mode": launcher_mode
+        if isinstance(launcher_mode, str) and re.fullmatch(r"0[0-7]{3}", launcher_mode)
+        else None,
+        "launcher_symlink": value.get("launcher_symlink") is True,
+        "resolved_executable_sha256": _safe_sha256(
+            value.get("resolved_executable_sha256")
+        ),
+        "path_kind": value.get("path_kind")
+        if value.get("path_kind") in _SEMGREP_RUNTIME_PATH_KINDS else "unknown",
+        "version": _safe_identifier(value.get("version"), limit=80),
+        "version_parse_source": value.get("version_parse_source")
+        if value.get("version_parse_source") == "stdout" else None,
+        "version_probe_return_code": (
+            value.get("version_probe_return_code")
+            if type(value.get("version_probe_return_code")) is int
+            and -255 <= value.get("version_probe_return_code") <= 255
+            else None
+        ),
+        "version_probe_timed_out": value.get("version_probe_timed_out") is True,
+        "version_probe_stdout_sha256": _safe_sha256(
+            value.get("version_probe_stdout_sha256")
+        ),
+        "version_probe_stderr_sha256": _safe_sha256(
+            value.get("version_probe_stderr_sha256")
+        ),
+        "engine_smoke_return_code": (
+            value.get("engine_smoke_return_code")
+            if type(value.get("engine_smoke_return_code")) is int
+            and -255 <= value.get("engine_smoke_return_code") <= 255
+            else None
+        ),
+        "engine_smoke_timed_out": value.get("engine_smoke_timed_out") is True,
+        "engine_smoke_stdout_sha256": _safe_sha256(
+            value.get("engine_smoke_stdout_sha256")
+        ),
+        "engine_smoke_stderr_sha256": _safe_sha256(
+            value.get("engine_smoke_stderr_sha256")
+        ),
+        "engine_smoke_sarif_status": (
+            value.get("engine_smoke_sarif_status")
+            if value.get("engine_smoke_sarif_status") in _SEMGREP_RUNTIME_SMOKE_STATUSES
+            else "not_run"
+        ),
+        "engine_smoke_raw_output_persisted": (
+            value.get("engine_smoke_raw_output_persisted") is True
+        ),
+        "dependency_closure_sha256": _safe_sha256(
+            value.get("dependency_closure_sha256")
+        ),
+        "semgrep_core_sha256": _safe_sha256(value.get("semgrep_core_sha256")),
+        "failure_class": _safe_identifier(value.get("failure_class"), limit=96),
+        "linker_family": value.get("linker_family")
+        if value.get("linker_family") in {"dyld", "ld.so", "windows_loader"}
+        else None,
+        "missing_library_basename": _safe_basename(value.get("missing_library_basename")),
+        "healthy": value.get("healthy") is True,
+    }
+
+
+def _semgrep_runtime_identity_healthy(value: object) -> bool:
+    identity = _bounded_semgrep_runtime_identity(value)
+    if identity is None:
+        return False
+    return (
+        identity["identity_schema_version"] == _SEMGREP_RUNTIME_IDENTITY_SCHEMA_VERSION
+        and identity["launcher_basename"] == "semgrep"
+        and identity["launcher_string_sha256"] is not None
+        and identity["launcher_lstat_mode"] is not None
+        and identity["resolved_executable_sha256"] is not None
+        and identity["version_parse_source"] == "stdout"
+        and identity["path_kind"] == "governed_private"
+        and identity["version"] == EXPECTED_SEMGREP_VERSION
+        and identity["version_probe_return_code"] == 0
+        and identity["version_probe_timed_out"] is False
+        and identity["engine_smoke_return_code"] in (0, 1)
+        and identity["engine_smoke_timed_out"] is False
+        and identity["engine_smoke_sarif_status"] == "full_valid"
+        and identity["engine_smoke_raw_output_persisted"] is False
+        and identity["dependency_closure_sha256"] is not None
+        and identity["semgrep_core_sha256"] is not None
+        and identity["failure_class"] is None
+        and identity["healthy"] is True
+    )
+
+
 def _executable_identities_match(left: object, right: object) -> bool:
-    if not isinstance(left, dict) or not isinstance(right, dict):
+    left_identity = _bounded_semgrep_runtime_identity(left)
+    right_identity = _bounded_semgrep_runtime_identity(right)
+    if not _semgrep_runtime_identity_healthy(left_identity):
         return False
-    if left.get("executable") is not True or right.get("executable") is not True:
+    if not _semgrep_runtime_identity_healthy(right_identity):
         return False
-    for field in ("basename", "path_kind", "version"):
-        if left.get(field) != right.get(field):
-            return False
-    left_digest = _safe_sha256(left.get("sha256"))
-    right_digest = _safe_sha256(right.get("sha256"))
-    return left_digest == right_digest if left_digest or right_digest else True
-
-
+    return all(
+        left_identity[field] == right_identity[field]
+        for field in (
+            "identity_schema_version",
+            "launcher_basename",
+            "launcher_string_sha256",
+            "launcher_lstat_mode",
+            "launcher_symlink",
+            "resolved_executable_sha256",
+            "path_kind",
+            "version",
+            "version_parse_source",
+            "version_probe_return_code",
+            "version_probe_timed_out",
+            "version_probe_stdout_sha256",
+            "version_probe_stderr_sha256",
+            "engine_smoke_return_code",
+            "engine_smoke_timed_out",
+            "engine_smoke_stdout_sha256",
+            "engine_smoke_stderr_sha256",
+            "engine_smoke_sarif_status",
+            "engine_smoke_raw_output_persisted",
+            "dependency_closure_sha256",
+            "semgrep_core_sha256",
+            "failure_class",
+            "linker_family",
+            "missing_library_basename",
+            "healthy",
+        )
+    )
 def _summary_pack_validation_status(pack: Mapping[str, Any], version_value: object) -> str:
     if version_value == 1:
         if pack.get("sarif_exists") is not True:
@@ -1518,6 +1779,127 @@ def _pack_failure_evidence(
     return next(iter(counts)), counts, "uniform_pack_failure_class", 0
 
 
+def _empty_semgrep_runtime_identity(
+    *,
+    failure_class: str | None,
+) -> dict[str, Any]:
+    return {
+        "identity_schema_version": _SEMGREP_RUNTIME_IDENTITY_SCHEMA_VERSION,
+        "launcher_basename": None,
+        "launcher_string_sha256": None,
+        "launcher_lstat_mode": None,
+        "launcher_symlink": False,
+        "version_parse_source": None,
+        "resolved_executable_sha256": None,
+        "path_kind": "unknown",
+        "version": None,
+        "version_probe_return_code": None,
+        "version_probe_timed_out": False,
+        "version_probe_stdout_sha256": None,
+        "version_probe_stderr_sha256": None,
+        "engine_smoke_return_code": None,
+        "engine_smoke_timed_out": False,
+        "engine_smoke_stdout_sha256": None,
+        "engine_smoke_stderr_sha256": None,
+        "engine_smoke_sarif_status": "not_run",
+        "engine_smoke_raw_output_persisted": False,
+        "dependency_closure_sha256": None,
+        "semgrep_core_sha256": None,
+        "failure_class": failure_class,
+        "linker_family": None,
+        "missing_library_basename": None,
+        "healthy": False,
+    }
+
+
+def _candidate_runtime_launcher_required_record() -> dict[str, Any]:
+    return {
+        "passed": False,
+        "failure_class": "candidate_runtime_semgrep_launcher_required",
+        "probe_return_code": None,
+        "probe_timed_out": False,
+        "probe_output_digests": {"stdout_sha256": None, "stderr_sha256": None},
+        "candidate_python": {
+            "implementation": None,
+            "version": {"major": None, "minor": None, "patch": None},
+            "executable_basename": None,
+            "path_kind": "unknown",
+            "resolved_executable_sha256": None,
+        },
+        "jsonschema": {
+            "importable": False,
+            "version": None,
+            "expected_version": _EXPECTED_JSONSCHEMA_VERSION,
+            "version_matches": False,
+        },
+        "sarif_schema": {
+            "relative_path": _SARIF_SCHEMA_RELATIVE_PATH,
+            "present": False,
+            "sha256": None,
+            "expected_sha256": _EXPECTED_SARIF_SCHEMA_SHA256,
+            "hash_matches": False,
+        },
+        "semgrep": _empty_semgrep_runtime_identity(
+            failure_class="semgrep_runtime_launcher_required",
+        ),
+    }
+
+
+def _candidate_runtime_semgrep_failure(value: object) -> str:
+    identity = _bounded_semgrep_runtime_identity(value)
+    if identity is None:
+        return "candidate_runtime_semgrep_version_probe_failed"
+    failure = identity.get("failure_class")
+    mapping = {
+        "semgrep_runtime_launcher_required": "candidate_runtime_semgrep_launcher_required",
+        "semgrep_runtime_launcher_invalid": "candidate_runtime_semgrep_launcher_invalid",
+        "semgrep_runtime_linker_dependency_missing": (
+            "candidate_runtime_semgrep_linker_dependency_missing"
+        ),
+        "semgrep_runtime_process_aborted": "candidate_runtime_semgrep_process_aborted",
+        "semgrep_runtime_version_probe_failed": (
+            "candidate_runtime_semgrep_version_probe_failed"
+        ),
+        "semgrep_runtime_version_unparseable": (
+            "candidate_runtime_semgrep_version_unparseable"
+        ),
+        "semgrep_runtime_engine_smoke_failed": (
+            "candidate_runtime_semgrep_engine_smoke_failed"
+        ),
+        "semgrep_runtime_dependency_closure_invalid": (
+            "candidate_runtime_semgrep_dependency_closure_invalid"
+        ),
+    }
+    if failure in mapping:
+        return mapping[failure]
+    if identity.get("version") != EXPECTED_SEMGREP_VERSION:
+        return "candidate_runtime_semgrep_version_probe_failed"
+    if identity.get("version_probe_return_code") != 0:
+        return "candidate_runtime_semgrep_version_probe_failed"
+    if identity.get("engine_smoke_sarif_status") != "full_valid":
+        return "candidate_runtime_semgrep_engine_smoke_failed"
+    if identity.get("dependency_closure_sha256") is None:
+        return "candidate_runtime_semgrep_dependency_closure_invalid"
+    return "candidate_runtime_semgrep_version_probe_failed"
+
+
+def _candidate_runtime_ready(runtime: object) -> bool:
+    return (
+        isinstance(runtime, dict)
+        and runtime.get("passed") is True
+        and _semgrep_runtime_identity_healthy(runtime.get("semgrep"))
+    )
+
+
+def _candidate_runtime_failure_class(runtime: object) -> str:
+    if isinstance(runtime, dict):
+        failure = runtime.get("failure_class")
+        if isinstance(failure, str) and failure.startswith("candidate_runtime_"):
+            return failure
+        return _candidate_runtime_semgrep_failure(runtime.get("semgrep"))
+    return "candidate_runtime_probe_invalid"
+
+
 def _bounded_candidate_runtime_record(
     capture: ProcessCapture,
     payload: Mapping[str, Any],
@@ -1566,13 +1948,9 @@ def _bounded_candidate_runtime_record(
         "expected_sha256": _EXPECTED_SARIF_SCHEMA_SHA256,
         "hash_matches": schema_sha256 == _EXPECTED_SARIF_SCHEMA_SHA256,
     }
-    semgrep_identity = _bounded_executable_identity(raw_semgrep) or {
-        "basename": None,
-        "executable": False,
-        "version": None,
-        "sha256": None,
-        "path_kind": "unknown",
-    }
+    semgrep_identity = _bounded_semgrep_runtime_identity(raw_semgrep) or (
+        _empty_semgrep_runtime_identity(failure_class="semgrep_runtime_probe_invalid")
+    )
     candidate_identity_valid = (
         candidate_python["implementation"] is not None
         and bool(version_parts)
@@ -1582,7 +1960,7 @@ def _bounded_candidate_runtime_record(
         failure_class = "candidate_runtime_probe_timeout"
     elif capture.return_code != 0:
         failure_class = "candidate_runtime_probe_failed"
-    elif payload.get("schema_version") != 1 or not candidate_identity_valid:
+    elif payload.get("schema_version") != 2 or not candidate_identity_valid:
         failure_class = "candidate_runtime_probe_invalid"
     elif not jsonschema_identity["importable"]:
         failure_class = "candidate_runtime_dependency_missing"
@@ -1592,8 +1970,8 @@ def _bounded_candidate_runtime_record(
         failure_class = "candidate_runtime_sarif_schema_missing"
     elif not schema_identity["hash_matches"]:
         failure_class = "candidate_runtime_sarif_schema_hash_mismatch"
-    elif semgrep_identity["executable"] is not True:
-        failure_class = "candidate_runtime_semgrep_unavailable"
+    elif not _semgrep_runtime_identity_healthy(semgrep_identity):
+        failure_class = _candidate_runtime_semgrep_failure(semgrep_identity)
     else:
         failure_class = None
     return {
@@ -1618,13 +1996,18 @@ import hashlib
 import importlib.metadata
 import json
 import os
-import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError, run
+from packages.semgrep.runtime import (
+    SemgrepRuntimeError,
+    collect_runtime_health,
+    verify_explicit_launcher,
+)
 
 OUTPUT_LIMIT = 65536
 try:
@@ -1667,6 +2050,50 @@ def path_kind(path):
     return "unknown"
 
 
+def strict_runtime_runner(argv, **kwargs):
+    if argv[-1] == "--version":
+        probe_root = Path(tempfile.mkdtemp(
+            prefix="semgrep-runtime-version-",
+            dir=str(launcher.private_root),
+        ))
+        cleanup_root = True
+    else:
+        source = Path(argv[-1]).resolve()
+        probe_root = source.parent
+        cleanup_root = False
+    try:
+        return run(
+            argv,
+            timeout=kwargs["timeout"],
+            env=kwargs["env"],
+            stdin=kwargs["stdin"],
+            stdout=kwargs["stdout"],
+            stderr=kwargs["stderr"],
+            text=kwargs["text"],
+            check=kwargs["check"],
+            target=str(probe_root),
+            output=str(probe_root),
+            proxy_hosts=None,
+            caller_label="qualification-semgrep-runtime",
+            fake_home=True,
+            profile="strict",
+            restrict_reads=True,
+            readable_paths=[str(launcher.private_root)],
+            tool_paths=[str(launcher.private_root)],
+        )
+    except (SandboxSetupError, RuntimeError) as exc:
+        return subprocess.CompletedProcess(
+            argv,
+            SANDBOX_ENGAGE_EXIT_CODE,
+            b"",
+            str(exc).encode("utf-8", errors="replace"),
+        )
+    finally:
+        if cleanup_root:
+            import shutil
+            shutil.rmtree(probe_root, ignore_errors=True)
+
+
 python_path = Path(sys.executable)
 try:
     import jsonschema
@@ -1679,30 +2106,34 @@ except importlib.metadata.PackageNotFoundError:
     jsonschema_version = None
 schema_relative = "engine/schemas/sarif-2.1.0.json"
 schema_path = Path(schema_relative)
-semgrep_candidate = shutil.which("semgrep") or "/opt/homebrew/bin/semgrep"
-semgrep_path = Path(semgrep_candidate)
-semgrep_executable = semgrep_path.is_file() and os.access(semgrep_path, os.X_OK)
-semgrep_version = None
-if semgrep_executable:
+semgrep_fields = (
+    "identity_schema_version", "launcher_basename", "launcher_string_sha256",
+    "launcher_lstat_mode", "launcher_symlink", "resolved_executable_sha256",
+    "path_kind", "version", "version_parse_source", "version_probe_return_code",
+    "version_probe_timed_out", "version_probe_stdout_sha256",
+    "version_probe_stderr_sha256", "engine_smoke_return_code",
+    "engine_smoke_timed_out", "engine_smoke_stdout_sha256",
+    "engine_smoke_stderr_sha256", "engine_smoke_sarif_status",
+    "engine_smoke_raw_output_persisted", "dependency_closure_sha256",
+    "semgrep_core_sha256", "failure_class", "linker_family",
+    "missing_library_basename", "healthy",
+)
+if len(sys.argv) != 2:
+    semgrep_runtime = {"failure_class": "semgrep_runtime_launcher_invalid", "healthy": False}
+else:
     try:
-        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            subprocess.run(
-                [str(semgrep_path), "--version"],
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                check=False,
-                timeout=10,
-            )
-            stdout.seek(0)
-            stderr.seek(0)
-            bounded = stdout.read(4096) or stderr.read(4096)
-        match = re.search(rb"\b\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.]+)?\b", bounded)
-        semgrep_version = match.group(0).decode("ascii") if match else None
-    except (OSError, subprocess.SubprocessError):
-        semgrep_version = None
+        launcher = verify_explicit_launcher(Path(sys.argv[1]))
+        semgrep_runtime = collect_runtime_health(
+            launcher,
+            environment=dict(os.environ),
+            runner=strict_runtime_runner,
+            engine_runner=strict_runtime_runner,
+        )
+    except SemgrepRuntimeError:
+        semgrep_runtime = {"failure_class": "semgrep_runtime_launcher_invalid", "healthy": False}
+semgrep = {field: semgrep_runtime.get(field) for field in semgrep_fields}
 payload = {
-    "schema_version": 1,
+    "schema_version": 2,
     "candidate_python": {
         "implementation": sys.implementation.name,
         "version": list(sys.version_info[:3]),
@@ -1719,13 +2150,7 @@ payload = {
         "present": schema_path.is_file(),
         "sha256": digest(schema_path) if schema_path.is_file() else None,
     },
-    "semgrep": {
-        "basename": semgrep_path.name or "semgrep",
-        "executable": semgrep_executable,
-        "version": semgrep_version,
-        "sha256": digest(semgrep_path.resolve()) if semgrep_path.is_file() else None,
-        "path_kind": path_kind(semgrep_path),
-    },
+    "semgrep": semgrep,
 }
 encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 if len(encoded.encode("utf-8")) > OUTPUT_LIMIT:
@@ -1740,6 +2165,7 @@ def _direct_scan_passed(record: dict[str, Any]) -> bool:
     jsonschema_identity = runtime.get("jsonschema") if isinstance(runtime, dict) else None
     schema_identity = runtime.get("sarif_schema") if isinstance(runtime, dict) else None
     runtime_semgrep = runtime.get("semgrep") if isinstance(runtime, dict) else None
+    scanner_identity = semgrep.get("scanner") if isinstance(semgrep, dict) else None
     diagnostics = semgrep.get("pack_diagnostics") if isinstance(semgrep, dict) else None
     return (
         record.get("promotable") is False
@@ -1747,8 +2173,7 @@ def _direct_scan_passed(record: dict[str, Any]) -> bool:
         and record.get("process_exit_code") == 0
         and record.get("scanner_exit_code") == 0
         and record.get("scanner_started") is True
-        and isinstance(runtime, dict)
-        and runtime.get("passed") is True
+        and _candidate_runtime_ready(runtime)
         and isinstance(jsonschema_identity, dict)
         and jsonschema_identity.get("importable") is True
         and jsonschema_identity.get("version") == _EXPECTED_JSONSCHEMA_VERSION
@@ -1758,10 +2183,10 @@ def _direct_scan_passed(record: dict[str, Any]) -> bool:
         and schema_identity.get("present") is True
         and schema_identity.get("sha256") == _EXPECTED_SARIF_SCHEMA_SHA256
         and schema_identity.get("hash_matches") is True
-        and isinstance(runtime_semgrep, dict)
-        and runtime_semgrep.get("executable") is True
+        and _semgrep_runtime_identity_healthy(runtime_semgrep)
         and isinstance(semgrep, dict)
-        and semgrep.get("summary_schema_version") == 2
+        and semgrep.get("summary_schema_version") == 3
+        and _semgrep_runtime_identity_healthy(scanner_identity)
         and semgrep.get("runtime_identity_matches_preflight") is True
         and semgrep.get("packs_dispatched") == 16
         and semgrep.get("packs_succeeded") == 16
@@ -1770,31 +2195,55 @@ def _direct_scan_passed(record: dict[str, Any]) -> bool:
         and semgrep.get("failure_class") is None
         and semgrep.get("sandbox_engagement") == "engaged"
         and semgrep.get("combined_sarif_validation_status") == "full_valid"
+        and semgrep.get("combined_inputs_complete") is True
+        and semgrep.get("combined_usable") is True
         and semgrep.get("per_pack_full_validation") is True
         and isinstance(diagnostics, list)
         and len(diagnostics) == 16
         and all(
-            diagnostic.get("raw_exit_code") in (0, 1)
+            isinstance(diagnostic, dict)
+            and diagnostic.get("raw_exit_code") in (0, 1)
             and diagnostic.get("sarif_validation_status") == "full_valid"
             and diagnostic.get("failure_class") is None
             for diagnostic in diagnostics
-            if isinstance(diagnostic, dict)
         )
-        and all(isinstance(diagnostic, dict) for diagnostic in diagnostics)
         and isinstance(validation, dict)
         and validation.get("combined_full_validation") is True
         and validation.get("per_pack_full_validation") is True
+        and validation.get("combined_inputs_complete") is True
+        and validation.get("combined_usable") is True
         and validation.get("jsonschema_version_matches") is True
         and validation.get("schema_hash_matches") is True
         and isinstance(contracts, dict)
+        and bool(contracts)
         and all(
             isinstance(contract, dict)
             and contract.get("validation") == "structural_contract_passed"
             for contract in contracts.values()
         )
     )
-
-
+def _qualified_direct_record(
+    record: object,
+    identity: ExecutionIdentity,
+) -> bool:
+    """Verify a direct record before permitting the provider canary."""
+    if not isinstance(record, dict):
+        return False
+    execution = record.get("execution")
+    retention = record.get("retention")
+    return (
+        record.get("record_kind") == "minimal_cpp_direct_semgrep_qualification"
+        and record.get("status") == "qualified"
+        and record.get("immutable") is True
+        and record.get("promotable") is False
+        and isinstance(execution, dict)
+        and execution.get("commit") == identity.commit
+        and execution.get("tree") == identity.tree
+        and record.get("private_temp_cleanup_complete") is True
+        and isinstance(retention, dict)
+        and retention.get("raw_output_persisted") is False
+        and _direct_scan_passed(record)
+    )
 def _integrated_passed(record: dict[str, Any]) -> bool:
     prepass = record.get("understand_prepass")
     return (
@@ -1889,13 +2338,19 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "canary", "direct", "integrated"))
     parser.add_argument("--candidate-python", required=True)
+    parser.add_argument("--semgrep-bin", required=True, metavar="ABSOLUTE_EXECUTABLE")
     parser.add_argument("--record", required=True)
+    parser.add_argument("--direct-record", metavar="QUALIFIED_DIRECT_RECORD")
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    controller = QualificationController(candidate_python=Path(args.candidate_python))
+    controller = QualificationController(
+        candidate_python=Path(args.candidate_python),
+        semgrep_bin=Path(args.semgrep_bin),
+        direct_record=Path(args.direct_record) if args.direct_record else None,
+    )
     if args.mode == "preflight":
         record = controller.run_no_provider_preflight()
     elif args.mode == "canary":

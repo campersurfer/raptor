@@ -1,0 +1,27 @@
+{
+  "affected_record": {
+    "git_blob": "ca7633d02b502895147f19316dad7c2c5715cb5a",
+    "path": "qualification/minimal-cpp-direct-semgrep-qualification-20260902-r6.json",
+    "recomputed_file_sha256": "2540f28e00717b79ae19ab69c70a0bbf806ab13f30577ed466d52d6c42ce331b"
+  },
+  "corrected_root_cause_class": "semgrep_runtime_linker_dependency_missing",
+  "evidence": {
+    "affected_pack_count": 16,
+    "candidate_version_probe_value": "0.26",
+    "linker_family": "dyld",
+    "missing_library_basename": "libtree-sitter.0.26.dylib",
+    "observed_tree_sitter_search_version": "0.27.0",
+    "provider_turn_count": 0,
+    "runtime_identity_matches_preflight": false,
+    "sandbox_denials": 0,
+    "scanner_version_value": null,
+    "semgrep_package_version_from_path": "1.174.0",
+    "uniform_raw_exit_code": 134
+  },
+  "explanation": "sarif_invalid_after_semgrep_startup_linker_failure",
+  "immutable": true,
+  "original_failure_class": "sarif_invalid",
+  "promotable": false,
+  "record_kind": "qualification_evidence_correction",
+  "schema_version": 1
+}

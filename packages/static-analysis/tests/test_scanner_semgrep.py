@@ -16,6 +16,7 @@ Dropped in adaptation:
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -386,3 +387,62 @@ class TestAllSemgrepPacksFailedExitCode:
             len(sarif_paths) > 0 and len(failed) == len(sarif_paths)
         )
         assert all_failed is False
+def test_explicit_semgrep_bin_reaches_the_pack_command(tmp_path):
+    explicit_bin = tmp_path / "private" / "bin" / "semgrep"
+    explicit_bin.parent.mkdir(parents=True)
+    explicit_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    explicit_bin.chmod(0o700)
+
+    with patch.object(_scanner_mod, "run", return_value=(0, '{"runs": []}', "")) as mocked_run, patch.object(
+        _scanner_mod, "validate_sarif", return_value=True,
+    ):
+        _scanner_mod.run_single_semgrep(
+            name="category_auth",
+            config="p/default",
+            repo_path=tmp_path,
+            out_dir=tmp_path,
+            timeout=1,
+            semgrep_bin=str(explicit_bin),
+        )
+
+    assert mocked_run.call_args.args[0][0] == str(explicit_bin)
+
+
+def test_governed_runtime_uses_strict_runner_for_version_and_smoke(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    runtime_root.chmod(0o700)
+    bin_dir = runtime_root / "bin"
+    bin_dir.mkdir(mode=0o700)
+    bin_dir.chmod(0o700)
+    launcher_path = bin_dir / "semgrep"
+    launcher_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher_path.chmod(0o700)
+    launcher = _scanner_mod.verify_explicit_launcher(launcher_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(mode=0o700)
+    fixture = out_dir / "fixture.py"
+    fixture.write_text("print(1)\n", encoding="utf-8")
+
+    def fake_health(_launcher, **kwargs):
+        runner = kwargs["runner"]
+        assert runner is kwargs["engine_runner"]
+        for argv in (
+            [str(launcher_path), "--version"],
+            [str(launcher_path), "scan", str(fixture)],
+        ):
+            result = runner(argv, timeout=1, env={})
+            assert isinstance(result, subprocess.CompletedProcess)
+            assert result.returncode == 0
+        return {"healthy": True}
+
+    with patch.object(_scanner_mod, "run", return_value=(0, "stdout", "stderr")) as mocked_run:
+        with patch.object(_scanner_mod, "collect_runtime_health", side_effect=fake_health):
+            identity = _scanner_mod._governed_semgrep_runtime_identity(
+                launcher, out_dir=out_dir,
+            )
+
+    assert identity["healthy"] is True
+    assert mocked_run.call_count == 2
+    assert all(call.kwargs["profile"] == "strict" for call in mocked_run.call_args_list)
+    assert all(call.kwargs["restrict_reads"] is True for call in mocked_run.call_args_list)

@@ -35,12 +35,13 @@ from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 from core.run.safe_io import safe_run_mkdir
 from core.schema_constants import VULN_TYPE_TO_CWE as _CWE_FROM_VULN_TYPE
 from core.security.cc_trust import check_repo_claude_trust, set_trust_override
-
+from packages.semgrep.runtime import EXPECTED_SEMGREP_VERSION
 logger = get_logger()
 
 
 _QUALIFICATION_SUMMARY_SCHEMA_VERSION = 1
-_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 2
+_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 3
+_LEGACY_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 2
 _HISTORICAL_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 1
 _MAX_QUALIFICATION_DIAGNOSTIC_CHARS = 800
 _TERMINAL_CALL_COUNT = re.compile(
@@ -198,7 +199,7 @@ def _report_threat_model_phase(out_dir: Path, phase: object) -> dict:
     return report
 
 def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
-    """Accept the current scanner summary and explicit historical version 1."""
+    """Accept explicit historical v1/v2 summaries and the v3 runtime contract."""
     if not isinstance(payload, dict):
         return "summary_not_object"
     required = {
@@ -211,6 +212,7 @@ def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
     schema_version = payload.get("schema_version")
     if schema_version not in {
         _HISTORICAL_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
+        _LEGACY_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
         _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
     }:
         return "summary_schema_version"
@@ -232,6 +234,26 @@ def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
             "sarif_exists", "sarif_validation_status", "failure_class",
             "bounded_stderr_tail", "sandbox_denial_count", "proxy_event_count",
         }
+        if schema_version == _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION:
+            if not isinstance(payload.get("combined_inputs_complete"), bool):
+                return "summary_combined_inputs_complete_invalid"
+            if not isinstance(payload.get("combined_usable"), bool):
+                return "summary_combined_usable_invalid"
+            scanner = payload.get("scanner")
+            runtime_required = {
+                "identity_schema_version", "launcher_basename",
+                "launcher_string_sha256", "launcher_lstat_mode",
+                "launcher_symlink", "resolved_executable_sha256", "path_kind",
+                "version", "version_parse_source", "version_probe_return_code",
+                "version_probe_timed_out", "version_probe_stdout_sha256",
+                "version_probe_stderr_sha256", "engine_smoke_return_code",
+                "engine_smoke_timed_out", "engine_smoke_stdout_sha256",
+                "engine_smoke_stderr_sha256", "engine_smoke_sarif_status",
+                "engine_smoke_raw_output_persisted", "dependency_closure_sha256",
+                "semgrep_core_sha256", "failure_class", "healthy",
+            }
+            if not isinstance(scanner, dict) or not runtime_required.issubset(scanner):
+                return "summary_runtime_identity_invalid"
     packs = payload.get("packs")
     if not isinstance(packs, list):
         return "summary_packs_not_list"
@@ -249,10 +271,22 @@ def _validate_semgrep_run_summary(payload: object) -> Optional[str]:
             return "summary_pack_not_object"
         if not pack_required.issubset(pack):
             return "summary_pack_missing_required_fields"
-        if schema_version == _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION and pack.get(
+        if schema_version != _HISTORICAL_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION and pack.get(
             "sarif_validation_status"
         ) not in {"full_valid", "invalid", "full_validation_unavailable", "missing"}:
             return "summary_pack_sarif_status_invalid"
+    if schema_version == _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION:
+        inputs_complete = bool(packs) and failed == 0 and all(
+            pack.get("sarif_validation_status") == "full_valid" for pack in packs
+        )
+        usable = (
+            payload.get("combined_sarif_validation_status") == "full_valid"
+            and inputs_complete
+        )
+        if payload.get("combined_inputs_complete") is not inputs_complete:
+            return "summary_combined_inputs_inconsistent"
+        if payload.get("combined_usable") is not usable:
+            return "summary_combined_usable_inconsistent"
     return None
 def _load_semgrep_run_summary(scan_dir: Path) -> tuple[Optional[dict], Optional[str]]:
     path = scan_dir / "semgrep-run-summary.json"
@@ -395,16 +429,82 @@ def print_agentic_semgrep_failure(failure: dict) -> None:
         print(f"   Scanner stderr tail: {stderr_tail}", file=sys.stderr)
 
 
+def _agentic_semgrep_contract_complete(summary: object) -> bool:
+    """Require governed runtime and full sixteen-pack evidence before LLM work."""
+    if not isinstance(summary, dict) or summary.get("schema_version") != _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION:
+        return False
+    scanner = summary.get("scanner")
+    if not isinstance(scanner, dict):
+        return False
+    required_identity = {
+        "identity_schema_version": 1,
+        "launcher_basename": "semgrep",
+        "path_kind": "governed_private",
+        "version": EXPECTED_SEMGREP_VERSION,
+        "version_parse_source": "stdout",
+        "version_probe_return_code": 0,
+        "version_probe_timed_out": False,
+        "engine_smoke_return_code": 0,
+        "engine_smoke_timed_out": False,
+        "engine_smoke_sarif_status": "full_valid",
+        "healthy": True,
+    }
+    if any(scanner.get(key) != expected for key, expected in required_identity.items()):
+        return False
+    if any(
+        not isinstance(scanner.get(key), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", scanner.get(key))
+        for key in (
+            "launcher_string_sha256",
+            "resolved_executable_sha256",
+            "version_probe_stdout_sha256",
+            "version_probe_stderr_sha256",
+            "engine_smoke_stdout_sha256",
+            "engine_smoke_stderr_sha256",
+            "dependency_closure_sha256",
+            "semgrep_core_sha256",
+        )
+    ):
+        return False
+    if scanner.get("launcher_lstat_mode") != "0700":
+        return False
+    if scanner.get("launcher_symlink") is not False:
+        return False
+    if scanner.get("engine_smoke_raw_output_persisted") is not False:
+        return False
+    if scanner.get("failure_class") is not None:
+        return False
+    packs = summary.get("packs")
+    return (
+        isinstance(packs, list)
+        and len(packs) == 16
+        and summary.get("packs_dispatched") == 16
+        and summary.get("packs_succeeded") == 16
+        and summary.get("packs_failed") == 0
+        and summary.get("all_semgrep_failed") is False
+        and summary.get("aggregate_exit_code") == 0
+        and summary.get("combined_sarif_validation_status") == "full_valid"
+        and summary.get("combined_inputs_complete") is True
+        and summary.get("combined_usable") is True
+        and all(
+            isinstance(pack, dict)
+            and pack.get("raw_exit_code") in (0, 1)
+            and pack.get("sarif_exists") is True
+            and pack.get("sarif_validation_status") == "full_valid"
+            and pack.get("failure_class") is None
+            for pack in packs
+        )
+    )
+
+
 def validate_agentic_semgrep_success(out_dir: Path) -> tuple[Optional[dict], Optional[str]]:
-    """Require complete scanner evidence even when its child exits zero."""
+    """Require complete governed scanner evidence before model analysis."""
     scan_dir = out_dir / "scan"
     summary, error = _load_semgrep_run_summary(scan_dir)
     if error is not None or summary is None:
         return None, error or "summary_invalid"
-    if summary["all_semgrep_failed"]:
-        return None, "all_semgrep_failed"
-    if summary["aggregate_exit_code"] != 0:
-        return None, "aggregate_exit_nonzero"
+    if not _agentic_semgrep_contract_complete(summary):
+        return None, "scanner_runtime_contract_incomplete"
     combined_valid, metrics_valid = _semgrep_artifact_state(scan_dir)
     if not combined_valid or not metrics_valid:
         return None, "scanner_artifact_invalid"
@@ -1529,6 +1629,10 @@ Examples:
         help="Skip per-finding annotation emission (default: emit)",
     )
     parser.add_argument("--out", help="Output directory")
+    parser.add_argument(
+        "--semgrep-bin", metavar="ABSOLUTE_EXECUTABLE",
+        help="Governed private Semgrep launcher forwarded to the scanner.",
+    )
     parser.add_argument("--mode", choices=["fast", "thorough"], default="thorough",
                        help="fast: quick scan, thorough: detailed analysis")
 
@@ -2417,6 +2521,8 @@ Examples:
             "--out", str(out_dir / "scan"),
             *sandbox_passthrough,
         ]
+        if args.semgrep_bin:
+            semgrep_cmd.extend(["--semgrep-bin", args.semgrep_bin])
         logger.info("Running: Scanning code with Semgrep")
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         # ``semgrep_cmd`` is a list of RAPTOR-constructed argv. Use the

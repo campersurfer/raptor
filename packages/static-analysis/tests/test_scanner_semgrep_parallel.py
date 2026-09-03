@@ -478,3 +478,22 @@ class TestCleanEnvironment:
         assert env_arg is not None
         assert "PATH" in env_arg
         assert venv_path not in env_arg["PATH"]
+class TestExplicitLauncherPropagation:
+    @patch.object(_scanner_mod, "run_single_semgrep", side_effect=_stub_run_single)
+    def test_parallel_dispatch_uses_the_explicit_launcher(self, mock_single, tmp_path):
+        launcher = tmp_path / "private" / "bin" / "semgrep"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o700)
+
+        semgrep_scan_parallel(
+            tmp_path,
+            [],
+            tmp_path,
+            timeout=1,
+            baseline_packs=[("semgrep_security_audit", "p/security-audit")],
+            semgrep_bin=str(launcher),
+        )
+
+        assert mock_single.call_count == 1
+        assert mock_single.call_args.kwargs["semgrep_bin"] == str(launcher)

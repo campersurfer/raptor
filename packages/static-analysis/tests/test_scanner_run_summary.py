@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
+import pytest
 
 
 _SCANNER_PATH = Path(__file__).parent.parent / "scanner.py"
@@ -64,7 +65,7 @@ class TestSemgrepRunSummary:
         assert summary["all_semgrep_failed"] is True
         pack = summary["packs"][0]
         assert pack["failure_class"] == "target_staging_error"
-        assert summary["schema_version"] == 2
+        assert summary["schema_version"] == 3
         assert summary["failure_class"] == "target_staging_error"
         assert summary["failure_class_counts"] == {"target_staging_error": 1}
         assert pack["config_kind"] == "local_file"
@@ -372,3 +373,138 @@ class TestSemgrepRunSummary:
 
         assert summary["scanner"]["version"] is None
         assert (tmp_path / "semgrep-run-summary.json").is_file()
+class TestRuntimeFailureOrdering:
+    @patch.object(_scanner_mod, "validate_sarif", return_value=False)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_loader_failure_precedes_sarif_invalid(self, _identity, _validate, tmp_path):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(
+            tmp_path,
+            "category_auth",
+            134,
+            "dyld: Library not loaded: /private/runtime/libtree-sitter.0.26.dylib\nimage not found",
+        )
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=4,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["failure_class"] == (
+            "semgrep_runtime_linker_dependency_missing"
+        )
+        assert summary["failure_class"] == "semgrep_runtime_linker_dependency_missing"
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    @patch.object(_scanner_mod, "validate_sarif", return_value=True)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_loader_failure_precedes_full_valid_sarif(
+        self, _identity, _validate, exit_code, tmp_path,
+    ):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(
+            tmp_path,
+            "category_auth",
+            exit_code,
+            "dyld: Library not loaded: /private/runtime/libtree-sitter.0.26.dylib",
+        )
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["sarif_validation_status"] == "full_valid"
+        assert summary["packs"][0]["failure_class"] == (
+            "semgrep_runtime_linker_dependency_missing"
+        )
+    @patch.object(_scanner_mod, "validate_sarif", return_value=False)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_generic_abort_precedes_sarif_invalid(self, _identity, _validate, tmp_path):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(tmp_path, "category_auth", 134, "fatal abort")
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=4,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["failure_class"] == "semgrep_runtime_process_aborted"
+
+    @pytest.mark.parametrize("exit_code", [134])
+    @patch.object(_scanner_mod, "validate_sarif", return_value=True)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_process_abort_precedes_full_valid_sarif(
+        self, _identity, _validate, exit_code, tmp_path,
+    ):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(tmp_path, "category_auth", exit_code, "fatal abort")
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["sarif_validation_status"] == "full_valid"
+        assert summary["packs"][0]["failure_class"] == "semgrep_runtime_process_aborted"
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    @patch.object(_scanner_mod, "validate_sarif", return_value=False)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_malformed_sarif_remains_sarif_invalid(self, _identity, _validate, exit_code, tmp_path):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(tmp_path, "category_auth", exit_code)
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["packs"][0]["failure_class"] == "sarif_invalid"
+    @patch.object(_scanner_mod, "validate_sarif", return_value=True)
+    @patch.object(_scanner_mod, "_semgrep_executable_identity", return_value=_EXECUTABLE_IDENTITY)
+    def test_combined_usability_requires_every_dispatched_pack(self, _identity, _validate, tmp_path):
+        config = tmp_path / "rules.yml"
+        config.write_text("rules: []\n", encoding="utf-8")
+        _write_pack(tmp_path, "category_auth", 0)
+        _write_pack(tmp_path, "category_flows", 1)
+        (tmp_path / "combined.sarif").write_text(
+            '{"version":"2.1.0","runs":[]}', encoding="utf-8",
+        )
+
+        summary = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config)), ("category_flows", str(config))],
+            aggregate_exit_code=0,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert summary["combined_sarif_validation_status"] == "full_valid"
+        assert summary["combined_inputs_complete"] is True
+        assert summary["combined_usable"] is True
+
+        _write_pack(tmp_path, "category_flows", 134, "fatal abort")
+        failed = _scanner_mod.write_semgrep_run_summary(
+            out_dir=tmp_path,
+            configs=[("category_auth", str(config)), ("category_flows", str(config))],
+            aggregate_exit_code=4,
+            sandbox_engagement_state="engaged",
+        )
+
+        assert failed["combined_inputs_complete"] is False
+        assert failed["combined_usable"] is False

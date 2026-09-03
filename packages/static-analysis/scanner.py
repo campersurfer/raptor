@@ -18,10 +18,9 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 # Add parent directory to path for imports
 # packages/static-analysis/scanner.py -> repo root
@@ -29,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 
 from core.json import save_json
 from core.config import RaptorConfig
-from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
+from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError, run
 from core.run.output import unique_run_suffix
 from core.run.safe_io import safe_run_mkdir
 from core.logging import get_logger
@@ -37,11 +36,18 @@ from core.git import clone_repository
 from core.sarif.parser import generate_scan_metrics, merge_sarif, validate_sarif
 from core.hash import sha256_bytes, sha256_tree
 from packages import semgrep as semgrep_pkg
+from packages.semgrep.runtime import (
+    SemgrepRuntimeError,
+    VerifiedSemgrepLauncher,
+    classify_semgrep_process_failure,
+    collect_runtime_health,
+    verify_explicit_launcher,
+)
 
 logger = get_logger()
 
 
-_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 2
+_SEMGREP_RUN_SUMMARY_SCHEMA_VERSION = 3
 _MAX_SEMGREP_DIAGNOSTIC_CHARS = 800
 
 _PUBLIC_SEMGREP_PACK_NAMES = frozenset(
@@ -138,6 +144,104 @@ def _semgrep_executable_identity() -> dict[str, object]:
         "version": version,
         "sha256": digest,
     }
+def _semgrep_clean_environment() -> dict[str, str]:
+    """Build the exact Semgrep worker environment without venv contamination."""
+    clean_env = RaptorConfig.get_safe_env()
+    if "PATH" in clean_env:
+        clean_env["PATH"] = ":".join(
+            part
+            for part in clean_env["PATH"].split(":")
+            if "venv" not in part.lower() and "/bin/pysemgrep" not in part
+        )
+    return clean_env
+
+
+def _bounded_runtime_identity(value: Mapping[str, object]) -> dict[str, object]:
+    """Retain the shared Semgrep identity fields and no launcher path."""
+    fields = (
+        "identity_schema_version",
+        "launcher_basename",
+        "launcher_string_sha256",
+        "launcher_lstat_mode",
+        "launcher_symlink",
+        "resolved_executable_sha256",
+        "path_kind",
+        "version",
+        "version_parse_source",
+        "version_probe_return_code",
+        "version_probe_timed_out",
+        "engine_smoke_return_code",
+        "engine_smoke_timed_out",
+        "engine_smoke_sarif_status",
+        "healthy",
+        "dependency_closure_sha256",
+        "semgrep_core_sha256",
+        "version_probe_stdout_sha256",
+        "version_probe_stderr_sha256",
+        "engine_smoke_stdout_sha256",
+        "engine_smoke_stderr_sha256",
+        "engine_smoke_raw_output_persisted",
+        "failure_class",
+        "linker_family",
+        "missing_library_basename",
+    )
+    return {field: value.get(field) for field in fields}
+
+
+def _governed_semgrep_runtime_identity(
+    launcher: VerifiedSemgrepLauncher,
+    *,
+    out_dir: Path,
+) -> dict[str, object]:
+    """Run version and engine probes through one strict sandbox path."""
+    environment = _semgrep_clean_environment()
+
+    def strict_runtime_runner(argv, **kwargs):
+        if argv[-1] == "--version":
+            probe_root = Path(tempfile.mkdtemp(
+                prefix="semgrep-runtime-version-",
+                dir=str(out_dir),
+            ))
+            cleanup_root = True
+        else:
+            source = Path(argv[-1]).resolve()
+            probe_root = source.parent
+            cleanup_root = False
+        try:
+            result = run(
+                argv,
+                timeout=kwargs["timeout"],
+                env=kwargs["env"],
+                target=str(probe_root),
+                output=str(probe_root),
+                proxy_hosts=None,
+                caller_label="scanner-semgrep-runtime",
+                fake_home=True,
+                profile="strict",
+                restrict_reads=True,
+                readable_paths=[str(launcher.private_root)],
+            )
+            return subprocess.CompletedProcess(argv, result[0], result[1], result[2])
+        except (SandboxSetupError, RuntimeError) as exc:
+            return subprocess.CompletedProcess(
+                argv,
+                SANDBOX_ENGAGE_EXIT_CODE,
+                "",
+                str(exc),
+            )
+        finally:
+            if cleanup_root:
+                shutil.rmtree(probe_root, ignore_errors=True)
+
+    return _bounded_runtime_identity(
+        collect_runtime_health(
+            launcher,
+            environment=environment,
+            runner=strict_runtime_runner,
+            engine_runner=strict_runtime_runner,
+            workspace_root=out_dir,
+        )
+    )
 
 def _semgrep_config_identity(config: str) -> tuple[str, Optional[str]]:
     """Classify and hash a resolved pack without leaking its source path."""
@@ -191,13 +295,19 @@ def _classify_semgrep_failure(
     sarif_validation_status: str,
     config_kind: str,
 ) -> Optional[str]:
-    """Map only evidenced Semgrep outcomes to a closed diagnostic class."""
+    """Map runtime failures before SARIF and config diagnostics."""
+    runtime_failure = classify_semgrep_process_failure(raw_exit_code, stderr_tail)
+    if runtime_failure is not None:
+        return runtime_failure
     if raw_exit_code in (0, 1) and sarif_validation_status == "full_valid":
         return None
     text = stderr_tail.lower()
     if "sbpl string contains control character" in text:
         return "target_staging_error"
-    if raw_exit_code == 127 or "semgrep: command not found" in text or "no such file or directory" in text and "semgrep" in text:
+    if raw_exit_code == 127 or (
+        "semgrep: command not found" in text
+        or "no such file or directory" in text and "semgrep" in text
+    ):
         return "semgrep_missing"
     if raw_exit_code == 126 or "permission denied" in text and "semgrep" in text:
         return "semgrep_not_executable"
@@ -205,7 +315,12 @@ def _classify_semgrep_failure(
         return "timeout"
     if "incompatible" in text and "semgrep" in text or "requires semgrep" in text:
         return "incompatible_semgrep_version"
-    if "invalid config" in text or "invalid yaml" in text or "configuration is invalid" in text or "rule parse" in text:
+    if (
+        "invalid config" in text
+        or "invalid yaml" in text
+        or "configuration is invalid" in text
+        or "rule parse" in text
+    ):
         return "invalid_config"
     if "registry" in text and "cache" in text and ("missing" in text or "not found" in text):
         return "registry_cache_missing"
@@ -217,16 +332,16 @@ def _classify_semgrep_failure(
         return "sandbox_exec_denied"
     if "permission denied" in text and config_kind.startswith("local_"):
         return "config_unreadable"
-    if sarif_validation_status == "missing":
-        return "sarif_missing"
-    if sarif_validation_status == "invalid":
-        return "sarif_invalid"
-    if sarif_validation_status == "full_validation_unavailable":
-        return "sarif_full_validation_unavailable"
+    if raw_exit_code in (0, 1):
+        if sarif_validation_status == "missing":
+            return "sarif_missing"
+        if sarif_validation_status == "invalid":
+            return "sarif_invalid"
+        if sarif_validation_status == "full_validation_unavailable":
+            return "sarif_full_validation_unavailable"
     if raw_exit_code is None:
         return "internal_scanner_exception"
     return "unknown"
-
 
 def _pack_failure_summary(
     packs: list[dict[str, object]],
@@ -255,6 +370,7 @@ def build_semgrep_run_summary(
     aggregate_exit_code: int,
     sandbox_engagement_state: str,
     failure_class: Optional[str] = None,
+    scanner_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Build the bounded durable Semgrep outcome contract before cleanup."""
     sandbox_denials = _count_jsonl_events(out_dir / ".sandbox-denials.jsonl")
@@ -294,9 +410,20 @@ def build_semgrep_run_summary(
     failed = len(packs) - succeeded
     pack_failure, failure_counts, failure_source = _pack_failure_summary(packs, failed)
     combined = out_dir / "combined.sarif"
+    combined_status = _sarif_validation_status(combined)
+    combined_inputs_complete = bool(packs) and failed == 0 and all(
+        pack["sarif_validation_status"] == "full_valid" for pack in packs
+    )
+    combined_usable = (
+        combined_status == "full_valid" and combined_inputs_complete
+    )
     return {
         "schema_version": _SEMGREP_RUN_SUMMARY_SCHEMA_VERSION,
-        "scanner": _semgrep_executable_identity(),
+        "scanner": (
+            _bounded_runtime_identity(scanner_identity)
+            if scanner_identity is not None
+            else _semgrep_executable_identity()
+        ),
         "packs_dispatched": len(packs),
         "packs_succeeded": succeeded,
         "packs_failed": failed,
@@ -307,7 +434,9 @@ def build_semgrep_run_summary(
         "failure_class_counts": failure_counts,
         "packs": packs,
         "combined_sarif_exists": combined.is_file(),
-        "combined_sarif_validation_status": _sarif_validation_status(combined),
+        "combined_sarif_validation_status": combined_status,
+        "combined_inputs_complete": combined_inputs_complete,
+        "combined_usable": combined_usable,
         "sandbox_engagement": {
             "state": sandbox_engagement_state,
             "denial_count": sandbox_denials,
@@ -928,7 +1057,8 @@ def _all_semgrep_packs_failed(
 
 def run(cmd, cwd=None, timeout=RaptorConfig.DEFAULT_TIMEOUT, env=None,
         target=None, output=None, proxy_hosts=None, caller_label=None,
-        fake_home=False, readable_paths=None):
+        fake_home=False, readable_paths=None, restrict_reads=False,
+        profile=None):
     """Execute a command in a network-isolated sandbox and return results.
 
     When `target` and `output` are supplied, Landlock is engaged — the
@@ -976,14 +1106,11 @@ def run(cmd, cwd=None, timeout=RaptorConfig.DEFAULT_TIMEOUT, env=None,
         sandbox_kwargs["fake_home"] = True
     if readable_paths:
         sandbox_kwargs["readable_paths"] = list(readable_paths)
-    # ``strict_env=True`` acknowledges that this caller deliberately
-    # supplies env= (a ``get_safe_env()``-derived dict with HOME / XDG
-    # overrides from the semgrep-specific path). Without it, the sandbox
-    # logs a one-line WARNING per invocation telling us to do exactly
-    # this. Operator on PR #777 surfaced the warning firing ~12× per
-    # scan run. The strip is a no-op for us (``get_safe_env`` already
-    # excludes DANGEROUS_ENV_VARS) but the flag is also the documented
-    # "I'm aware of the bypass" marker.
+    if restrict_reads:
+        sandbox_kwargs["restrict_reads"] = True
+    if profile is not None:
+        sandbox_kwargs["profile"] = profile
+    # The strict_env flag marks the caller-supplied environment as intentional.
     p = sandbox_run(
         cmd,
         target=target,
@@ -1108,6 +1235,7 @@ def run_single_semgrep(
     timeout: int,
     progress_callback: Optional[Callable] = None,
     extra_config_readable_paths: Optional[List[str]] = None,
+    semgrep_bin: str | None = None,
 ) -> Tuple[str, bool]:
     """
     Run a single Semgrep scan.
@@ -1130,7 +1258,7 @@ def run_single_semgrep(
     # HOME redirect, and registry-pack proxy hosts remain scanner concerns
     # below — packages/semgrep/ is pure invocation logic.
     # Resolve binary explicitly to avoid broken-venv installations.
-    semgrep_cmd = shutil.which("semgrep") or "/opt/homebrew/bin/semgrep"
+    semgrep_cmd = semgrep_bin or shutil.which("semgrep") or "/opt/homebrew/bin/semgrep"
     cmd = semgrep_pkg.build_cmd(
         repo_path,
         config,
@@ -1139,16 +1267,7 @@ def run_single_semgrep(
         semgrep_bin=semgrep_cmd,
     )
 
-    # Create clean environment without venv contamination or dangerous vars.
-    # `VIRTUAL_ENV` and `PYTHONPATH` are now stripped by
-    # `get_safe_env()` itself (DANGEROUS_ENV_VARS); the local
-    # strips were redundant.
-    clean_env = RaptorConfig.get_safe_env()
-    # Remove venv from PATH
-    if 'PATH' in clean_env:
-        path_parts = clean_env['PATH'].split(':')
-        path_parts = [p for p in path_parts if 'venv' not in p.lower() and '/bin/pysemgrep' not in p]
-        clean_env['PATH'] = ':'.join(path_parts)
+    clean_env = _semgrep_clean_environment()
 
     # HOME + XDG basedirs are redirected via the sandbox layer's
     # ``fake_home=True`` primitive (passed below to ``run()``). The
@@ -1302,6 +1421,7 @@ def semgrep_scan_parallel(
     progress_callback: Optional[Callable] = None,
     baseline_packs: Optional[List[Tuple[str, str]]] = None,
     extra_configs: Optional[List[str]] = None,
+    semgrep_bin: str | None = None,
 ) -> Tuple[List[str], List[str]]:
     """
     Run Semgrep scans in parallel for improved performance.
@@ -1416,6 +1536,7 @@ def semgrep_scan_parallel(
                 timeout,
                 progress_callback,
                 extra_config_readable_paths=list(extra_configs or []),
+                semgrep_bin=semgrep_bin,
             ): (name, config)
             for name, config in configs
         }
@@ -1484,6 +1605,7 @@ def semgrep_scan_sequential(
     timeout: int = RaptorConfig.SEMGREP_TIMEOUT,
     baseline_packs: Optional[List[Tuple[str, str]]] = None,
     extra_configs: Optional[List[str]] = None,
+    semgrep_bin: str | None = None,
 ) -> Tuple[List[str], List[str]]:
     """Sequential scanning fallback for debugging.
 
@@ -1557,6 +1679,7 @@ def semgrep_scan_sequential(
         sarif_path, success = run_single_semgrep(
             name, config, repo_path, out_dir, timeout,
             extra_config_readable_paths=list(extra_configs or []),
+            semgrep_bin=semgrep_bin,
         )
         sarif_paths.append(sarif_path)
         if not success:
@@ -2148,6 +2271,12 @@ def main():
     ap.add_argument("--sequential", action="store_true", help="Disable parallel scanning (for debugging)")
     ap.add_argument("--out", default=None, help="Output directory (from lifecycle). Overrides auto-generated path.")
     ap.add_argument(
+        "--semgrep-bin",
+        default=None,
+        metavar="ABSOLUTE_EXECUTABLE",
+        help="Governed private Semgrep launcher. Must be an absolute executable path.",
+    )
+    ap.add_argument(
         "--exclude-dir", action="append", default=None, metavar="GLOB",
         dest="exclude_dir",
         help=(
@@ -2178,6 +2307,13 @@ def main():
     add_cli_args(ap)
     args = ap.parse_args()
     apply_cli_args(args, parser=ap)
+    semgrep_launcher: VerifiedSemgrepLauncher | None = None
+    if args.semgrep_bin is not None:
+        try:
+            semgrep_launcher = verify_explicit_launcher(Path(args.semgrep_bin))
+        except SemgrepRuntimeError as exc:
+            ap.error(f"--semgrep-bin: {exc}")
+        args.semgrep_bin = str(semgrep_launcher.lexical_path)
 
     # Validate --extra-config paths upfront. Fail-loud on bad input so the
     # operator finds out before a 30-minute scan has burnt its budget. The
@@ -2213,6 +2349,7 @@ def main():
     semgrep_failed: List[str] = []
     all_semgrep_failed = False
     semgrep_summary_written = False
+    semgrep_runtime_identity: dict[str, object] | None = None
 
     logger.info("Starting automated code security scan")
     logger.info(f"Repository: {args.repo}")
@@ -2342,6 +2479,25 @@ def main():
         semgrep_configs = _build_semgrep_configs(
             rules_dirs, list(resolved_baseline), args.extra_config,
         )
+        if semgrep_launcher is not None:
+            semgrep_runtime_identity = _governed_semgrep_runtime_identity(
+                semgrep_launcher,
+                out_dir=out_dir,
+            )
+            if semgrep_runtime_identity.get("healthy") is not True:
+                write_semgrep_run_summary(
+                    out_dir=out_dir,
+                    configs=[],
+                    aggregate_exit_code=4,
+                    sandbox_engagement_state="engaged",
+                    failure_class=(
+                        semgrep_runtime_identity.get("failure_class")
+                        or "semgrep_runtime_engine_smoke_failed"
+                    ),
+                    scanner_identity=semgrep_runtime_identity,
+                )
+                semgrep_summary_written = True
+                raise SystemExit(4)
         logger.info("Starting Semgrep scans...")
         if args.sequential:
             # Fallback to sequential for debugging
@@ -2350,12 +2506,14 @@ def main():
                 repo_path, rules_dirs, out_dir,
                 baseline_packs=resolved_baseline,
                 extra_configs=args.extra_config,
+                semgrep_bin=args.semgrep_bin,
             )
         else:
             semgrep_sarifs, semgrep_failed = semgrep_scan_parallel(
                 repo_path, rules_dirs, out_dir,
                 baseline_packs=resolved_baseline,
                 extra_configs=args.extra_config,
+                semgrep_bin=args.semgrep_bin,
             )
 
         # Surface failed-pack count on stderr — at scan-level so the
@@ -2527,6 +2685,7 @@ def main():
                 configs=semgrep_configs,
                 aggregate_exit_code=4 if all_semgrep_failed else 0,
                 sandbox_engagement_state="engaged",
+                scanner_identity=semgrep_runtime_identity,
             )
             all_semgrep_failed = bool(semgrep_summary["all_semgrep_failed"])
             metrics["semgrep_run_summary"] = "semgrep-run-summary.json"
@@ -2614,6 +2773,7 @@ def main():
                     configs=semgrep_configs,
                     aggregate_exit_code=SANDBOX_ENGAGE_EXIT_CODE,
                     sandbox_engagement_state="failed",
+                    scanner_identity=semgrep_runtime_identity,
                     failure_class="sandbox_exec_denied",
                 )
             except Exception:
@@ -2627,6 +2787,7 @@ def main():
                     configs=semgrep_configs,
                     aggregate_exit_code=1,
                     sandbox_engagement_state="unknown",
+                    scanner_identity=semgrep_runtime_identity,
                     failure_class="internal_scanner_exception",
                 )
             except Exception:

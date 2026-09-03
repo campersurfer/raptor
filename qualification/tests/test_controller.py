@@ -76,13 +76,51 @@ def _passing_preflight() -> dict:
     }
 
 
-_SEMGREP_IDENTITY = {
+_LEGACY_SEMGREP_IDENTITY = {
     "basename": "semgrep",
     "executable": True,
     "version": "1.99.0",
     "sha256": "d" * 64,
     "path_kind": "system",
 }
+
+_SEMGREP_IDENTITY = {
+    "identity_schema_version": 1,
+    "launcher_basename": "semgrep",
+    "launcher_string_sha256": "d" * 64,
+    "launcher_lstat_mode": "0700",
+    "launcher_symlink": False,
+    "resolved_executable_sha256": "e" * 64,
+    "path_kind": "governed_private",
+    "version": "1.174.0",
+    "version_parse_source": "stdout",
+    "version_probe_return_code": 0,
+    "version_probe_timed_out": False,
+    "version_probe_stdout_sha256": "f" * 64,
+    "version_probe_stderr_sha256": "0" * 64,
+    "engine_smoke_return_code": 0,
+    "engine_smoke_timed_out": False,
+    "engine_smoke_stdout_sha256": "1" * 64,
+    "engine_smoke_stderr_sha256": "2" * 64,
+    "engine_smoke_sarif_status": "full_valid",
+    "engine_smoke_raw_output_persisted": False,
+    "dependency_closure_sha256": "3" * 64,
+    "semgrep_core_sha256": "4" * 64,
+    "failure_class": None,
+    "linker_family": None,
+    "missing_library_basename": None,
+    "healthy": True,
+}
+def _governed_semgrep_launcher(tmp_path: Path) -> Path:
+    root = tmp_path / "governed-semgrep-runtime"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    launcher = root / "bin" / "semgrep"
+    launcher.parent.mkdir(mode=0o700)
+    launcher.parent.chmod(0o700)
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o700)
+    return launcher
 
 
 def _passing_candidate_runtime() -> dict:
@@ -391,11 +429,35 @@ def test_safe_worker_environment_keeps_private_temp_and_removes_provider_keys(
     assert "GEMINI_API_KEY" not in environment
 
 
+def test_canary_requires_qualified_direct_record(tmp_path, monkeypatch):
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    calls: list[list[str]] = []
+
+    def provider_sink(argv, **kwargs):
+        calls.append(list(argv))
+        raise AssertionError("canary provider command must wait for direct qualification")
+
+    monkeypatch.setattr(controller, "_run_bounded_json", provider_sink)
+
+    record = controller.run_canary()
+
+    assert record["status"] == "failed"
+    assert record["direct_qualification_attested"] is False
+    assert record["failure_stage"] == "direct_qualification_gate"
+    assert record["failure_class"] == "direct_qualification_required"
+    assert calls == []
 def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
     tmp_path, monkeypatch,
 ):
     repo = _clean_git_repo(tmp_path / "repo")
     controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda _environment: _passing_candidate_runtime(),
+    )
+    monkeypatch.setattr(controller, "_direct_qualification_gate", lambda _identity: True)
     calls: list[list[str]] = []
     attestation = _passing_canary_attestation()
     attestation.update({
@@ -442,6 +504,12 @@ def test_canary_controller_rejects_stale_or_future_outer_schema(
 ):
     repo = _clean_git_repo(tmp_path / f"repo-{schema_version}")
     controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda _environment: _passing_candidate_runtime(),
+    )
+    monkeypatch.setattr(controller, "_direct_qualification_gate", lambda _identity: True)
     attestation = _passing_canary_attestation()
     attestation["schema_version"] = schema_version
 
@@ -464,6 +532,12 @@ def test_canary_controller_rejects_stale_or_future_outer_schema(
 def test_canary_controller_keeps_allowlisted_failed_diagnostics(tmp_path, monkeypatch):
     repo = _clean_git_repo(tmp_path / "repo")
     controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda _environment: _passing_candidate_runtime(),
+    )
+    monkeypatch.setattr(controller, "_direct_qualification_gate", lambda _identity: True)
     attestation = _passing_canary_attestation()
     attestation.update({
         "status": "failed",
@@ -524,7 +598,7 @@ def test_direct_controller_reuses_attested_environment_and_scanner_failure_class
         (scan_out / "semgrep-run-summary.json").write_text(
             json.dumps({
                 "schema_version": 2,
-                "scanner": _SEMGREP_IDENTITY,
+                "scanner": _LEGACY_SEMGREP_IDENTITY,
                 "packs_dispatched": 1,
                 "packs_succeeded": 0,
                 "packs_failed": 1,
@@ -565,14 +639,19 @@ def test_direct_controller_reuses_attested_environment_and_scanner_failure_class
     assert probed_environments == worker_environments
     assert record["credential_isolation_required"] is True
     assert record["failure_class"] == "semgrep_missing"
-    assert record["semgrep"]["runtime_identity_matches_preflight"] is True
+    assert record["semgrep"]["runtime_identity_matches_preflight"] is False
 def test_candidate_probe_uses_supplied_interpreter_and_exact_environment(
     tmp_path, monkeypatch,
 ):
     repo = _clean_git_repo(tmp_path / "repo")
     candidate = tmp_path / "candidate-python"
     candidate.symlink_to(Path(sys.executable))
-    controller = QualificationController(repo_root=repo, candidate_python=candidate)
+    launcher = _governed_semgrep_launcher(tmp_path)
+    controller = QualificationController(
+        repo_root=repo,
+        candidate_python=candidate,
+        semgrep_bin=launcher,
+    )
     assert controller.candidate_python == candidate.absolute()
     assert controller.candidate_python != candidate.resolve()
     exact_environment = {"RAPTOR_REQUIRE_CREDENTIAL_ISOLATION": "1"}
@@ -581,9 +660,10 @@ def test_candidate_probe_uses_supplied_interpreter_and_exact_environment(
         assert argv[0] == str(candidate.absolute())
         assert argv[1] == "-c"
         assert env is exact_environment
-        assert timeout == 20
+        assert argv[3] == str(launcher)
+        assert timeout == 30
         return ProcessCapture(0, False, "a" * 64, "b" * 64), {
-            "schema_version": 1,
+            "schema_version": 2,
             "candidate_python": {
                 "implementation": "pypy",
                 "version": [3, 11, 12],
@@ -626,12 +706,16 @@ def test_candidate_probe_classifies_exact_dependency_state(
     tmp_path, monkeypatch, jsonschema_payload, expected_failure,
 ):
     repo = _clean_git_repo(tmp_path / "repo")
-    controller = QualificationController(repo_root=repo, candidate_python=tmp_path / "candidate")
+    controller = QualificationController(
+        repo_root=repo,
+        candidate_python=tmp_path / "candidate",
+        semgrep_bin=_governed_semgrep_launcher(tmp_path),
+    )
 
     def fake_bounded_json(argv, *, env, timeout):
         del argv, env, timeout
         return ProcessCapture(0, False, "a" * 64, "b" * 64), {
-            "schema_version": 1,
+            "schema_version": 2,
             "candidate_python": {
                 "implementation": "cpython",
                 "version": [3, 13, 9],
@@ -698,6 +782,63 @@ def test_candidate_dependency_failure_blocks_direct_dispatch_and_provider_sinks(
     assert record["private_temp_cleanup_complete"] is True
 
 
+@pytest.mark.parametrize(
+    "failure_class",
+    [
+        "semgrep_runtime_launcher_invalid",
+        "semgrep_runtime_linker_dependency_missing",
+        "semgrep_runtime_process_aborted",
+        "semgrep_runtime_version_probe_failed",
+        "semgrep_runtime_version_unparseable",
+        "semgrep_runtime_engine_smoke_failed",
+        "semgrep_runtime_dependency_closure_invalid",
+    ],
+)
+def test_candidate_semgrep_failure_blocks_direct_dispatch(
+    tmp_path, monkeypatch, failure_class,
+):
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    runtime = _passing_candidate_runtime()
+    runtime["passed"] = False
+    runtime["semgrep"]["failure_class"] = failure_class
+    runtime["semgrep"]["healthy"] = False
+
+    def scanner_sink(*args, **kwargs):
+        raise AssertionError("Semgrep preflight failure must stop scanner dispatch")
+
+    monkeypatch.setattr(controller, "_candidate_runtime_preflight", lambda _environment: runtime)
+    monkeypatch.setattr(controller, "_run", scanner_sink)
+
+    record = controller.run_direct()
+
+    assert record["status"] == "failed"
+    assert record["failure_stage"] == "candidate_runtime_preflight"
+    assert record["failure_class"] == {
+        "semgrep_runtime_launcher_invalid": "candidate_runtime_semgrep_launcher_invalid",
+        "semgrep_runtime_linker_dependency_missing": (
+            "candidate_runtime_semgrep_linker_dependency_missing"
+        ),
+        "semgrep_runtime_process_aborted": "candidate_runtime_semgrep_process_aborted",
+        "semgrep_runtime_version_probe_failed": (
+            "candidate_runtime_semgrep_version_probe_failed"
+        ),
+        "semgrep_runtime_version_unparseable": (
+            "candidate_runtime_semgrep_version_unparseable"
+        ),
+        "semgrep_runtime_engine_smoke_failed": (
+            "candidate_runtime_semgrep_engine_smoke_failed"
+        ),
+        "semgrep_runtime_dependency_closure_invalid": (
+            "candidate_runtime_semgrep_dependency_closure_invalid"
+        ),
+    }[failure_class]
+    assert record["packs_dispatched"] == 0
+    assert record["scanner_started"] is False
+    assert record["provider_turn_count"] == 0
+    assert record["private_temp_cleanup_complete"] is True
+
+
 def test_missing_candidate_dependency_blocks_no_provider_dispatch_sinks(
     tmp_path, monkeypatch,
 ):
@@ -750,7 +891,7 @@ def test_pack_diagnostics_survive_cleanup_with_full_redaction(
         )
         (scan_out / "semgrep-run-summary.json").write_text(json.dumps({
             "schema_version": 2,
-            "scanner": _SEMGREP_IDENTITY,
+            "scanner": _LEGACY_SEMGREP_IDENTITY,
             "packs_dispatched": 1,
             "packs_succeeded": 0,
             "packs_failed": 1,
@@ -857,7 +998,8 @@ def test_direct_gate_requires_sixteen_fully_validated_packs_and_combined_sarif()
         "scanner_started": True,
         "candidate_runtime": _passing_candidate_runtime(),
         "semgrep": {
-            "summary_schema_version": 2,
+            "summary_schema_version": 3,
+            "scanner": dict(_SEMGREP_IDENTITY),
             "runtime_identity_matches_preflight": True,
             "packs_dispatched": 16,
             "packs_succeeded": 16,
@@ -868,9 +1010,13 @@ def test_direct_gate_requires_sixteen_fully_validated_packs_and_combined_sarif()
             "combined_sarif_validation_status": "full_valid",
             "per_pack_full_validation": True,
             "pack_diagnostics": diagnostics,
+            "combined_inputs_complete": True,
+            "combined_usable": True,
         },
         "sarif_validation": {
             "combined_full_validation": True,
+            "combined_inputs_complete": True,
+            "combined_usable": True,
             "per_pack_full_validation": True,
             "jsonschema_version_matches": True,
             "schema_hash_matches": True,
@@ -981,3 +1127,191 @@ def test_integrated_exit_two_uses_typed_private_temp_artifact(tmp_path, monkeypa
     assert record["direct_fallback_occurred"] is False
     assert record["failure_stage"] == "private_temp_validation"
     assert record["failure_class"] == "qualification_private_temp_contract_invalid"
+def test_r6_legacy_runtime_shape_cannot_dispatch_scanner(tmp_path, monkeypatch):
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    legacy_runtime = _passing_candidate_runtime()
+    legacy_runtime["semgrep"]["version"] = "0.26"
+
+    def scanner_sink(*_args, **_kwargs):
+        raise AssertionError("unhealthy Semgrep must stop before 16-pack scanner dispatch")
+
+    monkeypatch.setattr(controller, "_candidate_runtime_preflight", lambda _environment: legacy_runtime)
+    monkeypatch.setattr(controller, "_run", scanner_sink)
+
+    record = controller.run_direct()
+
+    assert record["failure_stage"] == "candidate_runtime_preflight"
+    assert record["failure_class"] == "candidate_runtime_semgrep_version_probe_failed"
+    assert record["scanner_started"] is False
+    assert record["packs_dispatched"] == 0
+    assert record["provider_turn_count"] == 0
+
+
+def test_r6_legacy_runtime_shape_cannot_start_no_provider_dispatch(tmp_path, monkeypatch):
+    from core.llm.dispatcher import spawn as dispatcher_spawn
+
+    repo = _clean_git_repo(tmp_path / "repo")
+    controller = QualificationController(repo_root=repo, candidate_python=Path(sys.executable))
+    legacy_runtime = _passing_candidate_runtime()
+    legacy_runtime["semgrep"]["version"] = "0.26"
+
+    def dispatcher_sink(*_args, **_kwargs):
+        raise AssertionError("unhealthy Semgrep must stop before dispatcher startup")
+
+    monkeypatch.setattr(controller, "_candidate_runtime_preflight", lambda _environment: legacy_runtime)
+    monkeypatch.setattr(dispatcher_spawn, "spawn_worker", dispatcher_sink)
+
+    record = controller.run_no_provider_preflight()
+
+    assert record["failure_stage"] == "candidate_runtime_preflight"
+    assert record["failure_class"] == "candidate_runtime_semgrep_version_probe_failed"
+    assert record["dispatcher_started"] is False
+    assert record["scanner_started"] is False
+    assert record["packs_dispatched"] == 0
+
+
+def test_runtime_identity_never_agrees_without_healthy_version() -> None:
+    from qualification.controller import _executable_identities_match
+
+    identity = {
+        "identity_schema_version": 1,
+        "launcher_basename": "semgrep",
+        "launcher_string_sha256": "a" * 64,
+        "launcher_lstat_mode": "0700",
+        "launcher_symlink": False,
+        "resolved_executable_sha256": "b" * 64,
+        "path_kind": "governed_private",
+        "version": None,
+        "version_probe_return_code": 134,
+        "version_probe_timed_out": False,
+        "engine_smoke_return_code": None,
+        "engine_smoke_timed_out": False,
+        "engine_smoke_sarif_status": "not_run",
+        "healthy": False,
+        "dependency_closure_sha256": None,
+    }
+
+    assert _executable_identities_match(identity, dict(identity)) is False
+@pytest.mark.parametrize(
+    "field",
+    [
+        "version_parse_source",
+        "version_probe_return_code",
+        "version_probe_stdout_sha256",
+        "engine_smoke_return_code",
+        "engine_smoke_stdout_sha256",
+        "engine_smoke_sarif_status",
+        "dependency_closure_sha256",
+        "semgrep_core_sha256",
+    ],
+)
+def test_runtime_identity_binds_all_probe_and_smoke_fields(field: str) -> None:
+    from qualification.controller import _executable_identities_match
+
+    mismatched = dict(_SEMGREP_IDENTITY)
+    mismatched[field] = {
+        "version_parse_source": "none",
+        "version_probe_return_code": 1,
+        "version_probe_stdout_sha256": "a" * 64,
+        "engine_smoke_return_code": 1,
+        "engine_smoke_stdout_sha256": "a" * 64,
+        "engine_smoke_sarif_status": "invalid",
+        "dependency_closure_sha256": "a" * 64,
+        "semgrep_core_sha256": "a" * 64,
+    }[field]
+
+    assert _executable_identities_match(_SEMGREP_IDENTITY, mismatched) is False
+
+
+def test_summary_parsers_keep_historical_v1_v2_and_accept_runtime_v3() -> None:
+    import raptor_agentic
+    from qualification.controller import (
+        _summary_combined_validation_status,
+        _summary_pack_validation_status,
+    )
+
+    base = {
+        "packs_dispatched": 1,
+        "packs_succeeded": 1,
+        "packs_failed": 0,
+        "all_semgrep_failed": False,
+        "aggregate_exit_code": 0,
+        "combined_sarif_exists": True,
+        "sandbox_engagement": {"state": "engaged", "denial_count": 0},
+    }
+    v1 = {
+        **base,
+        "schema_version": 1,
+        "combined_sarif_valid": True,
+        "packs": [{
+            "pack_name": "category_auth",
+            "config_kind": "local_file",
+            "config_sha256": "a" * 64,
+            "raw_exit_code": 0,
+            "sarif_exists": True,
+            "sarif_valid": True,
+            "stderr_class": None,
+            "failure_class": None,
+            "bounded_stderr_tail": "",
+            "sandbox_denial_count": 0,
+            "proxy_event_count": 0,
+        }],
+    }
+    v2 = {
+        **base,
+        "schema_version": 2,
+        "combined_sarif_validation_status": "full_valid",
+        "packs": [{
+            "pack_name": "category_auth",
+            "config_kind": "local_file",
+            "config_sha256": "a" * 64,
+            "raw_exit_code": 0,
+            "sarif_exists": True,
+            "sarif_validation_status": "full_valid",
+            "failure_class": None,
+            "bounded_stderr_tail": "",
+            "sandbox_denial_count": 0,
+            "proxy_event_count": 0,
+        }],
+    }
+    v3 = {
+        **v2,
+        "schema_version": 3,
+        "combined_inputs_complete": True,
+        "combined_usable": True,
+        "scanner": {
+            "identity_schema_version": 1,
+            "launcher_basename": "semgrep",
+            "launcher_string_sha256": "b" * 64,
+            "launcher_lstat_mode": "0700",
+            "launcher_symlink": False,
+            "resolved_executable_sha256": "c" * 64,
+            "path_kind": "governed_private",
+            "version": "1.174.0",
+            "version_parse_source": "stdout",
+            "version_probe_return_code": 0,
+            "version_probe_timed_out": False,
+            "engine_smoke_return_code": 0,
+            "engine_smoke_timed_out": False,
+            "engine_smoke_sarif_status": "full_valid",
+            "healthy": True,
+            "version_probe_stdout_sha256": "d" * 64,
+            "version_probe_stderr_sha256": "e" * 64,
+            "engine_smoke_stdout_sha256": "f" * 64,
+            "engine_smoke_stderr_sha256": "0" * 64,
+            "engine_smoke_raw_output_persisted": False,
+            "dependency_closure_sha256": "1" * 64,
+            "semgrep_core_sha256": "2" * 64,
+            "failure_class": None,
+        },
+    }
+
+    assert _summary_combined_validation_status(v1, 1) == "full_valid"
+    assert _summary_pack_validation_status(v1["packs"][0], 1) == "full_valid"
+    assert _summary_combined_validation_status(v2, 2) == "full_valid"
+    assert _summary_pack_validation_status(v2["packs"][0], 2) == "full_valid"
+    assert raptor_agentic._validate_semgrep_run_summary(v1) is None
+    assert raptor_agentic._validate_semgrep_run_summary(v2) is None
+    assert raptor_agentic._validate_semgrep_run_summary(v3) is None
+    assert raptor_agentic._agentic_semgrep_contract_complete(v3) is False
