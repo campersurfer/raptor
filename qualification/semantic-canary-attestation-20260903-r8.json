@@ -1,0 +1,47 @@
+{
+  "attestation": {},
+  "command": {
+    "argv": [
+      "candidate-python",
+      "raptor.py",
+      "semantic-canary",
+      "--model",
+      "gemini-2.5-flash",
+      "--format",
+      "json"
+    ],
+    "argv_sha256": "4226444b25b3fc928f85308924fe9b84a5d4f8c170ef57bc92a4d67ef86fce60"
+  },
+  "direct_qualification_attested": false,
+  "dispatcher_request_count": 0,
+  "dispatcher_requests": [],
+  "dispatcher_trace_complete": false,
+  "dispatcher_trace_sha256": null,
+  "exactly_one_valid_submit_context_map": false,
+  "execution": {
+    "commit": "34daf70877894bda25e45d7acaa0d1f8ac448468",
+    "tree": "fb6075fe9806ed422dc363c4894a3a86e3088875"
+  },
+  "failure_class": "direct_qualification_required",
+  "failure_stage": "direct_qualification_gate",
+  "immutable": true,
+  "private_temp_cleanup_complete": true,
+  "promotable": false,
+  "provider_failure": null,
+  "provider_progress": {
+    "provider_turns_completed": 0,
+    "provider_turns_failed": 0,
+    "provider_turns_started": 0
+  },
+  "raw_output_persisted": false,
+  "record_kind": "semantic_canary_attestation",
+  "return_code": null,
+  "schema_version": 3,
+  "semgrep_runtime_identity_matches": false,
+  "semgrep_runtime_postflight": null,
+  "semgrep_runtime_preflight": null,
+  "status": "failed",
+  "stderr_sha256": null,
+  "stdout_sha256": null,
+  "timed_out": false
+}
