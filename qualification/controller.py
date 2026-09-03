@@ -2071,6 +2071,7 @@ def strict_runtime_runner(argv, **kwargs):
             stderr=kwargs["stderr"],
             text=kwargs["text"],
             check=kwargs["check"],
+            cwd=str(probe_root),
             target=str(probe_root),
             output=str(probe_root),
             proxy_hosts=None,
