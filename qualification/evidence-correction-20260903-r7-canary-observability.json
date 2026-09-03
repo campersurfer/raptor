@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "record_kind": "qualification_evidence_correction",
+  "immutable": true,
+  "promotable": false,
+  "status": "corrected_historical_interpretation",
+  "affected_attestation": {
+    "path": "qualification/semantic-canary-attestation-20260902-r7.json",
+    "git_blob": "0a63fae978be65bc44d51c9ab2408da8c84e974b",
+    "recomputed_file_sha256": "697bdefde6bdff2d99c6864776992405071206a285c5a3bde78743a55f485965"
+  },
+  "affected_binding": {
+    "path": "qualification/semantic-canary-qualification-20260902-r7.json",
+    "git_blob": "f4572d77a480815b58341bfe743061e595cb449e",
+    "recomputed_file_sha256": "16649b3458d5dbb60cbfb685d6606a0e4a9216d5245012bea34aabece050df8d"
+  },
+  "execution": {
+    "commit": "cfff3f756fe981c999ae28ac4363cac92093da0d",
+    "tree": "e6f553f8018d9f569b1060b92133df0e686c449e"
+  },
+  "original_failure_class": "transport",
+  "original_failure_stage": "provider_turn_2",
+  "original_provider_turns_started": 2,
+  "original_provider_turns_completed": 1,
+  "original_terminal_call_count": 0,
+  "original_fixture_read": false,
+  "original_inner_attestation_observed": false,
+  "corrected_interpretation": "inner_attestation_schema_gate_passed",
+  "successful_inner_semantic_result_observed": false,
+  "fixture_read_state": "indeterminate_due_exception_path_progress_loss",
+  "exact_transport_subcause": "unproven",
+  "correction_reason": "outer_transport_propagation_required_inner_schema_gate_while_exception_path_lost_monotonic_fixture_read_progress"
+}
