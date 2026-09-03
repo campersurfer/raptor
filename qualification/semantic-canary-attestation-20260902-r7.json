@@ -1,0 +1,203 @@
+{
+  "attestation": {
+    "failure_class": "transport",
+    "failure_stage": "provider_turn_2",
+    "fixture_read": false,
+    "language_verified": false,
+    "model": "gemini-2.5-flash",
+    "provider": "gemini",
+    "provider_turns_completed": 1,
+    "provider_turns_started": 2,
+    "request_schema_sha256": "87b703d0d92f8fed74991b20a30bb26ae6c84dea712d286d0f34ca6937f72ca6",
+    "schema_version": 4,
+    "sdk_version": "1.65.0",
+    "section_counts": {
+      "boundary_details": 0,
+      "entry_points": 0,
+      "sink_details": 0,
+      "sinks": 0,
+      "sources": 0,
+      "trust_boundaries": 0,
+      "unchecked_flows": 0
+    },
+    "semantic_checks": {
+      "entry_point_callsite_verified": false,
+      "entry_point_relation_name_verified": false,
+      "flow_entry_reference_known": false,
+      "flow_links_expected_entry_and_sink": false,
+      "flow_sink_reference_known": false,
+      "no_declared_boundary_verified": false,
+      "sink_detail_callsite_verified": false,
+      "sink_detail_operation_verified": false,
+      "sink_detail_type_verified": false,
+      "sink_detail_wrapper_name_verified": false,
+      "source_entry_verified": false,
+      "source_trust_verified": false,
+      "source_type_verified": false,
+      "top_level_sink_callsite_verified": false,
+      "top_level_sink_type_verified": false
+    },
+    "semantic_failure_reasons": [],
+    "semantic_relation_verified": false,
+    "sink_verified": false,
+    "source_verified": false,
+    "status": "failed",
+    "system_instruction_sha256": "090ba0e13932cbef566059d0b2d0a20ca72def1aec1981720b88c785e306aacf",
+    "terminal_call_count": 0,
+    "worker_cleanup_verified": true
+  },
+  "command": {
+    "argv": [
+      "candidate-python",
+      "raptor.py",
+      "semantic-canary",
+      "--model",
+      "gemini-2.5-flash",
+      "--format",
+      "json"
+    ],
+    "argv_sha256": "4226444b25b3fc928f85308924fe9b84a5d4f8c170ef57bc92a4d67ef86fce60"
+  },
+  "direct_qualification_attested": true,
+  "exactly_one_valid_submit_context_map": false,
+  "execution": {
+    "commit": "cfff3f756fe981c999ae28ac4363cac92093da0d",
+    "tree": "e6f553f8018d9f569b1060b92133df0e686c449e"
+  },
+  "failure_class": "transport",
+  "failure_stage": "provider_turn_2",
+  "immutable": true,
+  "private_temp_cleanup_complete": true,
+  "promotable": false,
+  "raw_output_persisted": false,
+  "record_kind": "semantic_canary_attestation",
+  "return_code": 1,
+  "schema_version": 2,
+  "semgrep_runtime_identity_matches": true,
+  "semgrep_runtime_postflight": {
+    "candidate_python": {
+      "executable_basename": "python",
+      "implementation": "cpython",
+      "path_kind": "system",
+      "resolved_executable_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+      "version": {
+        "major": 3,
+        "minor": 13,
+        "patch": 15
+      }
+    },
+    "failure_class": null,
+    "jsonschema": {
+      "expected_version": "4.26.0",
+      "importable": true,
+      "version": "4.26.0",
+      "version_matches": true
+    },
+    "passed": true,
+    "probe_output_digests": {
+      "stderr_sha256": "f7cc1ccff29727eedcce2e159408e7719141e6ab0c4ec7bbebfad89ecaa89f7a",
+      "stdout_sha256": "cb8af7becbeeca1289e68f4de342395118829586a887912444750d11db9da1c9"
+    },
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "sarif_schema": {
+      "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+      "hash_matches": true,
+      "present": true,
+      "relative_path": "engine/schemas/sarif-2.1.0.json",
+      "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "semgrep": {
+      "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+      "engine_smoke_raw_output_persisted": false,
+      "engine_smoke_return_code": 0,
+      "engine_smoke_sarif_status": "full_valid",
+      "engine_smoke_stderr_sha256": "270e4d09ccd0bf50f23a29b3e1f5804b2d058d8b650156901689222cea2cc96a",
+      "engine_smoke_stdout_sha256": "03621322bfd303319f54dfd5d862269f6de787c27432bf41319054e404c14a1d",
+      "engine_smoke_timed_out": false,
+      "failure_class": null,
+      "healthy": true,
+      "identity_schema_version": 1,
+      "launcher_basename": "semgrep",
+      "launcher_lstat_mode": "0700",
+      "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+      "launcher_symlink": false,
+      "linker_family": null,
+      "missing_library_basename": null,
+      "path_kind": "governed_private",
+      "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+      "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+      "version": "1.174.0",
+      "version_parse_source": "stdout",
+      "version_probe_return_code": 0,
+      "version_probe_stderr_sha256": "146664790dc7249524a4c4f5a59ef2aa3559c8b61fbed97095e92a0788f515c8",
+      "version_probe_stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+      "version_probe_timed_out": false
+    }
+  },
+  "semgrep_runtime_preflight": {
+    "candidate_python": {
+      "executable_basename": "python",
+      "implementation": "cpython",
+      "path_kind": "system",
+      "resolved_executable_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+      "version": {
+        "major": 3,
+        "minor": 13,
+        "patch": 15
+      }
+    },
+    "failure_class": null,
+    "jsonschema": {
+      "expected_version": "4.26.0",
+      "importable": true,
+      "version": "4.26.0",
+      "version_matches": true
+    },
+    "passed": true,
+    "probe_output_digests": {
+      "stderr_sha256": "f7cc1ccff29727eedcce2e159408e7719141e6ab0c4ec7bbebfad89ecaa89f7a",
+      "stdout_sha256": "aa13a3184225167a6332a63e079d03dd8ecf100f09611d1b00cb9bde7d5bc5c2"
+    },
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "sarif_schema": {
+      "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+      "hash_matches": true,
+      "present": true,
+      "relative_path": "engine/schemas/sarif-2.1.0.json",
+      "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "semgrep": {
+      "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+      "engine_smoke_raw_output_persisted": false,
+      "engine_smoke_return_code": 0,
+      "engine_smoke_sarif_status": "full_valid",
+      "engine_smoke_stderr_sha256": "eaa4612d08381898ea6d78f7be718036b101f872f65d12237c617beec696afb7",
+      "engine_smoke_stdout_sha256": "03621322bfd303319f54dfd5d862269f6de787c27432bf41319054e404c14a1d",
+      "engine_smoke_timed_out": false,
+      "failure_class": null,
+      "healthy": true,
+      "identity_schema_version": 1,
+      "launcher_basename": "semgrep",
+      "launcher_lstat_mode": "0700",
+      "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+      "launcher_symlink": false,
+      "linker_family": null,
+      "missing_library_basename": null,
+      "path_kind": "governed_private",
+      "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+      "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+      "version": "1.174.0",
+      "version_parse_source": "stdout",
+      "version_probe_return_code": 0,
+      "version_probe_stderr_sha256": "39d2603a646894e9d905e0d014ce5df28a7c46a79cba63e4f92306ee62c6b78f",
+      "version_probe_stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+      "version_probe_timed_out": false
+    }
+  },
+  "status": "failed",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "65c885d30bef99bd8609d2d6cc25af0fefac6c050537985b0f8d866b9ff83f09",
+  "timed_out": false
+}
