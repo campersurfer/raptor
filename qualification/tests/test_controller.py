@@ -1198,15 +1198,13 @@ def test_runtime_identity_never_agrees_without_healthy_version() -> None:
     [
         "version_parse_source",
         "version_probe_return_code",
-        "version_probe_stdout_sha256",
         "engine_smoke_return_code",
-        "engine_smoke_stdout_sha256",
         "engine_smoke_sarif_status",
         "dependency_closure_sha256",
         "semgrep_core_sha256",
     ],
 )
-def test_runtime_identity_binds_all_probe_and_smoke_fields(field: str) -> None:
+def test_runtime_identity_binds_runtime_state_fields(field: str) -> None:
     from qualification.controller import _executable_identities_match
 
     mismatched = dict(_SEMGREP_IDENTITY)
@@ -1222,6 +1220,20 @@ def test_runtime_identity_binds_all_probe_and_smoke_fields(field: str) -> None:
     }[field]
 
     assert _executable_identities_match(_SEMGREP_IDENTITY, mismatched) is False
+
+
+def test_runtime_identity_allows_transient_probe_digest_changes() -> None:
+    from qualification.controller import _executable_identities_match
+
+    changed = dict(_SEMGREP_IDENTITY)
+    changed.update({
+        "version_probe_stdout_sha256": "a" * 64,
+        "version_probe_stderr_sha256": "b" * 64,
+        "engine_smoke_stdout_sha256": "c" * 64,
+        "engine_smoke_stderr_sha256": "d" * 64,
+    })
+
+    assert _executable_identities_match(_SEMGREP_IDENTITY, changed) is True
 
 
 def test_summary_parsers_keep_historical_v1_v2_and_accept_runtime_v3() -> None:

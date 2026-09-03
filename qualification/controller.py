@@ -1657,6 +1657,7 @@ def _executable_identities_match(left: object, right: object) -> bool:
         return False
     if not _semgrep_runtime_identity_healthy(right_identity):
         return False
+    # Probe output digests attest each run; temporary roots and diagnostics vary.
     return all(
         left_identity[field] == right_identity[field]
         for field in (
@@ -1671,12 +1672,8 @@ def _executable_identities_match(left: object, right: object) -> bool:
             "version_parse_source",
             "version_probe_return_code",
             "version_probe_timed_out",
-            "version_probe_stdout_sha256",
-            "version_probe_stderr_sha256",
             "engine_smoke_return_code",
             "engine_smoke_timed_out",
-            "engine_smoke_stdout_sha256",
-            "engine_smoke_stderr_sha256",
             "engine_smoke_sarif_status",
             "engine_smoke_raw_output_persisted",
             "dependency_closure_sha256",
