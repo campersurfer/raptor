@@ -215,6 +215,7 @@ def _governed_semgrep_runtime_identity(
                 argv,
                 timeout=kwargs["timeout"],
                 env=kwargs["env"],
+                cwd=str(probe_root),
                 target=str(probe_root),
                 output=str(probe_root),
                 proxy_hosts=None,
