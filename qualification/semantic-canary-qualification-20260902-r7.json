@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "record_kind": "semantic_canary_qualification",
+  "immutable": true,
+  "promotable": false,
+  "status": "failed",
+  "failure_class": "transport",
+  "failure_stage": "provider_turn_2",
+  "execution": {
+    "commit": "cfff3f756fe981c999ae28ac4363cac92093da0d",
+    "tree": "e6f553f8018d9f569b1060b92133df0e686c449e"
+  },
+  "command": {
+    "argv": [
+      "candidate-python",
+      "raptor.py",
+      "semantic-canary",
+      "--model",
+      "gemini-2.5-flash",
+      "--format",
+      "json"
+    ],
+    "argv_sha256": "4226444b25b3fc928f85308924fe9b84a5d4f8c170ef57bc92a4d67ef86fce60"
+  },
+  "provider": "gemini",
+  "model": "gemini-2.5-flash",
+  "provider_turns_started": 2,
+  "provider_turns_completed": 1,
+  "terminal_call_count": 0,
+  "fixture_read": false,
+  "language_verified": false,
+  "source_verified": false,
+  "sink_verified": false,
+  "semantic_relation_verified": false,
+  "semantic_checks": {
+    "entry_point_callsite_verified": false,
+    "entry_point_relation_name_verified": false,
+    "flow_entry_reference_known": false,
+    "flow_links_expected_entry_and_sink": false,
+    "flow_sink_reference_known": false,
+    "no_declared_boundary_verified": false,
+    "sink_detail_callsite_verified": false,
+    "sink_detail_operation_verified": false,
+    "sink_detail_type_verified": false,
+    "sink_detail_wrapper_name_verified": false,
+    "source_entry_verified": false,
+    "source_trust_verified": false,
+    "source_type_verified": false,
+    "top_level_sink_callsite_verified": false,
+    "top_level_sink_type_verified": false
+  },
+  "semantic_failure_reasons": [],
+  "attestation_contract": {
+    "outer_schema_version": 4,
+    "inner_schema_version": 3,
+    "inner_attestation_observed": false
+  },
+  "system_instruction_sha256": "090ba0e13932cbef566059d0b2d0a20ca72def1aec1981720b88c785e306aacf",
+  "request_schema_sha256": "87b703d0d92f8fed74991b20a30bb26ae6c84dea712d286d0f34ca6937f72ca6",
+  "semgrep_runtime_identity_matches": true,
+  "private_temp_cleanup_complete": true,
+  "raw_output_persisted": false,
+  "source_evidence": {
+    "path": "qualification/semantic-canary-attestation-20260902-r7.json",
+    "git_blob": "0a63fae978be65bc44d51c9ab2408da8c84e974b",
+    "sha256": "697bdefde6bdff2d99c6864776992405071206a285c5a3bde78743a55f485965"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "record_kind": "semgrep_runtime_qualification",
+  "immutable": true,
+  "promotable": false,
+  "status": "passed",
+  "failure_class": null,
+  "execution": {
+    "commit": "cfff3f756fe981c999ae28ac4363cac92093da0d",
+    "tree": "e6f553f8018d9f569b1060b92133df0e686c449e"
+  },
+  "semgrep": {
+    "identity_schema_version": 1,
+    "launcher_basename": "semgrep",
+    "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+    "launcher_lstat_mode": "0700",
+    "launcher_symlink": false,
+    "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+    "path_kind": "governed_private",
+    "version": "1.174.0",
+    "version_probe_return_code": 0,
+    "version_probe_timed_out": false,
+    "version_probe_stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+    "version_probe_stderr_sha256": "d67ab8f6e5a13a5fd8e617364edf8a36f740952f980ac79facdeaa4b9cacf7e7",
+    "version_parse_source": "stdout",
+    "engine_smoke_return_code": 0,
+    "engine_smoke_timed_out": false,
+    "engine_smoke_sarif_status": "full_valid",
+    "engine_smoke_raw_output_persisted": false,
+    "engine_smoke_stdout_sha256": "03621322bfd303319f54dfd5d862269f6de787c27432bf41319054e404c14a1d",
+    "engine_smoke_stderr_sha256": "7f1ebabace92254f0343cff24b203b50b71610f6792b1bcb40ca4e20054968db",
+    "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+    "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+    "healthy": true
+  },
+  "identity_agreement": {
+    "candidate_and_scanner_match": true,
+    "same_launcher_string_sha256": true,
+    "same_resolved_executable_sha256": true,
+    "same_version": true,
+    "both_health_probes_passed": true,
+    "same_dependency_closure_sha256": true
+  },
+  "source_evidence": [
+    {
+      "path": "qualification/no-provider-preflight-20260902-r7.json",
+      "git_blob": "8cfeab359332910d2ebe44544ca7d2392e0796a0",
+      "sha256": "1bada84c8a985c57edb009657c0cd8ce56b15e5521e143c6ea943718999b9244"
+    },
+    {
+      "path": "qualification/minimal-cpp-direct-semgrep-qualification-20260902-r7.json",
+      "git_blob": "d2aa806ab6ab72dde21c26ae1916d21ea58eb737",
+      "sha256": "c9e573a0bbcd1646586fcf2291903fdbaa1dc5e9db99f67dd8cc8721f398e14a"
+    }
+  ],
+  "raw_output_persisted": false
+}
