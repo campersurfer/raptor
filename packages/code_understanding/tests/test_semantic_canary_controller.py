@@ -20,32 +20,22 @@ _TEST_DEADLINE_S = 45.0
 _TEST_PROCESS_TIMEOUT_S = 120.0
 _TEST_SECRET = "semantic-canary-controller-test-secret"
 _TEST_PROMPT = "semantic-canary-controller-test-prompt"
-_ALLOWED_ATTESTATION_FIELDS = {
-    "schema_version",
-    "status",
-    "provider",
-    "model",
-    "sdk_version",
-    "system_instruction_sha256",
-    "request_schema_sha256",
-    "provider_turns_started",
-    "provider_turns_completed",
-    "terminal_call_count",
-    "fixture_read",
-    "source_verified",
-    "sink_verified",
-    "language_verified",
-    "semantic_relation_verified",
-    "semantic_checks",
-    "semantic_failure_reasons",
-    "section_counts",
-    "failure_class",
-    "failure_stage",
-    "worker_cleanup_verified",
+_V5_BASE_ATTESTATION_FIELDS = {
+    "schema_version", "status", "provider", "model", "sdk_version",
+    "system_instruction_sha256", "request_schema_sha256",
+    "provider_turns_started", "provider_turns_completed", "provider_turns_failed",
+    "tool_calls_dispatched", "tool_calls_completed",
+    "fixture_read_calls_dispatched", "fixture_read_calls_completed",
+    "fixture_read_verified", "terminal_call_count",
+    "provider_turn_count", "fixture_read", "inner_attestation_state",
+    "provider_failure", "source_verified", "sink_verified", "language_verified",
+    "semantic_relation_verified", "semantic_checks", "semantic_failure_reasons",
+    "section_counts", "worker_cleanup_verified",
 }
+_V5_FAILURE_ATTESTATION_FIELDS = {"failure_class", "failure_stage"}
+
 
 def _sitecustomize_source() -> str:
-    """Install deterministic providers before the CLI imports the canary."""
     return textwrap.dedent(
         """
         import json
@@ -179,6 +169,12 @@ def _sitecustomize_source() -> str:
                     accepted = _HttpAcceptedResponse()
                     assert accepted.status_code == 200
                     _ = accepted.body
+                if _SCENARIO == "read_then_raise":
+                    if self.calls == 1:
+                        return _response([
+                            ToolCall(id="read", name="read_file", input={"path": "fixture.cpp"})
+                        ])
+                    raise RuntimeError("synthetic private provider failure")
                 if _SCENARIO == "success":
                     if self.calls == 1:
                         return _response([
@@ -254,9 +250,11 @@ def _single_attestation(completed: subprocess.CompletedProcess[str]) -> dict[str
     assert completed.stdout.endswith("\n")
     payload = json.loads(completed.stdout)
     assert isinstance(payload, dict)
-    assert set(payload).issubset(_ALLOWED_ATTESTATION_FIELDS)
+    expected_fields = _V5_BASE_ATTESTATION_FIELDS | (
+        _V5_FAILURE_ATTESTATION_FIELDS if payload.get("status") == "failed" else set()
+    )
+    assert set(payload) == expected_fields
     return payload
-
 
 def _assert_no_sensitive_output(completed: subprocess.CompletedProcess[str]) -> None:
     combined = completed.stdout + completed.stderr
@@ -294,6 +292,15 @@ def test_semantic_canary_cli_hard_deadline_for_inflight_provider_turn(
     assert attestation["failure_stage"] == expected_stage
     assert attestation["provider_turns_started"] == expected_started
     assert attestation["provider_turns_completed"] == expected_completed
+    assert attestation["provider_turns_failed"] == 0
+    assert attestation["provider_turn_count"] == expected_started
+    assert attestation["tool_calls_dispatched"] == int(fixture_read)
+    assert attestation["tool_calls_completed"] == int(fixture_read)
+    assert attestation["fixture_read_calls_dispatched"] == int(fixture_read)
+    assert attestation["fixture_read_calls_completed"] == int(fixture_read)
+    assert attestation["fixture_read_verified"] is fixture_read
+    assert attestation["inner_attestation_state"] == "missing"
+    assert attestation["provider_failure"] is None
     assert attestation["fixture_read"] is fixture_read
     assert attestation["worker_cleanup_verified"] is True
     _assert_no_sensitive_output(completed)
@@ -309,12 +316,21 @@ def test_semantic_canary_cli_success_remains_canonical_and_bounded(tmp_path: Pat
 
     assert completed.returncode == 0
     attestation = _single_attestation(completed)
-    assert attestation["schema_version"] == 4
+    assert attestation["schema_version"] == 5
+    assert attestation["inner_attestation_state"] == "validated"
+    assert attestation["provider_failure"] is None
     assert attestation["status"] == "passed"
     assert len(attestation["system_instruction_sha256"]) == 64
     assert len(attestation["request_schema_sha256"]) == 64
     assert attestation["provider_turns_started"] == 2
     assert attestation["provider_turns_completed"] == 2
+    assert attestation["provider_turns_failed"] == 0
+    assert attestation["provider_turn_count"] == 2
+    assert attestation["tool_calls_dispatched"] == 2
+    assert attestation["tool_calls_completed"] == 2
+    assert attestation["fixture_read_calls_dispatched"] == 1
+    assert attestation["fixture_read_calls_completed"] == 1
+    assert attestation["fixture_read_verified"] is True
     assert attestation["terminal_call_count"] == 1
     assert attestation["fixture_read"] is True
     assert attestation["language_verified"] is True
@@ -328,6 +344,31 @@ def test_semantic_canary_cli_success_remains_canonical_and_bounded(tmp_path: Pat
     assert attestation["worker_cleanup_verified"] is True
     _assert_no_sensitive_output(completed)
 
+
+
+def test_semantic_canary_cli_retains_progress_after_second_turn_exception(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cli(tmp_path, "read_then_raise")
+
+    assert completed.returncode != 0
+    attestation = _single_attestation(completed)
+    assert attestation["schema_version"] == 5
+    assert attestation["status"] == "failed"
+    assert attestation["failure_class"] == "transport"
+    assert attestation["failure_stage"] == "provider_turn_2"
+    assert attestation["inner_attestation_state"] == "validated"
+    assert attestation["provider_turns_started"] == 2
+    assert attestation["provider_turns_completed"] == 1
+    assert attestation["provider_turns_failed"] == 1
+    assert attestation["tool_calls_dispatched"] == 1
+    assert attestation["tool_calls_completed"] == 1
+    assert attestation["fixture_read_calls_dispatched"] == 1
+    assert attestation["fixture_read_calls_completed"] == 1
+    assert attestation["fixture_read_verified"] is True
+    assert attestation["provider_failure"]["category"] == "transport_unknown"
+    assert attestation["worker_cleanup_verified"] is True
+    _assert_no_sensitive_output(completed)
 
 def test_controller_attestation_excludes_api_key() -> None:
     from core.llm.config import ModelConfig
@@ -452,7 +493,7 @@ def test_controller_completes_short_ipc_writes(monkeypatch: pytest.MonkeyPatch) 
     assert not semantic_canary_controller._send(123, message)
 
 
-def test_worker_attestation_refuses_stale_inner_schema() -> None:
+def test_worker_attestation_marks_historical_v3_inner_schema_incomplete() -> None:
     from packages.code_understanding import semantic_canary_controller
 
     stale_result = type(
@@ -461,7 +502,7 @@ def test_worker_attestation_refuses_stale_inner_schema() -> None:
         {
             "success": True,
             "attestation": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "passed",
                 "request_schema_sha256": "a" * 64,
             },
@@ -472,8 +513,117 @@ def test_worker_attestation_refuses_stale_inner_schema() -> None:
         stale_result, 2, 2
     )
 
-    assert worker_attestation["inner_schema_version"] is None
+    assert worker_attestation["inner_schema_version"] == 3
+    assert worker_attestation["inner_attestation_state"] == "incomplete"
+    assert worker_attestation["progress"] is None
 
+@pytest.mark.parametrize(
+    ("attestation", "expected_state"),
+    [
+        ({}, "missing"),
+        ({"status": "failed"}, "missing"),
+        ({"schema_version": 2}, "incomplete"),
+        ({"schema_version": 5}, "invalid"),
+        ({"schema_version": 99}, "invalid"),
+        ({"schema_version": 4, "status": "failed"}, "incomplete"),
+    ],
+)
+def test_worker_attestation_reports_explicit_inner_state(
+    attestation: dict[str, object], expected_state: str
+) -> None:
+    from packages.code_understanding import semantic_canary_controller
+
+    result = type(
+        "Result",
+        (),
+        {"success": False, "attestation": attestation},
+    )()
+
+    worker_attestation = semantic_canary_controller._worker_attestation(result, 0, 0)
+
+    assert worker_attestation["inner_attestation_state"] == expected_state
+
+def test_controller_rejects_unhashable_enum_fields() -> None:
+    from packages.code_understanding import semantic_canary_controller
+
+    malformed_failure = {
+        "origin": [],
+        "category": {},
+        "turn_ordinal": 1,
+        "http_status_code": None,
+        "exception_type": "Error",
+        "retryable": False,
+        "failure_fingerprint_sha256": "a" * 64,
+    }
+    state = {
+        "progress": semantic_canary_controller._default_progress(),
+        "last_event_sequence": 0,
+        "events": 0,
+    }
+
+    assert semantic_canary_controller._bounded_failure_class([]) == "internal"
+    assert semantic_canary_controller._parse_provider_failure(malformed_failure) is None
+    assert not semantic_canary_controller._apply_process_event(
+        state, {"event": [], "event_sequence": 1}
+    )
+
+def test_fixture_completion_is_counted_without_verification() -> None:
+    from packages.code_understanding import semantic_canary_controller
+
+    state = {
+        "progress": semantic_canary_controller._default_progress(),
+        "last_event_sequence": 0,
+        "events": 0,
+    }
+    assert semantic_canary_controller._apply_process_event(
+        state,
+        {
+            "type": "event",
+            "event": "tool_call_dispatched",
+            "event_sequence": 1,
+            "fixture_read_call": True,
+        },
+    )
+    assert semantic_canary_controller._apply_process_event(
+        state,
+        {
+            "type": "event",
+            "event": "tool_call_completed",
+            "event_sequence": 2,
+            "fixture_read_call": True,
+            "fixture_read_verified": False,
+        },
+    )
+    assert state["progress"]["fixture_read_calls_completed"] == 1
+    assert state["progress"]["fixture_read_verified"] is False
+
+
+def test_progress_reconciliation_preserves_observed_event_state() -> None:
+    from packages.code_understanding import semantic_canary_controller
+
+    observed = semantic_canary_controller._default_progress()
+    observed["provider_turns_started"] = 1
+    behind = semantic_canary_controller._default_progress()
+    ahead = semantic_canary_controller._default_progress()
+    ahead["provider_turns_started"] = 2
+    malformed = {"provider_turns_started": 1}
+
+    assert semantic_canary_controller._reconcile_progress(observed, observed) == (
+        observed,
+        True,
+    )
+    assert semantic_canary_controller._reconcile_progress(observed, behind) == (
+        None,
+        False,
+    )
+    assert semantic_canary_controller._reconcile_progress(observed, ahead) == (
+        None,
+        False,
+    )
+    assert semantic_canary_controller._reconcile_progress(observed, malformed) == (
+        None,
+        False,
+    )
 def test_terminate_worker_kills_descendant_after_leader_reap() -> None:
     from packages.code_understanding import semantic_canary_controller
 

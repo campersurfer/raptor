@@ -91,7 +91,33 @@ _CANARY_ATTESTATION_FIELDS = (
     "failure_class",
     "failure_stage",
 )
-_CANARY_OUTER_SCHEMA_VERSION = 4
+_CANARY_OUTER_SCHEMA_VERSION = 5
+_QUALIFICATION_SCHEMA_VERSION = 3
+_MAX_DISPATCHER_TRACE_BYTES = 2_050
+_MAX_DISPATCHER_TRACE_RECORDS = 2
+_DISPATCHER_TRACE_OVERFLOW_SUFFIX = ".overflow"
+_CANARY_INNER_ATTESTATION_STATES = frozenset({"validated", "missing", "invalid", "incomplete"})
+_PROGRESS_COUNTER_FIELDS = (
+    "provider_turns_started",
+    "provider_turns_completed",
+    "provider_turns_failed",
+    "tool_calls_dispatched",
+    "tool_calls_completed",
+    "fixture_read_calls_dispatched",
+    "fixture_read_calls_completed",
+    "terminal_call_count",
+)
+_PROVIDER_FAILURE_ORIGINS = frozenset({
+    "local_request_build", "worker_uds_connect", "dispatcher_token_auth",
+    "dispatcher_provider_config", "dispatcher_upstream_connect", "upstream_http",
+    "dispatcher_response_stream", "sdk_response_decode",
+    "provider_empty_response", "unknown",
+})
+_PROVIDER_FAILURE_CATEGORIES = frozenset({
+    "connection_refused", "connection_reset", "timeout", "protocol",
+    "upstream_4xx", "schema", "auth", "quota", "upstream_5xx",
+    "response_decode", "empty_response", "transport_unknown",
+})
 _CANARY_MAX_SEMANTIC_FAILURE_REASONS = 16
 _CANARY_MAX_SECTION_COUNT = 1_024
 _CANARY_SECTION_COUNT_KEYS = (
@@ -166,6 +192,16 @@ _DIAGNOSTIC_SENSITIVE_HEADER = re.compile(
 _DIAGNOSTIC_PRIVATE_PATH = re.compile(
     r"(?<!\w)/(?:Users|home|tmp|private/(?:tmp|var/folders)|var/folders)/[^\s'\"]+"
 )
+
+
+def _is_historical_process_attestation(payload: object) -> bool:
+    """Recognize obsolete process contracts without promoting their fields."""
+    return isinstance(payload, dict) and payload.get("schema_version") in {3, 4}
+
+
+def _is_historical_qualification_record(payload: object) -> bool:
+    """Recognize obsolete qualification records without synthesizing v3 data."""
+    return isinstance(payload, dict) and payload.get("schema_version") in {1, 2}
 class QualificationControllerError(RuntimeError):
     """A bounded controller invariant failed before a live command."""
 
@@ -494,6 +530,11 @@ class QualificationController:
         workspace = self._workspace()
         private_root = self._new_private_root(workspace)
         environment = self._single_gemini_environment(private_root)
+        dispatcher_trace_path = private_root / "dispatcher-trace.jsonl"
+        launcher_environment = dict(environment)
+        launcher_environment["RAPTOR_QUALIFICATION_DISPATCHER_TRACE"] = str(
+            dispatcher_trace_path
+        )
         argv = [
             str(self.candidate_python),
             "raptor.py",
@@ -504,7 +545,7 @@ class QualificationController:
             "json",
         ]
         record: dict[str, Any] = {
-            "schema_version": 2,
+            "schema_version": _QUALIFICATION_SCHEMA_VERSION,
             "record_kind": "semantic_canary_attestation",
             "immutable": True,
             "promotable": False,
@@ -521,6 +562,16 @@ class QualificationController:
             "semgrep_runtime_postflight": None,
             "semgrep_runtime_identity_matches": False,
             "attestation": {},
+            "dispatcher_trace_sha256": None,
+            "dispatcher_request_count": 0,
+            "dispatcher_trace_complete": False,
+            "dispatcher_requests": [],
+            "provider_progress": {
+                "provider_turns_started": 0,
+                "provider_turns_completed": 0,
+                "provider_turns_failed": 0,
+            },
+            "provider_failure": None,
             "return_code": None,
             "timed_out": False,
             "stdout_sha256": None,
@@ -547,9 +598,10 @@ class QualificationController:
                 return record
             capture, payload = self._run_bounded_json(
                 argv,
-                env=environment,
+                env=launcher_environment,
                 timeout=300,
             )
+            record.update(_consume_dispatcher_trace(dispatcher_trace_path))
             postflight = self._candidate_runtime_preflight(environment)
             record.update({
                 "return_code": capture.return_code,
@@ -565,21 +617,41 @@ class QualificationController:
             attestation = _bounded_semantic_canary_attestation(payload)
             bounded_attestation = {} if attestation is None else attestation
             record["attestation"] = bounded_attestation
+            record["provider_progress"] = {
+                name: bounded_attestation.get(name, 0)
+                for name in ("provider_turns_started", "provider_turns_completed", "provider_turns_failed")
+            }
+            refined_provider_failure = _reconcile_provider_failure(
+                bounded_attestation.get("provider_failure"), record["dispatcher_requests"],
+            )
+            record["provider_failure"] = refined_provider_failure
+            if attestation is not None:
+                attestation["provider_failure"] = refined_provider_failure
             canary_passed = (
                 capture.return_code == 0
                 and not capture.timed_out
                 and _semantic_canary_attestation_passed(attestation)
             )
             runtime_postflight_passed = _candidate_runtime_ready(postflight)
+            trace_current_pass = _dispatcher_trace_current_pass(record, attestation)
             passed = (
                 canary_passed
                 and runtime_postflight_passed
                 and record["semgrep_runtime_identity_matches"] is True
+                and trace_current_pass
             )
             if passed:
                 record.update({
                     "status": "passed",
                     "exactly_one_valid_submit_context_map": True,
+                })
+            elif (
+                record["dispatcher_trace_complete"] is not True
+                or canary_passed and not trace_current_pass
+            ):
+                record.update({
+                    "failure_stage": "dispatcher_trace",
+                    "failure_class": "dispatcher_trace_contract_failed",
                 })
             elif not runtime_postflight_passed:
                 record.update({
@@ -1414,76 +1486,369 @@ def _bounded_canary_section_counts(value: object) -> dict[str, int] | None:
         return None
     return {key: value[key] for key in _CANARY_SECTION_COUNT_KEYS}
 
+def _empty_dispatcher_trace_record() -> dict[str, Any]:
+    return {
+        "dispatcher_trace_sha256": None,
+        "dispatcher_request_count": 0,
+        "dispatcher_trace_complete": False,
+        "dispatcher_requests": [],
+    }
+
+
+def _bounded_dispatcher_request(value: object, ordinal: int) -> dict[str, Any] | None:
+    fields = {
+        "request_ordinal", "provider", "token_accepted", "request_received",
+        "upstream_started", "upstream_status_code", "response_headers_started",
+        "response_stream_completed", "exception_type",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        return None
+    provider = value["provider"]
+    status = value["upstream_status_code"]
+    exception_type = value["exception_type"]
+    booleans = (
+        "token_accepted", "request_received", "upstream_started",
+        "response_headers_started", "response_stream_completed",
+    )
+    if (
+        type(value["request_ordinal"]) is not int
+        or value["request_ordinal"] != ordinal
+        or provider is not None and _safe_identifier(provider, limit=64) is None
+        or any(type(value[name]) is not bool for name in booleans)
+        or value["request_received"] is not True
+        or status is not None and (type(status) is not int or not 100 <= status <= 599)
+        or exception_type is not None and _safe_identifier(exception_type, limit=128) is None
+        or not value["upstream_started"] and status is not None
+        or value["response_stream_completed"] and (
+            not value["token_accepted"]
+            or not value["upstream_started"]
+            or not value["response_headers_started"]
+            or not isinstance(status, int)
+            or not 100 <= status <= 599
+            or exception_type is not None
+        )
+        or exception_type is not None and value["response_stream_completed"]
+    ):
+        return None
+    return {name: value[name] for name in (
+        "request_ordinal", "provider", "token_accepted", "request_received",
+        "upstream_started", "upstream_status_code", "response_headers_started",
+        "response_stream_completed", "exception_type",
+    )}
+
+
+def _consume_dispatcher_trace(path: Path) -> dict[str, Any]:
+    """Boundedly retain a private dispatcher trace and delete every raw artifact."""
+    record = _empty_dispatcher_trace_record()
+    overflow_path = Path(f"{path}{_DISPATCHER_TRACE_OVERFLOW_SUFFIX}")
+    raw: bytes | None = None
+    valid = False
+    try:
+        try:
+            trace_stat = path.lstat()
+        except FileNotFoundError:
+            trace_stat = None
+        except OSError:
+            trace_stat = None
+        try:
+            overflow_stat = overflow_path.lstat()
+        except FileNotFoundError:
+            overflow_stat = None
+        except OSError:
+            overflow_stat = object()
+        if (
+            trace_stat is None
+            or overflow_stat is not None
+            or stat.S_ISLNK(trace_stat.st_mode)
+            or not stat.S_ISREG(trace_stat.st_mode)
+            or trace_stat.st_uid != os.getuid()
+            or stat.S_IMODE(trace_stat.st_mode) != 0o600
+            or trace_stat.st_size > _MAX_DISPATCHER_TRACE_BYTES
+        ):
+            return record
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags)
+        except OSError:
+            return record
+        with os.fdopen(descriptor, "rb") as trace_file:
+            opened_stat = os.fstat(trace_file.fileno())
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or opened_stat.st_uid != os.getuid()
+                or stat.S_IMODE(opened_stat.st_mode) != 0o600
+                or opened_stat.st_size > _MAX_DISPATCHER_TRACE_BYTES
+            ):
+                return record
+            raw = trace_file.read(_MAX_DISPATCHER_TRACE_BYTES + 1)
+        if len(raw) > _MAX_DISPATCHER_TRACE_BYTES:
+            return record
+        record["dispatcher_trace_sha256"] = hashlib.sha256(raw).hexdigest()
+        try:
+            lines = raw.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            return record
+        if len(lines) > _MAX_DISPATCHER_TRACE_RECORDS or any(not line for line in lines):
+            return record
+        requests = []
+        for ordinal, line in enumerate(lines, start=1):
+            try:
+                request = _bounded_dispatcher_request(json.loads(line), ordinal)
+            except json.JSONDecodeError:
+                return record
+            if request is None:
+                return record
+            requests.append(request)
+        record.update({
+            "dispatcher_request_count": len(requests),
+            "dispatcher_trace_complete": True,
+            "dispatcher_requests": requests,
+        })
+        valid = True
+        return record
+    finally:
+        for raw_path in (path, overflow_path):
+            try:
+                raw_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                valid = False
+        if not valid:
+            record["dispatcher_trace_complete"] = False
+
+
+def _canonical_provider_failure(
+    *, origin: str, category: str, turn_ordinal: int, http_status_code: int | None,
+    exception_type: str, retryable: bool,
+) -> dict[str, Any]:
+    fingerprint_input = {
+        "origin": origin, "category": category, "turn_ordinal": turn_ordinal,
+        "http_status_code": http_status_code, "exception_type": exception_type,
+        "retryable": retryable,
+    }
+    return {**fingerprint_input, "failure_fingerprint_sha256": _sha256_json(fingerprint_input)}
+
+
+def _exception_failure_category(exception_type: str) -> tuple[str, bool]:
+    if "Timeout" in exception_type:
+        return "timeout", True
+    if "Reset" in exception_type:
+        return "connection_reset", True
+    if "Connect" in exception_type:
+        return "connection_refused", True
+    if "Protocol" in exception_type:
+        return "protocol", False
+    return "transport_unknown", True
+
+
+def _provider_failure_from_dispatcher_trace(
+    requests: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the narrowest failure proven by the body-free dispatcher trace."""
+    for request in requests:
+        ordinal = request["request_ordinal"]
+        if request["token_accepted"] is False:
+            return _canonical_provider_failure(
+                origin="dispatcher_token_auth", category="auth", turn_ordinal=ordinal,
+                http_status_code=None, exception_type="TokenRejected", retryable=False,
+            )
+        if request["upstream_started"] is False:
+            if isinstance(request["exception_type"], str):
+                return _canonical_provider_failure(
+                    origin="local_request_build", category="schema", turn_ordinal=ordinal,
+                    http_status_code=None, exception_type=request["exception_type"], retryable=False,
+                )
+            return _canonical_provider_failure(
+                origin="dispatcher_provider_config", category="auth", turn_ordinal=ordinal,
+                http_status_code=None, exception_type="ProviderUnconfigured", retryable=False,
+            )
+        status = request["upstream_status_code"]
+        exception_type = request["exception_type"]
+        if isinstance(status, int) and status >= 500:
+            return _canonical_provider_failure(
+                origin="upstream_http", category="upstream_5xx", turn_ordinal=ordinal,
+                http_status_code=status, exception_type="HTTPStatus", retryable=True,
+            )
+        if isinstance(status, int) and status >= 400:
+            category = "quota" if status == 429 else "auth" if status in {401, 403} else "upstream_4xx"
+            return _canonical_provider_failure(
+                origin="upstream_http", category=category, turn_ordinal=ordinal,
+                http_status_code=status, exception_type="HTTPStatus", retryable=status == 429,
+            )
+        if isinstance(exception_type, str):
+            category, retryable = _exception_failure_category(exception_type)
+            origin = "dispatcher_response_stream" if request["response_headers_started"] else "dispatcher_upstream_connect"
+            return _canonical_provider_failure(
+                origin=origin, category=category, turn_ordinal=ordinal,
+                http_status_code=status, exception_type=exception_type, retryable=retryable,
+            )
+    return None
+
+
+def _reconcile_provider_failure(
+    provider_failure: dict[str, Any] | None, requests: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Combine trace transport facts with the SDK's structured exception type."""
+    trace_failure = _provider_failure_from_dispatcher_trace(requests)
+    if trace_failure is None or provider_failure is None:
+        return trace_failure or provider_failure
+    if (
+        trace_failure["origin"] == "upstream_http"
+        and provider_failure["origin"] == "upstream_http"
+        and provider_failure["http_status_code"]
+        == trace_failure["http_status_code"]
+    ):
+        category = trace_failure["category"]
+        if category == "upstream_4xx" and provider_failure["category"] == "schema":
+            category = "schema"
+        return _canonical_provider_failure(
+            origin="upstream_http",
+            category=category,
+            turn_ordinal=trace_failure["turn_ordinal"],
+            http_status_code=trace_failure["http_status_code"],
+            exception_type=provider_failure["exception_type"],
+            retryable=trace_failure["retryable"],
+        )
+    return trace_failure
+
+
+def _dispatcher_trace_current_pass(
+    trace: Mapping[str, Any], attestation: Mapping[str, Any] | None,
+) -> bool:
+    if attestation is None or trace.get("dispatcher_trace_complete") is not True:
+        return False
+    requests = trace.get("dispatcher_requests")
+    if not isinstance(requests, list) or len(requests) != 2 or trace.get("dispatcher_request_count") != 2:
+        return False
+    if any(
+        request.get("request_ordinal") != ordinal
+        or request.get("provider") != "gemini"
+        or request.get("token_accepted") is not True
+        or request.get("request_received") is not True
+        or request.get("upstream_started") is not True
+        or request.get("response_headers_started") is not True
+        or request.get("response_stream_completed") is not True
+        or request.get("exception_type") is not None
+        or not isinstance(request.get("upstream_status_code"), int)
+        or not 200 <= request["upstream_status_code"] <= 299
+        for ordinal, request in enumerate(requests, start=1)
+    ):
+        return False
+    return (
+        attestation.get("provider_turn_count") == 2
+        and attestation.get("provider_turns_started") == 2
+        and attestation.get("provider_turns_completed") == 2
+        and attestation.get("provider_turns_failed") == 0
+    )
+
+
+def _bounded_provider_failure(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    fields = (
+        "origin", "category", "turn_ordinal", "http_status_code",
+        "exception_type", "retryable", "failure_fingerprint_sha256",
+    )
+    if not isinstance(value, dict) or set(value) != set(fields):
+        return None
+    if (
+        value["origin"] not in _PROVIDER_FAILURE_ORIGINS
+        or value["category"] not in _PROVIDER_FAILURE_CATEGORIES
+        or type(value["turn_ordinal"]) is not int
+        or not 1 <= value["turn_ordinal"] <= 2
+        or value["http_status_code"] is not None and (
+            type(value["http_status_code"]) is not int
+            or not 100 <= value["http_status_code"] <= 599
+        )
+        or _safe_identifier(value["exception_type"], limit=128) is None
+        or type(value["retryable"]) is not bool
+        or _safe_sha256(value["failure_fingerprint_sha256"]) is None
+    ):
+        return None
+    fingerprint_input = {name: value[name] for name in fields[:-1]}
+    if _sha256_json(fingerprint_input) != value["failure_fingerprint_sha256"]:
+        return None
+    return {name: value[name] for name in fields}
+
 
 def _bounded_semantic_canary_attestation(payload: object) -> dict[str, Any] | None:
-    """Retain only the exact v4 controller contract from child JSON."""
+    """Retain only the exact v5 process contract around inner schema v4."""
     if (
         not isinstance(payload, dict)
         or payload.get("schema_version") != _CANARY_OUTER_SCHEMA_VERSION
         or payload.get("status") not in {"passed", "failed"}
         or payload.get("provider") != "gemini"
         or payload.get("model") != "gemini-2.5-flash"
+        or payload.get("inner_attestation_state") not in _CANARY_INNER_ATTESTATION_STATES
     ):
         return None
     sdk_version = _safe_identifier(payload.get("sdk_version"), limit=128)
-    system_instruction_sha256 = _safe_sha256(
-        payload.get("system_instruction_sha256")
-    )
+    system_instruction_sha256 = _safe_sha256(payload.get("system_instruction_sha256"))
     request_schema_sha256 = _safe_sha256(payload.get("request_schema_sha256"))
-    counters = {
-        key: payload.get(key)
-        for key in (
-            "provider_turns_started",
-            "provider_turns_completed",
-            "terminal_call_count",
-        )
-    }
+    progress = {name: payload.get(name) for name in _PROGRESS_COUNTER_FIELDS}
+    fixture_read_verified = payload.get("fixture_read_verified")
     booleans = {
-        key: payload.get(key)
-        for key in (
-            "fixture_read",
-            "source_verified",
-            "sink_verified",
-            "language_verified",
-            "semantic_relation_verified",
-            "worker_cleanup_verified",
+        name: payload.get(name)
+        for name in (
+            "fixture_read", "source_verified", "sink_verified", "language_verified",
+            "semantic_relation_verified", "worker_cleanup_verified",
         )
     }
-    semantic_checks = _bounded_canary_semantic_checks(
-        payload.get("semantic_checks")
-    )
+    provider_turn_count = payload.get("provider_turn_count")
+    semantic_checks = _bounded_canary_semantic_checks(payload.get("semantic_checks"))
     semantic_failure_reasons = _bounded_canary_semantic_failure_reasons(
         payload.get("semantic_failure_reasons")
     )
     section_counts = _bounded_canary_section_counts(payload.get("section_counts"))
+    provider_failure_raw = payload.get("provider_failure")
+    provider_failure = _bounded_provider_failure(provider_failure_raw)
     if (
         sdk_version is None
         or system_instruction_sha256 is None
         or request_schema_sha256 is None
-        or any(
-            type(value) is not int or not 0 <= value <= 3
-            for value in counters.values()
-        )
+        or any(type(value) is not int for value in progress.values())
+        or type(fixture_read_verified) is not bool
         or any(type(value) is not bool for value in booleans.values())
+        or type(provider_turn_count) is not int or not 0 <= provider_turn_count <= 2
         or semantic_checks is None
         or semantic_failure_reasons is None
         or section_counts is None
+        or (provider_failure_raw is not None and provider_failure is None)
+        or not 0 <= progress["provider_turns_started"] <= 2
+        or not 0 <= progress["provider_turns_completed"] <= progress["provider_turns_started"]
+        or not 0 <= progress["provider_turns_failed"] <= progress["provider_turns_started"]
+        or progress["provider_turns_completed"] + progress["provider_turns_failed"] > progress["provider_turns_started"]
+        or not 0 <= progress["tool_calls_dispatched"] <= 2
+        or not 0 <= progress["tool_calls_completed"] <= progress["tool_calls_dispatched"]
+        or not 0 <= progress["fixture_read_calls_dispatched"] <= 1
+        or not 0 <= progress["fixture_read_calls_completed"] <= progress["fixture_read_calls_dispatched"]
+        or progress["fixture_read_calls_dispatched"] > progress["tool_calls_dispatched"]
+        or progress["fixture_read_calls_completed"] > progress["tool_calls_completed"]
+        or not 0 <= progress["terminal_call_count"] <= 1
+        or fixture_read_verified and progress["fixture_read_calls_completed"] != 1
+        or booleans["fixture_read"] is not fixture_read_verified
+        or provider_failure is not None and provider_failure["turn_ordinal"] > progress["provider_turns_started"]
     ):
         return None
     status = payload["status"]
     failure: dict[str, str] = {}
     if status == "passed":
-        if "failure_class" in payload or "failure_stage" in payload:
+        if (
+            "failure_class" in payload
+            or "failure_stage" in payload
+            or provider_failure is not None
+            or payload["inner_attestation_state"] != "validated"
+        ):
             return None
     else:
         failure_class = _safe_identifier(payload.get("failure_class"), limit=128)
         failure_stage = _safe_identifier(payload.get("failure_stage"), limit=128)
         if failure_class is None or failure_stage is None:
             return None
-        failure = {
-            "failure_class": failure_class,
-            "failure_stage": failure_stage,
-        }
+        failure = {"failure_class": failure_class, "failure_stage": failure_stage}
     return {
         "schema_version": _CANARY_OUTER_SCHEMA_VERSION,
         "status": status,
@@ -1492,8 +1857,12 @@ def _bounded_semantic_canary_attestation(payload: object) -> dict[str, Any] | No
         "sdk_version": sdk_version,
         "system_instruction_sha256": system_instruction_sha256,
         "request_schema_sha256": request_schema_sha256,
-        **counters,
+        **progress,
+        "fixture_read_verified": fixture_read_verified,
+        "provider_turn_count": provider_turn_count,
         **booleans,
+        "inner_attestation_state": payload["inner_attestation_state"],
+        "provider_failure": provider_failure,
         "semantic_checks": semantic_checks,
         "semantic_failure_reasons": semantic_failure_reasons,
         "section_counts": section_counts,
@@ -1505,18 +1874,22 @@ def _semantic_canary_attestation_passed(attestation: dict[str, Any] | None) -> b
     return bool(
         attestation is not None
         and attestation["status"] == "passed"
+        and attestation["inner_attestation_state"] == "validated"
         and attestation["provider_turns_started"] == 2
         and attestation["provider_turns_completed"] == 2
+        and attestation["provider_turns_failed"] == 0
+        and attestation["tool_calls_dispatched"] == 2
+        and attestation["tool_calls_completed"] == 2
+        and attestation["fixture_read_calls_dispatched"] == 1
+        and attestation["fixture_read_calls_completed"] == 1
+        and attestation["fixture_read_verified"] is True
         and attestation["terminal_call_count"] == 1
+        and attestation["provider_failure"] is None
         and all(
             attestation[key] is True
             for key in (
-                "fixture_read",
-                "source_verified",
-                "sink_verified",
-                "language_verified",
-                "semantic_relation_verified",
-                "worker_cleanup_verified",
+                "fixture_read", "source_verified", "sink_verified", "language_verified",
+                "semantic_relation_verified", "worker_cleanup_verified",
             )
         )
         and all(attestation["semantic_checks"].values())

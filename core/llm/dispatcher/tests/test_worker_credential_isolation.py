@@ -39,6 +39,7 @@ def _canary_script(path: Path, report: Path) -> None:
         f"Path({str(report)!r}).write_text(json.dumps({{\n"
         "    'gemini_present': bool(os.environ.get('GEMINI_API_KEY')),\n"
         "    'unrelated_secret_present': bool(os.environ.get('UNRELATED_DISPATCH_SECRET')),\n"
+        "    'qualification_trace_present': bool(os.environ.get('RAPTOR_QUALIFICATION_DISPATCHER_TRACE')),\n"
         "    'python_user_base_present': bool(os.environ.get('PYTHONUSERBASE')),\n"
         "    'tmpdir': os.environ.get('TMPDIR'),\n"
         "    'dispatcher_socket_present': bool(os.environ.get('RAPTOR_LLM_SOCKET')),\n"
@@ -96,6 +97,10 @@ def test_dispatcher_worker_never_receives_provider_or_parent_secret(tmp_path, mo
     _canary_script(child, report)
     monkeypatch.setenv("GEMINI_API_KEY", "fixture-gemini-key")
     monkeypatch.setenv("UNRELATED_DISPATCH_SECRET", "fixture-parent-secret")
+    monkeypatch.setenv(
+        "RAPTOR_QUALIFICATION_DISPATCHER_TRACE",
+        str(tmp_path / "qualification-dispatcher.trace"),
+    )
     monkeypatch.setenv("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION", "1")
     monkeypatch.setenv("PYTHONUSERBASE", "/fixture/user-base")
     private_temp = tmp_path / "private-temp"
@@ -113,6 +118,7 @@ def test_dispatcher_worker_never_receives_provider_or_parent_secret(tmp_path, mo
     assert json.loads(report.read_text()) == {
         "gemini_present": False,
         "unrelated_secret_present": False,
+        "qualification_trace_present": False,
         "python_user_base_present": False,
         "tmpdir": private_temp_text,
         "dispatcher_socket_present": True,

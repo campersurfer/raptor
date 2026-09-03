@@ -17,6 +17,7 @@ import socket
 import stat
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 import threading
 import time
@@ -72,6 +73,13 @@ def _read_audit(d: LLMDispatcher) -> list[dict]:
     return [json.loads(line) for line in d._audit_path.read_text().splitlines()]
 
 
+def _read_qualification_trace(d: LLMDispatcher) -> list[dict]:
+    path = d._qualification_trace_path
+    if path is None or not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
 def _wait_for_audit_event(d: LLMDispatcher, event: str, timeout: float = 2.0) -> dict | None:
     """The dispatcher writes the audit line AFTER the response is
     flushed to the client. The httpx call can therefore return
@@ -115,6 +123,367 @@ class TestLayer1FilesystemIsolation:
         assert not sock_dir.exists()
 
 
+
+class TestQualificationTrace:
+    @staticmethod
+    def _new_dispatcher(fake_creds, trace_path, *, token_budget=3, audit_path=None):
+        return LLMDispatcher(
+            run_id="qualification-trace",
+            audit_path=audit_path,
+            creds=fake_creds,
+            qualification_trace_path=trace_path,
+            token_ttl_s=60,
+            token_budget=token_budget,
+        )
+
+    @staticmethod
+    def _token(dispatcher):
+        _, token_fd = dispatcher.allocate_worker(label="trace-worker")
+        try:
+            return os.read(token_fd, 128).decode().strip()
+        finally:
+            os.close(token_fd)
+
+    @staticmethod
+    def _post(client, token, path="/anthropic/v1/messages"):
+        return client.post(
+            f"http://_{path}",
+            headers={_TOKEN_HEADER: token, "x-private-header": "secret"},
+            content=b'{"prompt":"private body"}',
+        )
+
+    @staticmethod
+    def _wait_for_trace(dispatcher, count):
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            records = _read_qualification_trace(dispatcher)
+            if len(records) >= count:
+                return records
+            time.sleep(0.01)
+        return _read_qualification_trace(dispatcher)
+
+    def test_sequential_statuses_are_bounded_and_body_free(
+        self, fake_creds, tmp_path, monkeypatch
+    ):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        audit_path = tmp_path / "audit.jsonl"
+        real_client = httpx.Client
+
+        class _Response:
+            headers = {"content-length": "0", "x-private-header": "secret"}
+
+            def __init__(self, status_code):
+                self.status_code = status_code
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_raw(self):
+                return iter(())
+
+        outcomes = [_Response(200), _Response(503), _Response(200)]
+
+        class _Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return outcomes.pop(0)
+
+        monkeypatch.setattr("core.llm.dispatcher.server.httpx.Client", _Client)
+        dispatcher = self._new_dispatcher(
+            fake_creds, trace_path, token_budget=3, audit_path=audit_path,
+        )
+        try:
+            assert trace_path.exists()
+            assert trace_path.read_text() == ""
+            assert stat.S_IMODE(trace_path.stat().st_mode) == 0o600
+            token = self._token(dispatcher)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with real_client(transport=transport, timeout=5.0) as client:
+                assert self._post(client, token).status_code == 200
+                assert self._post(client, token).status_code == 503
+                assert self._post(client, token).status_code == 200
+
+            records = self._wait_for_trace(dispatcher, 2)
+            assert [record["request_ordinal"] for record in records] == [1, 2]
+            assert [record["upstream_status_code"] for record in records] == [200, 503]
+            assert all(record["response_stream_completed"] for record in records)
+            assert all(record["exception_type"] is None for record in records)
+            assert all(set(record) == {
+                "request_ordinal", "provider", "token_accepted", "request_received",
+                "upstream_started", "upstream_status_code", "response_headers_started",
+                "response_stream_completed", "exception_type",
+            } for record in records)
+            overflow = Path(f"{trace_path}.overflow")
+            assert overflow.read_text(encoding="ascii") == "overflow\n"
+            assert stat.S_IMODE(trace_path.stat().st_mode) == 0o600
+            assert stat.S_IMODE(overflow.stat().st_mode) == 0o600
+            assert _wait_for_audit_event(dispatcher, "request.dispatch") is not None
+            rendered = trace_path.read_text()
+            for forbidden in (
+                "private body", "private-header", "secret", "/v1/messages",
+                "http://", str(dispatcher.socket_path), token, "trace-worker",
+            ):
+                assert forbidden not in rendered
+        finally:
+            dispatcher.shutdown()
+
+    def test_token_rejection_and_unconfigured_provider_are_traced(
+        self, fake_creds, tmp_path
+    ):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        dispatcher = self._new_dispatcher(fake_creds, trace_path, token_budget=1)
+        try:
+            token = self._token(dispatcher)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with httpx.Client(transport=transport, timeout=5.0) as client:
+                assert client.post("http://_/anthropic/v1/messages").status_code == 401
+                assert self._post(client, token, "/openai/v1/chat/completions").status_code == 503
+
+            records = self._wait_for_trace(dispatcher, 2)
+            assert records == [
+                {
+                    "request_ordinal": 1, "provider": None, "token_accepted": False,
+                    "request_received": True, "upstream_started": False,
+                    "upstream_status_code": None, "response_headers_started": True,
+                    "response_stream_completed": False, "exception_type": None,
+                },
+                {
+                    "request_ordinal": 2, "provider": "openai", "token_accepted": True,
+                    "request_received": True, "upstream_started": False,
+                    "upstream_status_code": None, "response_headers_started": True,
+                    "response_stream_completed": False, "exception_type": None,
+                },
+            ]
+        finally:
+            dispatcher.shutdown()
+
+    def test_connection_and_stream_errors_record_safe_exception_basenames(
+        self, fake_creds, tmp_path, monkeypatch
+    ):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        real_client = httpx.Client
+
+        class _InterruptedResponse:
+            status_code = 200
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_raw(self):
+                raise httpx.RemoteProtocolError("private upstream body")
+                yield b""  # pragma: no cover
+
+        outcomes = [httpx.ConnectError("private connection detail"), _InterruptedResponse()]
+
+        class _Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+        monkeypatch.setattr("core.llm.dispatcher.server.httpx.Client", _Client)
+        dispatcher = self._new_dispatcher(fake_creds, trace_path, token_budget=2)
+        try:
+            token = self._token(dispatcher)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with real_client(transport=transport, timeout=5.0) as client:
+                assert self._post(client, token).status_code == 502
+                self._post(client, token)
+
+            records = self._wait_for_trace(dispatcher, 2)
+            assert [record["exception_type"] for record in records] == [
+                "ConnectError", "RemoteProtocolError",
+            ]
+            assert [record["upstream_status_code"] for record in records] == [None, 200]
+            assert all(record["upstream_started"] for record in records)
+            assert [record["response_headers_started"] for record in records] == [
+                False,
+                True,
+            ]
+            assert not any(record["response_stream_completed"] for record in records)
+            rendered = trace_path.read_text()
+            assert "private connection detail" not in rendered
+            assert "private upstream body" not in rendered
+        finally:
+            dispatcher.shutdown()
+    def test_concurrent_completion_preserves_trace_ordinal_order(
+        self, fake_creds, tmp_path, monkeypatch
+    ):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        real_client = httpx.Client
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class _Response:
+            headers = {"content-length": "0"}
+
+            def __init__(self, block=False):
+                self.status_code = 200
+                self._block = block
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_raw(self):
+                if self._block:
+                    first_started.set()
+                    assert release_first.wait(timeout=2.0)
+                return iter(())
+
+        outcomes = [_Response(block=True), _Response()]
+
+        class _Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return outcomes.pop(0)
+
+        monkeypatch.setattr("core.llm.dispatcher.server.httpx.Client", _Client)
+        dispatcher = self._new_dispatcher(fake_creds, trace_path, token_budget=2)
+        try:
+            token = self._token(dispatcher)
+            responses = []
+
+            def first_request():
+                transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+                with real_client(transport=transport, timeout=5.0) as client:
+                    responses.append(self._post(client, token))
+
+            first = threading.Thread(target=first_request)
+            first.start()
+            assert first_started.wait(timeout=2.0)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with real_client(transport=transport, timeout=5.0) as client:
+                assert self._post(client, token).status_code == 200
+            assert _read_qualification_trace(dispatcher) == []
+            release_first.set()
+            first.join(timeout=2.0)
+            assert not first.is_alive()
+            assert responses[0].status_code == 200
+            records = self._wait_for_trace(dispatcher, 2)
+            assert [record["request_ordinal"] for record in records] == [1, 2]
+        finally:
+            release_first.set()
+            dispatcher.shutdown()
+
+    def test_prepare_exception_trace_omits_secret_material(
+        self, fake_creds, tmp_path
+    ):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        dispatcher = self._new_dispatcher(fake_creds, trace_path, token_budget=1)
+        try:
+            def fail_prepare(*_args):
+                raise RuntimeError("private signing body and path /v1/messages")
+
+            rule = dispatcher._rules["anthropic"]
+            dispatcher._rules["anthropic"] = replace(
+                rule, prepare_request=fail_prepare, is_configured=lambda: True,
+            )
+            token = self._token(dispatcher)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with httpx.Client(transport=transport, timeout=5.0) as client:
+                assert self._post(client, token).status_code == 502
+            record = self._wait_for_trace(dispatcher, 1)[0]
+            assert record["upstream_started"] is False
+            assert record["upstream_status_code"] is None
+            assert record["response_headers_started"] is True
+            assert record["exception_type"] == "RuntimeError"
+            rendered = trace_path.read_text()
+            assert "private signing body" not in rendered
+            assert "/v1/messages" not in rendered
+        finally:
+            dispatcher.shutdown()
+
+
+    def test_overflow_without_sentinel_removes_primary_trace(self, fake_creds, tmp_path, monkeypatch):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        dispatcher = self._new_dispatcher(fake_creds, trace_path, token_budget=3)
+        try:
+            monkeypatch.setattr(dispatcher, "_write_qualification_trace_overflow", lambda: False)
+            token = self._token(dispatcher)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with httpx.Client(transport=transport, timeout=5.0) as client:
+                for _ in range(3):
+                    self._post(client, token)
+            assert not trace_path.exists()
+            assert not Path(f"{trace_path}.overflow").exists()
+        finally:
+            dispatcher.shutdown()
+    def test_unknown_upstream_exception_returns_bounded_trace(self, fake_creds, tmp_path, monkeypatch):
+        trace_path = tmp_path / "qualification-dispatcher-trace.jsonl"
+        real_client = httpx.Client
+
+        class _Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                raise RuntimeError("private upstream detail")
+
+        monkeypatch.setattr("core.llm.dispatcher.server.httpx.Client", _Client)
+        dispatcher = self._new_dispatcher(fake_creds, trace_path, token_budget=1)
+        try:
+            token = self._token(dispatcher)
+            transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+            with real_client(transport=transport, timeout=5.0) as client:
+                assert self._post(client, token).status_code == 502
+
+            records = self._wait_for_trace(dispatcher, 1)
+            assert records == [{
+                "request_ordinal": 1,
+                "provider": "anthropic",
+                "token_accepted": True,
+                "request_received": True,
+                "upstream_started": True,
+                "upstream_status_code": None,
+                "response_headers_started": False,
+                "response_stream_completed": False,
+                "exception_type": "RuntimeError",
+            }]
+            assert "private upstream detail" not in trace_path.read_text()
+        finally:
+            dispatcher.shutdown()
 class TestCredentialIsolationSocketSetup:
 
     def test_untrusted_socket_root_fails_closed(self, fake_creds, monkeypatch, tmp_path):

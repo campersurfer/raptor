@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import inspect
 import json
@@ -12,8 +13,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import httpx
 
 from core.llm.config import ModelConfig
+from core.llm.providers import ProviderEmptyResponseError
 from core.llm.tool_use.types import (
     Message,
     StopReason,
@@ -26,6 +29,26 @@ from packages.code_understanding import semantic_canary
 from packages.code_understanding.semantic_canary import run_semantic_canary
 
 _TOKEN = "a1b2c3d4e5f60718293a4b5c"
+_INNER_PROGRESS_FIELDS = {
+    "provider_turns_started",
+    "provider_turns_completed",
+    "provider_turns_failed",
+    "tool_calls_dispatched",
+    "tool_calls_completed",
+    "fixture_read_calls_dispatched",
+    "fixture_read_calls_completed",
+    "fixture_read_verified",
+    "terminal_call_count",
+}
+_PROVIDER_FAILURE_FIELDS = {
+    "origin",
+    "category",
+    "turn_ordinal",
+    "http_status_code",
+    "exception_type",
+    "retryable",
+    "failure_fingerprint_sha256",
+}
 _SUCCESS_FIELDS = {
     "schema_version",
     "status",
@@ -35,7 +58,6 @@ _SUCCESS_FIELDS = {
     "sdk_version",
     "system_instruction_sha256",
     "request_schema_sha256",
-    "terminal_call_count",
     "provider_turn_count",
     "fixture_read",
     "language_verified",
@@ -45,7 +67,8 @@ _SUCCESS_FIELDS = {
     "semantic_checks",
     "semantic_failure_reasons",
     "section_counts",
-}
+    "provider_failure",
+} | _INNER_PROGRESS_FIELDS
 _CLI_FAILURE_FIELDS = {
     "schema_version",
     "status",
@@ -54,10 +77,10 @@ _CLI_FAILURE_FIELDS = {
     "sdk_version",
     "system_instruction_sha256",
     "request_schema_sha256",
-    "provider_turns_started",
-    "provider_turns_completed",
-    "terminal_call_count",
+    "provider_turn_count",
     "fixture_read",
+    "inner_attestation_state",
+    "provider_failure",
     "source_verified",
     "sink_verified",
     "language_verified",
@@ -68,7 +91,7 @@ _CLI_FAILURE_FIELDS = {
     "worker_cleanup_verified",
     "failure_class",
     "failure_stage",
-}
+} | _INNER_PROGRESS_FIELDS
 
 
 def _model() -> ModelConfig:
@@ -348,12 +371,34 @@ def _terminal_turns(
     ]
 
 
+def _assert_inner_progress(attestation: dict[str, Any]) -> None:
+    for name in _INNER_PROGRESS_FIELDS - {"fixture_read_verified"}:
+        assert type(attestation[name]) is int
+    assert type(attestation["fixture_read_verified"]) is bool
+    assert 0 <= attestation["provider_turns_started"] <= 2
+    assert 0 <= attestation["provider_turns_completed"] <= attestation["provider_turns_started"]
+    assert 0 <= attestation["provider_turns_failed"] <= (
+        attestation["provider_turns_started"] - attestation["provider_turns_completed"]
+    )
+    assert 0 <= attestation["tool_calls_completed"] <= attestation["tool_calls_dispatched"] <= 2
+    assert 0 <= attestation["fixture_read_calls_completed"] <= attestation["fixture_read_calls_dispatched"] <= 2
+    assert 0 <= attestation["terminal_call_count"] <= 2
+    assert attestation["provider_turn_count"] == attestation["provider_turns_started"]
+    failure = attestation["provider_failure"]
+    if failure is None:
+        return
+    assert set(failure) == _PROVIDER_FAILURE_FIELDS
+    fields = {name: failure[name] for name in _PROVIDER_FAILURE_FIELDS - {"failure_fingerprint_sha256"}}
+    encoded = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    assert failure["failure_fingerprint_sha256"] == hashlib.sha256(encoded).hexdigest()
+
+
 def _assert_failure(result, failure_class: str) -> None:
     assert result.success is False
     assert set(result.attestation) == _SUCCESS_FIELDS | {"failure_class"}
+    _assert_inner_progress(result.attestation)
     assert result.attestation["status"] == "failed"
     assert result.attestation["failure_class"] == failure_class
-
 
 def _first_user_text(provider: _Provider | _CanonicalSimulator) -> str:
     for message in provider.messages[0]:
@@ -528,7 +573,8 @@ def test_canary_attests_only_bounded_non_sensitive_evidence():
 
     assert result.success is True
     assert set(result.attestation) == _SUCCESS_FIELDS
-    assert result.attestation["schema_version"] == 3
+    _assert_inner_progress(result.attestation)
+    assert result.attestation["schema_version"] == 4
     assert result.attestation["status"] == "passed"
     assert len(result.attestation["fixture_sha256"]) == 64
     assert len(result.attestation["system_instruction_sha256"]) == 64
@@ -537,6 +583,15 @@ def test_canary_attests_only_bounded_non_sensitive_evidence():
     assert result.attestation["model"] == "test-model"
     assert result.attestation["terminal_call_count"] == 1
     assert result.attestation["provider_turn_count"] == 2
+    assert result.attestation["provider_turns_started"] == 2
+    assert result.attestation["provider_turns_completed"] == 2
+    assert result.attestation["provider_turns_failed"] == 0
+    assert result.attestation["tool_calls_dispatched"] == 2
+    assert result.attestation["tool_calls_completed"] == 2
+    assert result.attestation["fixture_read_calls_dispatched"] == 1
+    assert result.attestation["fixture_read_calls_completed"] == 1
+    assert result.attestation["fixture_read_verified"] is True
+    assert result.attestation["provider_failure"] is None
     assert result.attestation["fixture_read"] is True
     assert result.attestation["language_verified"] is True
     assert result.attestation["source_verified"] is True
@@ -1019,10 +1074,10 @@ def test_canary_enforces_wall_clock_limit(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.parametrize(
     ("error", "failure_class"),
     [
-        (RuntimeError("401 unauthorized"), "auth"),
-        (RuntimeError("429 quota exhausted"), "quota"),
-        (TimeoutError("request timeout"), "timeout"),
-        (RuntimeError("400 schema malformed"), "schema"),
+        (RuntimeError("401 unauthorized"), "transport"),
+        (RuntimeError("429 quota exhausted"), "transport"),
+        (TimeoutError("request timeout"), "transport"),
+        (RuntimeError("400 schema malformed"), "transport"),
         (RuntimeError("503 transient"), "transport"),
     ],
 )
@@ -1047,13 +1102,171 @@ def test_canary_never_retries_transport_failure():
     assert provider.calls == 1
 
 
+class _ReadThenRaiseProvider(_Provider):
+    def turn(self, messages, tools, **kwargs) -> TurnResponse:
+        if self.calls == 1:
+            self.calls += 1
+            raise RuntimeError("synthetic second-turn provider failure")
+        return super().turn(messages, tools, **kwargs)
+
+
+def test_second_turn_failure_retains_verified_first_turn_progress():
+    lifecycle: list[tuple[str, dict[str, Any]]] = []
+    provider = _ReadThenRaiseProvider(_terminal_turns())
+
+    result = run_semantic_canary(
+        _model(),
+        provider_factory=lambda _: provider,
+        lifecycle_events=lambda event, **metadata: lifecycle.append((event, metadata)),
+    )
+
+    assert result.success is False
+    assert result.attestation["failure_class"] == "transport"
+    assert [event for event, _ in lifecycle].count("provider_turn_started") == 2
+    assert [event for event, _ in lifecycle].count("provider_turn_completed") == 1
+    assert any(
+        event == "tool_call_completed"
+        and metadata.get("fixture_read_call") is True
+        and metadata.get("fixture_read_verified") is True
+        for event, metadata in lifecycle
+    )
+    assert result.attestation["provider_turns_started"] == 2
+    assert result.attestation["provider_turns_completed"] == 1
+    assert result.attestation["provider_turns_failed"] == 1
+    assert result.attestation["tool_calls_dispatched"] == 1
+    assert result.attestation["tool_calls_completed"] == 1
+    assert result.attestation["fixture_read_calls_dispatched"] == 1
+    assert result.attestation["fixture_read_calls_completed"] == 1
+    assert result.attestation["fixture_read_verified"] is True
+
+
+class _StatusFailure(Exception):
+    def __init__(self, status_code: int, error_code: str | None = None) -> None:
+        self.status_code = status_code
+        self.error_code = error_code
+        super().__init__("sensitive provider message must not persist")
+
+
+
+
+
+@pytest.mark.parametrize(
+    ("error", "origin", "category", "status", "retryable"),
+    [
+        (ConnectionRefusedError("private socket"), "worker_uds_connect", "connection_refused", None, False),
+        (ConnectionResetError("private socket"), "worker_uds_connect", "connection_reset", None, False),
+        (httpx.ConnectTimeout("private endpoint"), "worker_uds_connect", "timeout", None, False),
+        (httpx.ReadTimeout("private endpoint"), "dispatcher_response_stream", "timeout", None, False),
+        (httpx.RemoteProtocolError("private wire"), "dispatcher_response_stream", "protocol", None, False),
+        (_StatusFailure(400), "upstream_http", "upstream_4xx", 400, False),
+        (_StatusFailure(400, "INVALID_ARGUMENT"), "upstream_http", "schema", 400, False),
+        (_StatusFailure(401), "upstream_http", "auth", 401, False),
+        (_StatusFailure(403), "upstream_http", "auth", 403, False),
+        (_StatusFailure(429), "upstream_http", "quota", 429, True),
+        (_StatusFailure(500), "upstream_http", "upstream_5xx", 500, True),
+        (_StatusFailure(502), "upstream_http", "upstream_5xx", 502, True),
+        (_StatusFailure(503), "upstream_http", "upstream_5xx", 503, True),
+        (json.JSONDecodeError("private body", "private document", 0), "sdk_response_decode", "response_decode", None, False),
+        (ProviderEmptyResponseError("private body"), "provider_empty_response", "empty_response", None, False),
+        (RuntimeError("private path and prompt"), "unknown", "transport_unknown", None, False),
+    ],
+)
+def test_provider_failure_taxonomy_is_bounded_and_message_free(
+    error: Exception,
+    origin: str,
+    category: str,
+    status: int | None,
+    retryable: bool,
+):
+    failure = semantic_canary._classify_provider_failure(error, turn_ordinal=2)
+
+    assert failure == {
+        "origin": origin,
+        "category": category,
+        "turn_ordinal": 2,
+        "http_status_code": status,
+        "exception_type": type(error).__name__,
+        "retryable": retryable,
+        "failure_fingerprint_sha256": failure["failure_fingerprint_sha256"],
+    }
+    assert len(failure["failure_fingerprint_sha256"]) == 64
+    rendered = json.dumps(failure, sort_keys=True)
+    assert str(error) not in rendered
+    assert "private" not in rendered
+
+
+class _StableFieldsFailure(Exception):
+    def __init__(self, **fields: Any) -> None:
+        for name, value in fields.items():
+            setattr(self, name, value)
+        super().__init__("private structured failure")
+
+
+def test_provider_failure_uses_stable_httpx_and_google_fields() -> None:
+    cases = (
+        (httpx.ConnectError("private"), "worker_uds_connect", "connection_refused", None),
+        (httpx.WriteTimeout("private"), "dispatcher_upstream_connect", "timeout", None),
+        (httpx.PoolTimeout("private"), "dispatcher_upstream_connect", "timeout", None),
+        (httpx.ReadError("private"), "dispatcher_response_stream", "connection_reset", None),
+        (httpx.WriteError("private"), "dispatcher_response_stream", "connection_reset", None),
+        (httpx.DecodingError("private"), "sdk_response_decode", "response_decode", None),
+        (_StableFieldsFailure(code=429), "upstream_http", "quota", 429),
+        (_StableFieldsFailure(response=SimpleNamespace(status_code=503)), "upstream_http", "upstream_5xx", 503),
+        (_StableFieldsFailure(status="INVALID_ARGUMENT"), "upstream_http", "schema", None),
+        (_StableFieldsFailure(error_code="INVALID_ARGUMENT"), "upstream_http", "schema", None),
+    )
+
+    for error, origin, category, status in cases:
+        failure = semantic_canary._classify_provider_failure(error, turn_ordinal=1)
+        assert (failure["origin"], failure["category"], failure["http_status_code"]) == (
+            origin,
+            category,
+            status,
+        )
+
+
+def test_provider_failure_rejects_unhashable_stable_fields() -> None:
+    error = _StableFieldsFailure(
+        status_code=[], code={}, status=[], error_code={},
+        response=SimpleNamespace(status_code=[]),
+    )
+
+    failure = semantic_canary._classify_provider_failure(error, turn_ordinal=1)
+
+    assert failure["origin"] == "unknown"
+    assert failure["category"] == "transport_unknown"
+
+
+def test_default_provider_factory_rejects_non_gemini_without_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fallback = SimpleNamespace(turn=lambda *_args, **_kwargs: pytest.fail("fallback turn"))
+    calls: list[ModelConfig] = []
+    monkeypatch.setattr(
+        semantic_canary, "create_provider", lambda model: calls.append(model) or fallback
+    )
+
+    result = run_semantic_canary(_model(), fixture_root=tmp_path)
+
+    _assert_failure(result, "provider_init")
+    assert calls == [_model()]
+
+
+
 def test_semantic_canary_cli_rejects_unapproved_model_as_bounded_json(capsys):
     exit_code = semantic_canary.main(["--model", "other-model", "--format", "json"])
 
     assert exit_code == 1
     attestation = json.loads(capsys.readouterr().out)
     assert set(attestation) == _CLI_FAILURE_FIELDS
-    assert attestation["schema_version"] == 4
+    assert attestation["schema_version"] == 5
+    for name in _INNER_PROGRESS_FIELDS - {"fixture_read_verified"}:
+        assert attestation[name] == 0
+    assert attestation["fixture_read_verified"] is False
+    assert attestation["provider_turn_count"] == 0
+    assert attestation["fixture_read"] is False
+    assert attestation["inner_attestation_state"] == "missing"
+    assert attestation["provider_failure"] is None
     assert attestation["failure_class"] == "unsupported_model"
     assert attestation["failure_stage"] == "provider_init"
     assert attestation["semantic_checks"] == {
@@ -1071,7 +1284,7 @@ def test_semantic_canary_cli_uses_resolved_model(monkeypatch: pytest.MonkeyPatch
 
     resolved = _model()
     expected = semantic_canary.SemanticCanaryResult(True, {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "passed",
         "provider": "gemini",
         "model": "gemini-2.5-flash",
@@ -1080,8 +1293,17 @@ def test_semantic_canary_cli_uses_resolved_model(monkeypatch: pytest.MonkeyPatch
         "request_schema_sha256": "b" * 64,
         "provider_turns_started": 2,
         "provider_turns_completed": 2,
+        "provider_turns_failed": 0,
+        "tool_calls_dispatched": 2,
+        "tool_calls_completed": 2,
+        "fixture_read_calls_dispatched": 1,
+        "fixture_read_calls_completed": 1,
+        "fixture_read_verified": True,
         "terminal_call_count": 1,
+        "provider_turn_count": 2,
         "fixture_read": True,
+        "inner_attestation_state": "validated",
+        "provider_failure": None,
         "language_verified": True,
         "source_verified": True,
         "sink_verified": True,
@@ -1124,3 +1346,40 @@ def test_canary_preserves_explicit_local_jsonschema_failures():
 
         _assert_failure(result, failure_class)
         assert provider.calls == 1
+        assert result.attestation["provider_failure"]["origin"] == "local_request_build"
+        assert result.attestation["provider_failure"]["category"] == "schema"
+
+
+def test_canary_progress_rejects_duplicate_or_unstarted_transitions():
+    progress = semantic_canary._CanaryProgress()
+
+    with pytest.raises(RuntimeError):
+        progress.provider_completed()
+    with pytest.raises(RuntimeError):
+        progress.provider_failed()
+    with pytest.raises(RuntimeError):
+        progress.tool_completed()
+    with pytest.raises(RuntimeError):
+        progress.fixture_read_completed()
+
+    for _ in range(2):
+        progress.provider_started()
+        progress.provider_completed()
+    with pytest.raises(RuntimeError):
+        progress.provider_started()
+
+    progress.tool_dispatched()
+    progress.tool_completed()
+    progress.tool_dispatched()
+    progress.tool_completed()
+    with pytest.raises(RuntimeError):
+        progress.tool_dispatched()
+
+    progress.fixture_read_dispatched()
+    progress.fixture_read_completed()
+    with pytest.raises(RuntimeError):
+        progress.fixture_read_dispatched()
+
+    progress.terminal_dispatched()
+    with pytest.raises(RuntimeError):
+        progress.terminal_dispatched()

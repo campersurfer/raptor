@@ -50,6 +50,10 @@ class LocalToolSchemaInvalid(ValueError):
     """A ToolDef supplied an invalid JSON Schema."""
 
 
+class ProviderEmptyResponseError(RuntimeError):
+    """A provider returned no response for a required classification turn."""
+
+
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
 _CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)-(\d+)")
 
@@ -2200,7 +2204,7 @@ class GeminiProvider(LLMProvider):
     def client(self):
         """Per-thread client — google-genai is not guaranteed thread-safe."""
         if not hasattr(self._local, 'client'):
-            from google.genai.types import HttpOptions
+            from google.genai.types import HttpOptions, HttpRetryOptions
 
             timeout_milliseconds = self._request_timeout_milliseconds(self.config.timeout)
             # Phase B: dispatcher-route when ``RAPTOR_LLM_SOCKET`` set.
@@ -2217,13 +2221,17 @@ class GeminiProvider(LLMProvider):
                         base_url=base_url,
                         httpx_client=http_client,
                         timeout=timeout_milliseconds,
+                        retry_options=HttpRetryOptions(attempts=1),
                     ),
                 )
                 logger.debug("GeminiProvider: routing via credential-isolation dispatcher")
             else:
                 self._local.client = _genai_module.Client(
                     api_key=self.config.api_key,
-                    http_options=HttpOptions(timeout=timeout_milliseconds),
+                    http_options=HttpOptions(
+                        timeout=timeout_milliseconds,
+                        retry_options=HttpRetryOptions(attempts=1),
+                    ),
                 )
                 logger.debug("GeminiProvider: direct SDK (no dispatcher)")
         return self._local.client
@@ -2483,7 +2491,7 @@ class GeminiProvider(LLMProvider):
         duration = time.monotonic() - started_at
         content = response.text or ""
         if not content:
-            raise RuntimeError("Gemini returned an empty JSON tool response")
+            raise ProviderEmptyResponseError("Gemini returned an empty JSON tool response")
         block, stop_reason = self._parse_fallback_response(content, tools)
         if isinstance(block, TextBlock):
             try:

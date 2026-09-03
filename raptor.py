@@ -42,6 +42,7 @@ Examples:
 
 import argparse
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -628,6 +629,44 @@ _TRUST_REPO_SEEN = False
 
 _active_dispatcher = None
 _last_dispatcher_startup_failure = None
+_QUALIFICATION_DISPATCHER_TRACE_ENV = "RAPTOR_QUALIFICATION_DISPATCHER_TRACE"
+
+
+def _qualification_dispatcher_trace_path() -> Path | None:
+    """Return one validated private trace path for isolated qualification only."""
+    if os.environ.get("RAPTOR_REQUIRE_CREDENTIAL_ISOLATION") != "1":
+        return None
+    raw_trace = os.environ.get(_QUALIFICATION_DISPATCHER_TRACE_ENV)
+    if raw_trace is None:
+        return None
+    raw_root = os.environ.get("RAPTOR_PRIVATE_TMPDIR")
+    if not raw_root:
+        raise RuntimeError("credential_isolation_trace_root_missing")
+    root = Path(raw_root)
+    trace = Path(raw_trace)
+    if not root.is_absolute() or not trace.is_absolute():
+        raise RuntimeError("credential_isolation_trace_path_invalid")
+    try:
+        root_stat = root.lstat()
+    except OSError as exc:
+        raise RuntimeError("credential_isolation_trace_root_invalid") from exc
+    if (
+        stat.S_ISLNK(root_stat.st_mode)
+        or not stat.S_ISDIR(root_stat.st_mode)
+        or root_stat.st_uid != os.getuid()
+        or stat.S_IMODE(root_stat.st_mode) != 0o700
+        or root.resolve(strict=True) != root
+    ):
+        raise RuntimeError("credential_isolation_trace_root_invalid")
+    if trace.parent != root or trace.name in {"", ".", ".."}:
+        raise RuntimeError("credential_isolation_trace_path_invalid")
+    try:
+        trace.lstat()
+    except FileNotFoundError:
+        return trace
+    except OSError as exc:
+        raise RuntimeError("credential_isolation_trace_path_invalid") from exc
+    raise RuntimeError("credential_isolation_trace_path_preexisting")
 
 
 def _get_or_start_dispatcher():
@@ -668,6 +707,7 @@ def _get_or_start_dispatcher():
         _active_dispatcher = LLMDispatcher(
             run_id=f"raptor-{uuid.uuid4().hex[:8]}",
             creds=creds,
+            qualification_trace_path=_qualification_dispatcher_trace_path(),
         )
         atexit.register(_active_dispatcher.shutdown)
         _last_dispatcher_startup_failure = None
@@ -811,6 +851,7 @@ def _run_script(script_path: Path, args: list) -> int:
                 )
                 return 2
             from core.llm.dispatcher.spawn import spawn_worker
+            safe_env.pop(_QUALIFICATION_DISPATCHER_TRACE_ENV, None)
             proc = spawn_worker(
                 dispatcher,
                 cmd=cmd,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -68,19 +69,22 @@ _CANARY_PROVIDER_TIMEOUT_S = 60.0
 _CLEANUP_RESERVE_S = 5.0
 _MIN_CLEANUP_RESERVE_S = 0.2
 _MAX_PROGRESS_EVENTS = 16
-_MAX_COUNTER = 3
+_MAX_PROVIDER_TURNS = 2
+_MAX_CANARY_TOOL_CALLS = 2
+_MAX_COUNTER = _MAX_CANARY_TOOL_CALLS
 _MAX_IDENTITY_CHARS = 128
-_MAX_IPC_MESSAGE_BYTES = 1_024
+_MAX_IPC_MESSAGE_BYTES = 2_048
 _MAX_IPC_BUFFER_BYTES = _MAX_IPC_MESSAGE_BYTES * _MAX_PROGRESS_EVENTS
 _MAX_MODEL_CONFIG_BYTES = 4_096
-_INNER_ATTESTATION_SCHEMA_VERSION = 3
-_PROCESS_ATTESTATION_SCHEMA_VERSION = 4
+_INNER_ATTESTATION_SCHEMA_VERSION = 4
+_PROCESS_ATTESTATION_SCHEMA_VERSION = 5
 _MAX_SEMANTIC_FAILURE_REASONS = 16
 _MAX_ATTESTATION_SECTION_COUNT = 1_024
 _ALLOWED_LIFECYCLE_EVENTS = frozenset(
     {
         "provider_turn_started",
         "provider_turn_completed",
+        "provider_turn_failed",
         "tool_call_dispatched",
         "tool_call_completed",
         "terminal_call_dispatched",
@@ -151,7 +155,108 @@ def _bounded_counter(value: Any) -> int:
 
 
 def _bounded_failure_class(value: Any) -> str:
-    return value if value in _ALLOWED_FAILURE_CLASSES else "internal"
+    return value if isinstance(value, str) and value in _ALLOWED_FAILURE_CLASSES else "internal"
+
+_PROGRESS_COUNTER_KEYS = (
+    "provider_turns_started",
+    "provider_turns_completed",
+    "provider_turns_failed",
+    "tool_calls_dispatched",
+    "tool_calls_completed",
+    "fixture_read_calls_dispatched",
+    "fixture_read_calls_completed",
+    "terminal_call_count",
+)
+_PROGRESS_KEYS = frozenset((*_PROGRESS_COUNTER_KEYS, "fixture_read_verified"))
+_PROVIDER_FAILURE_ORIGINS = frozenset({
+    "local_request_build", "worker_uds_connect", "dispatcher_token_auth",
+    "dispatcher_provider_config", "dispatcher_upstream_connect", "upstream_http",
+    "dispatcher_response_stream", "sdk_response_decode", "provider_empty_response",
+    "unknown",
+})
+_PROVIDER_FAILURE_CATEGORIES = frozenset({
+    "auth", "quota", "schema", "timeout", "upstream_4xx", "upstream_5xx",
+    "connection_refused", "connection_reset", "protocol", "response_decode",
+    "empty_response", "transport_unknown",
+})
+
+
+def _default_progress() -> dict[str, Any]:
+    return {**{key: 0 for key in _PROGRESS_COUNTER_KEYS}, "fixture_read_verified": False}
+
+
+def _parse_progress(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or set(value) != _PROGRESS_KEYS:
+        return None
+    if any(type(value[key]) is not int for key in _PROGRESS_COUNTER_KEYS):
+        return None
+    if type(value["fixture_read_verified"]) is not bool:
+        return None
+    progress = dict(value)
+    if (
+        not 0 <= progress["provider_turns_started"] <= _MAX_PROVIDER_TURNS
+        or not 0 <= progress["provider_turns_completed"] <= progress["provider_turns_started"]
+        or not 0 <= progress["provider_turns_failed"] <= progress["provider_turns_started"]
+        or progress["provider_turns_completed"] + progress["provider_turns_failed"] > progress["provider_turns_started"]
+        or not 0 <= progress["tool_calls_dispatched"] <= _MAX_CANARY_TOOL_CALLS
+        or not 0 <= progress["tool_calls_completed"] <= progress["tool_calls_dispatched"]
+        or not 0 <= progress["fixture_read_calls_dispatched"] <= 1
+        or not 0 <= progress["fixture_read_calls_completed"] <= progress["fixture_read_calls_dispatched"]
+        or progress["fixture_read_calls_dispatched"] > progress["tool_calls_dispatched"]
+        or progress["fixture_read_calls_completed"] > progress["tool_calls_completed"]
+        or not 0 <= progress["terminal_call_count"] <= 1
+        or (progress["fixture_read_verified"] and progress["fixture_read_calls_completed"] != 1)
+    ):
+        return None
+    return progress
+
+
+def _parse_provider_failure(value: Any) -> dict[str, Any] | None:
+    fields = (
+        "origin", "category", "turn_ordinal", "http_status_code",
+        "exception_type", "retryable", "failure_fingerprint_sha256",
+    )
+    if not isinstance(value, dict) or set(value) != set(fields):
+        return None
+    origin = value["origin"]
+    category = value["category"]
+    status = value["http_status_code"]
+    exception_type = value["exception_type"]
+    fingerprint = value["failure_fingerprint_sha256"]
+    if (
+        not isinstance(origin, str)
+        or origin not in _PROVIDER_FAILURE_ORIGINS
+        or not isinstance(category, str)
+        or category not in _PROVIDER_FAILURE_CATEGORIES
+        or type(value["turn_ordinal"]) is not int
+        or not 1 <= value["turn_ordinal"] <= _MAX_PROVIDER_TURNS
+        or status is not None
+        and (type(status) is not int or not 100 <= status <= 599)
+        or not isinstance(exception_type, str)
+        or not 1 <= len(exception_type) <= _MAX_IDENTITY_CHARS
+        or type(value["retryable"]) is not bool
+        or not isinstance(fingerprint, str)
+    ):
+        return None
+    fingerprint_fields = {key: value[key] for key in fields[:-1]}
+    expected = hashlib.sha256(
+        json.dumps(fingerprint_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if fingerprint != expected:
+        return None
+    return {key: value[key] for key in fields}
+
+
+def _reconcile_progress(
+    observed: dict[str, Any], inner: dict[str, Any]
+) -> tuple[dict[str, Any] | None, bool]:
+    if _parse_progress(observed) is None or _parse_progress(inner) is None:
+        return None, False
+    if any(inner[key] != observed[key] for key in _PROGRESS_COUNTER_KEYS):
+        return None, False
+    if inner["fixture_read_verified"] is not observed["fixture_read_verified"]:
+        return None, False
+    return dict(observed), True
 
 
 def _default_semantic_checks() -> dict[str, bool]:
@@ -198,8 +303,6 @@ def _safe_semantic_failure_reasons(value: Any) -> list[str]:
 
 def _safe_section_counts(value: Any) -> dict[str, int]:
     return _parse_section_counts(value) or {key: 0 for key in SECTION_COUNT_KEYS}
-
-
 def _controller_attestation(
     *,
     model: ModelConfig,
@@ -220,19 +323,45 @@ def _controller_attestation(
     section_counts: dict[str, int] | None = None,
     failure_class: str | None = None,
     failure_stage: str | None = None,
+    progress: dict[str, Any] | None = None,
+    inner_attestation_state: str = "missing",
+    provider_failure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    parsed_progress = _parse_progress(
+        progress
+        if progress is not None
+        else {
+            "provider_turns_started": provider_turns_started,
+            "provider_turns_completed": provider_turns_completed,
+            "provider_turns_failed": 0,
+            "tool_calls_dispatched": 0,
+            "tool_calls_completed": 0,
+            "fixture_read_calls_dispatched": int(fixture_read),
+            "fixture_read_calls_completed": int(fixture_read),
+            "fixture_read_verified": bool(fixture_read),
+            "terminal_call_count": terminal_call_count,
+        }
+    )
+    if parsed_progress is None:
+        raise ValueError("semantic canary progress was malformed")
+    inner_state = (
+        inner_attestation_state
+        if isinstance(inner_attestation_state, str) and inner_attestation_state in {"validated", "missing", "invalid", "incomplete"}
+        else "invalid"
+    )
     attestation: dict[str, Any] = {
         "schema_version": _PROCESS_ATTESTATION_SCHEMA_VERSION,
-        "status": status,
+        "status": "passed" if status == "passed" else "failed",
         "provider": _bounded_identity(model.provider),
         "model": _bounded_identity(model.model_name),
         "sdk_version": _bounded_identity(_sdk_version()),
         "system_instruction_sha256": _bounded_sha256(system_instruction_sha256),
         "request_schema_sha256": _bounded_sha256(request_schema_sha256),
-        "provider_turns_started": _bounded_counter(provider_turns_started),
-        "provider_turns_completed": _bounded_counter(provider_turns_completed),
-        "terminal_call_count": _bounded_counter(terminal_call_count),
-        "fixture_read": bool(fixture_read),
+        **parsed_progress,
+        "provider_turn_count": parsed_progress["provider_turns_started"],
+        "fixture_read": parsed_progress["fixture_read_verified"],
+        "inner_attestation_state": inner_state,
+        "provider_failure": _parse_provider_failure(provider_failure),
         "source_verified": bool(source_verified),
         "sink_verified": bool(sink_verified),
         "language_verified": bool(language_verified),
@@ -292,34 +421,98 @@ def _worker_diagnostic_messages(raw: Any) -> list[dict[str, Any]]:
 
 
 def _worker_attestation(
-    result: Any, provider_turns_started: int, provider_turns_completed: int
+    result: Any,
+    progress_or_provider_turns_started: dict[str, Any] | int,
+    provider_turns_completed: int | None = None,
 ) -> dict[str, Any]:
-    raw = result.attestation if isinstance(result.attestation, dict) else {}
+    raw = result.attestation if isinstance(getattr(result, "attestation", None), dict) else {}
+    if isinstance(progress_or_provider_turns_started, dict):
+        observed_progress = _parse_progress(progress_or_provider_turns_started)
+    else:
+        observed_progress = _parse_progress({
+            "provider_turns_started": progress_or_provider_turns_started,
+            "provider_turns_completed": provider_turns_completed,
+            "provider_turns_failed": 0,
+            "tool_calls_dispatched": 0,
+            "tool_calls_completed": 0,
+            "fixture_read_calls_dispatched": 0,
+            "fixture_read_calls_completed": 0,
+            "fixture_read_verified": False,
+            "terminal_call_count": 0,
+        })
+    schema_version = raw.get("schema_version")
+    if not raw or "schema_version" not in raw:
+        inner_state = "missing"
+    elif type(schema_version) is not int or schema_version not in (2, 3, _INNER_ATTESTATION_SCHEMA_VERSION):
+        inner_state = "invalid"
+    elif schema_version in (2, 3):
+        inner_state = "incomplete"
+    else:
+        inner_progress = _parse_progress({key: raw.get(key) for key in _PROGRESS_KEYS})
+        required_fields = {
+            "schema_version", "status", "fixture_sha256", "provider", "model",
+            "sdk_version", "system_instruction_sha256", "request_schema_sha256",
+            "provider_turn_count", "fixture_read", "language_verified",
+            "source_verified", "sink_verified", "semantic_relation_verified",
+            "semantic_checks", "semantic_failure_reasons", "section_counts",
+            "provider_failure", *_PROGRESS_KEYS,
+        }
+        if raw.get("status") == "failed":
+            required_fields.add("failure_class")
+        required_valid = (
+            set(raw) == required_fields
+            and isinstance(raw.get("status"), str) and raw.get("status") in {"passed", "failed"}
+            and bool(getattr(result, "success", False)) == (raw.get("status") == "passed")
+            and _bounded_sha256(raw.get("fixture_sha256")) is not None
+            and all(isinstance(raw.get(key), str) and len(raw[key]) <= _MAX_IDENTITY_CHARS for key in ("provider", "model", "sdk_version"))
+            and _bounded_sha256(raw.get("system_instruction_sha256")) is not None
+            and _bounded_sha256(raw.get("request_schema_sha256")) is not None
+            and _parse_section_counts(raw.get("section_counts")) is not None
+            and _parse_semantic_checks(raw.get("semantic_checks")) is not None
+            and _parse_semantic_failure_reasons(raw.get("semantic_failure_reasons")) is not None
+            and all(type(raw.get(key)) is bool for key in (
+                "fixture_read", "source_verified", "sink_verified",
+                "language_verified", "semantic_relation_verified",
+            ))
+            and type(raw.get("provider_turn_count")) is int
+            and raw.get("provider_turn_count") == raw.get("provider_turns_started")
+            and raw.get("fixture_read") == raw.get("fixture_read_verified")
+            and (
+                raw.get("provider_failure") is None
+                or _parse_provider_failure(raw.get("provider_failure")) is not None
+            )
+            and (
+                raw.get("status") == "passed"
+                or isinstance(raw.get("failure_class"), str)
+                and raw.get("failure_class") in _ALLOWED_FAILURE_CLASSES
+            )
+            and inner_progress is not None
+            and observed_progress is not None
+            and inner_progress == observed_progress
+        )
+        inner_state = "validated" if required_valid else "incomplete"
+    inner_progress = (
+        _parse_progress({key: raw.get(key) for key in _PROGRESS_KEYS})
+        if inner_state == "validated"
+        else None
+    )
     return {
         "inner_schema_version": (
-            raw.get("schema_version")
-            if raw.get("schema_version") == _INNER_ATTESTATION_SCHEMA_VERSION
-            else None
+            schema_version if inner_state != "invalid" and type(schema_version) is int else None
         ),
-        "status": (
-            "passed"
-            if result.success and raw.get("status") == "passed"
-            else "failed"
-        ),
-        "system_instruction_sha256": _bounded_sha256(
-            raw.get("system_instruction_sha256")
-        ),
+        "inner_attestation_state": inner_state,
+        "status": raw.get("status") if isinstance(raw.get("status"), str) and raw.get("status") in {"passed", "failed"} else "failed",
+        "system_instruction_sha256": _bounded_sha256(raw.get("system_instruction_sha256")),
         "request_schema_sha256": _bounded_sha256(raw.get("request_schema_sha256")),
         "section_counts": _parse_section_counts(raw.get("section_counts")),
-        "provider_turns_started": _bounded_counter(provider_turns_started),
-        "provider_turns_completed": _bounded_counter(provider_turns_completed),
-        "terminal_call_count": _bounded_counter(raw.get("terminal_call_count")),
+        "progress": inner_progress,
         "fixture_read": raw.get("fixture_read") is True,
         "source_verified": raw.get("source_verified") is True,
         "sink_verified": raw.get("sink_verified") is True,
         "language_verified": raw.get("language_verified") is True,
         "semantic_relation_verified": raw.get("semantic_relation_verified") is True,
         "failure_class": _bounded_failure_class(raw.get("failure_class")),
+        "provider_failure": _parse_provider_failure(raw.get("provider_failure")),
     }
 def _read_worker_model(config_fd: int) -> ModelConfig:
     payload = bytearray()
@@ -390,24 +583,57 @@ def _spawn_worker(
 
 def _worker_entry(write_fd: int, model: ModelConfig, fixture_root: str) -> None:
     _redirect_worker_output()
-    provider_turns_started = 0
-    provider_turns_completed = 0
+    progress = _default_progress()
+    event_sequence = 0
 
     def lifecycle(event: str, **metadata: Any) -> None:
-        nonlocal provider_turns_started, provider_turns_completed
-        if event not in _ALLOWED_LIFECYCLE_EVENTS:
+        nonlocal event_sequence
+        if not isinstance(event, str) or event not in _ALLOWED_LIFECYCLE_EVENTS:
             raise RuntimeError("unsupported semantic canary lifecycle event")
-        message: dict[str, Any] = {"type": "event", "event": event}
+        next_progress = dict(progress)
+        message: dict[str, Any] = {
+            "type": "event", "event": event, "event_sequence": event_sequence + 1,
+        }
         if event == "provider_turn_started":
-            provider_turns_started += 1
-            request_schema_sha256 = _bounded_sha256(metadata.get("request_schema_sha256"))
-            if request_schema_sha256 is not None:
+            first_turn = progress["provider_turns_started"] == 0
+            next_progress["provider_turns_started"] += 1
+            if first_turn:
+                request_schema_sha256 = _bounded_sha256(metadata.get("request_schema_sha256"))
+                if request_schema_sha256 is None:
+                    raise RuntimeError("first provider turn omitted request schema")
                 message["request_schema_sha256"] = request_schema_sha256
         elif event == "provider_turn_completed":
-            provider_turns_completed += 1
+            next_progress["provider_turns_completed"] += 1
+        elif event == "provider_turn_failed":
+            next_progress["provider_turns_failed"] += 1
+            provider_failure = _parse_provider_failure(metadata.get("provider_failure"))
+            if provider_failure is None:
+                raise RuntimeError("provider failure event was malformed")
+            message["provider_failure"] = provider_failure
+        elif event == "tool_call_dispatched":
+            next_progress["tool_calls_dispatched"] += 1
+            fixture_read_call = metadata.get("fixture_read_call") is True
+            if fixture_read_call:
+                next_progress["fixture_read_calls_dispatched"] += 1
+            message["fixture_read_call"] = fixture_read_call
         elif event == "tool_call_completed":
-            message["fixture_read"] = metadata.get("fixture_read") is True
-        _send(write_fd, message)
+            next_progress["tool_calls_completed"] += 1
+            fixture_read_call = metadata.get("fixture_read_call") is True
+            fixture_read_verified = metadata.get("fixture_read_verified") is True
+            if fixture_read_verified and not fixture_read_call:
+                raise RuntimeError("verified fixture read omitted completed call")
+            next_progress["fixture_read_calls_completed"] += int(fixture_read_call)
+            if fixture_read_verified:
+                next_progress["fixture_read_verified"] = True
+            message["fixture_read_call"] = fixture_read_call
+            message["fixture_read_verified"] = fixture_read_verified
+        elif event == "terminal_call_dispatched":
+            next_progress["terminal_call_count"] += 1
+        parsed_progress = _parse_progress(next_progress)
+        if parsed_progress is None or not _send(write_fd, message):
+            raise RuntimeError("semantic canary lifecycle progress was invalid")
+        progress.update(parsed_progress)
+        event_sequence += 1
 
     try:
         from packages.code_understanding.semantic_canary import run_semantic_canary
@@ -421,11 +647,7 @@ def _worker_entry(write_fd: int, model: ModelConfig, fixture_root: str) -> None:
             _send(write_fd, message)
             for message in _worker_diagnostic_messages(result.attestation)
         )
-        attestation = _worker_attestation(
-            result,
-            provider_turns_started,
-            provider_turns_completed,
-        )
+        attestation = _worker_attestation(result, progress)
         if not diagnostics_sent:
             attestation = {"status": "failed", "failure_class": "internal"}
         _send(write_fd, {"type": "result", "attestation": attestation})
@@ -434,7 +656,6 @@ def _worker_entry(write_fd: int, model: ModelConfig, fixture_root: str) -> None:
     finally:
         os.close(write_fd)
     os._exit(0)
-
 
 def _worker_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
@@ -501,6 +722,11 @@ def _signal_worker(worker_pid: int, process_group: int | None, signal_number: in
             os.kill(worker_pid, signal_number)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        try:
+            os.kill(worker_pid, signal_number)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def _terminate_worker(worker_pid: int, process_group: int | None, deadline: float) -> bool:
@@ -528,7 +754,7 @@ def _failure_stage(
 ) -> str:
     if provider_turns_started > provider_turns_completed:
         return "provider_turn_2" if provider_turns_started >= 2 else "provider_turn_1"
-    if failure_class in {"provider_init", "model_resolution", "unsupported_model", "worker_start"}:
+    if isinstance(failure_class, str) and failure_class in {"provider_init", "model_resolution", "unsupported_model", "worker_start"}:
         return "provider_init"
     if fixture_read and provider_turns_started == provider_turns_completed == 1:
         return "fixture_read"
@@ -595,6 +821,75 @@ def _receive_messages(read_fd: int, buffered: bytes) -> tuple[list[dict[str, Any
     return messages, buffered, False, False
 
 
+def _apply_process_event(state: dict[str, Any], message: dict[str, Any]) -> bool:
+    event = message.get("event")
+    sequence = message.get("event_sequence")
+    if (
+        not isinstance(event, str) or event not in _ALLOWED_LIFECYCLE_EVENTS
+        or type(sequence) is not int
+        or sequence != state["last_event_sequence"] + 1
+        or state["events"] >= _MAX_PROGRESS_EVENTS
+    ):
+        return False
+    progress = dict(state["progress"])
+    expected = {"type", "event", "event_sequence"}
+    if event == "provider_turn_started":
+        expected |= {"request_schema_sha256"} if progress["provider_turns_started"] == 0 else set()
+        if set(message) != expected:
+            return False
+        request_schema_sha256 = message.get("request_schema_sha256")
+        if progress["provider_turns_started"] == 0:
+            if _bounded_sha256(request_schema_sha256) is None:
+                return False
+            state["request_schema_sha256"] = request_schema_sha256
+        progress["provider_turns_started"] += 1
+    elif event == "provider_turn_completed":
+        if set(message) != expected:
+            return False
+        progress["provider_turns_completed"] += 1
+    elif event == "provider_turn_failed":
+        if set(message) != expected | {"provider_failure"}:
+            return False
+        failure = _parse_provider_failure(message.get("provider_failure"))
+        if failure is None or failure["turn_ordinal"] != progress["provider_turns_started"]:
+            return False
+        progress["provider_turns_failed"] += 1
+        state["provider_failure"] = failure
+    elif event == "tool_call_dispatched":
+        if set(message) != expected | {"fixture_read_call"} or type(message.get("fixture_read_call")) is not bool:
+            return False
+        progress["tool_calls_dispatched"] += 1
+        progress["fixture_read_calls_dispatched"] += int(message["fixture_read_call"])
+    elif event == "tool_call_completed":
+        if (
+            set(message)
+            != expected | {"fixture_read_call", "fixture_read_verified"}
+            or type(message.get("fixture_read_call")) is not bool
+            or type(message.get("fixture_read_verified")) is not bool
+            or message["fixture_read_verified"] and not message["fixture_read_call"]
+        ):
+            return False
+        progress["tool_calls_completed"] += 1
+        progress["fixture_read_calls_completed"] += int(
+            message["fixture_read_call"]
+        )
+        if message["fixture_read_verified"]:
+            progress["fixture_read_verified"] = True
+    elif event == "terminal_call_dispatched":
+        if set(message) != expected:
+            return False
+        progress["terminal_call_count"] += 1
+    else:
+        return False
+    parsed_progress = _parse_progress(progress)
+    if parsed_progress is None:
+        return False
+    state["progress"] = parsed_progress
+    state["events"] += 1
+    state["last_event_sequence"] = sequence
+    return True
+
+
 def _run_semantic_canary_controller(
     model: ModelConfig,
     *,
@@ -635,16 +930,15 @@ def _run_semantic_canary_controller(
     cleanup_deadline = started_at + float(deadline_s)
     worker_deadline = cleanup_deadline - _cleanup_reserve(float(deadline_s))
     state: dict[str, Any] = {
-        "provider_turns_started": 0,
-        "provider_turns_completed": 0,
-        "terminal_call_count": 0,
-        "fixture_read": False,
+        "progress": _default_progress(),
         "request_schema_sha256": None,
+        "provider_failure": None,
         "semantic_checks": None,
         "semantic_failure_reasons": None,
         "semantic_checks_received": False,
         "semantic_failure_reasons_received": False,
         "events": 0,
+        "last_event_sequence": 0,
     }
     worker_pgid: int | None = None
     worker_attestation: dict[str, Any] | None = None
@@ -701,29 +995,9 @@ def _run_semantic_canary_controller(
                             break
                         message_type = message.get("type")
                         if message_type == "event":
-                            event = message.get("event")
-                            if (
-                                event not in _ALLOWED_LIFECYCLE_EVENTS
-                                or state["events"] >= _MAX_PROGRESS_EVENTS
-                            ):
+                            if not _apply_process_event(state, message):
                                 worker_lost = True
                                 break
-                            state["events"] += 1
-                            if event == "provider_turn_started":
-                                state["provider_turns_started"] += 1
-                                state["request_schema_sha256"] = (
-                                    _bounded_sha256(message.get("request_schema_sha256"))
-                                    or state["request_schema_sha256"]
-                                )
-                            elif event == "provider_turn_completed":
-                                state["provider_turns_completed"] += 1
-                            elif event == "terminal_call_dispatched":
-                                state["terminal_call_count"] += 1
-                            elif (
-                                event == "tool_call_completed"
-                                and message.get("fixture_read") is True
-                            ):
-                                state["fixture_read"] = True
                         elif message_type == "diagnostic":
                             if set(message) == {"type", "semantic_checks"}:
                                 parsed_checks = _parse_semantic_checks(
@@ -773,86 +1047,79 @@ def _run_semantic_canary_controller(
                 elif _worker_reaped(worker_pid):
                     worker_lost = True
 
-            state_semantic_checks = _safe_semantic_checks(
-                state["semantic_checks"]
-            )
+            state_semantic_checks = _safe_semantic_checks(state["semantic_checks"])
             state_semantic_failure_reasons = _safe_semantic_failure_reasons(
                 state["semantic_failure_reasons"]
             )
+            progress = state["progress"]
+            common = {
+                "model": canary_model,
+                "request_schema_sha256": state["request_schema_sha256"],
+                "provider_turns_started": progress["provider_turns_started"],
+                "provider_turns_completed": progress["provider_turns_completed"],
+                "terminal_call_count": progress["terminal_call_count"],
+                "fixture_read": progress["fixture_read_verified"],
+                "semantic_checks": state_semantic_checks,
+                "semantic_failure_reasons": state_semantic_failure_reasons,
+                "progress": progress,
+                "provider_failure": state["provider_failure"],
+            }
             if timeout_hit:
-                cleanup_verified = _terminate_worker(
-                    worker_pid, worker_pgid, cleanup_deadline
-                )
-                failure_class = "timeout"
+                cleanup_verified = _terminate_worker(worker_pid, worker_pgid, cleanup_deadline)
                 attestation = _controller_attestation(
-                    model=canary_model,
+                    **common,
                     status="failed",
-                    request_schema_sha256=state["request_schema_sha256"],
-                    provider_turns_started=state["provider_turns_started"],
-                    provider_turns_completed=state["provider_turns_completed"],
-                    terminal_call_count=state["terminal_call_count"],
-                    fixture_read=state["fixture_read"],
                     source_verified=False,
                     sink_verified=False,
                     language_verified=False,
                     semantic_relation_verified=False,
-                    semantic_checks=state_semantic_checks,
-                    semantic_failure_reasons=state_semantic_failure_reasons,
                     worker_cleanup_verified=cleanup_verified,
-                    failure_class=failure_class,
+                    failure_class="timeout",
                     failure_stage=_failure_stage(
-                        failure_class=failure_class,
-                        provider_turns_started=state["provider_turns_started"],
-                        provider_turns_completed=state["provider_turns_completed"],
-                        terminal_call_count=state["terminal_call_count"],
-                        fixture_read=state["fixture_read"],
+                        failure_class="timeout",
+                        provider_turns_started=progress["provider_turns_started"],
+                        provider_turns_completed=progress["provider_turns_completed"],
+                        terminal_call_count=progress["terminal_call_count"],
+                        fixture_read=progress["fixture_read_verified"],
                     ),
                 )
             else:
-                cleanup_verified = _confirm_worker_cleanup(
-                    worker_pid, worker_pgid, cleanup_deadline
-                )
+                cleanup_verified = _confirm_worker_cleanup(worker_pid, worker_pgid, cleanup_deadline)
                 if worker_lost or worker_attestation is None:
-                    failure_class = (
-                        "worker_lost" if cleanup_verified else "worker_cleanup"
-                    )
+                    failure_class = "worker_lost" if cleanup_verified else "worker_cleanup"
                     attestation = _controller_attestation(
-                        model=canary_model,
+                        **common,
                         status="failed",
-                        request_schema_sha256=state["request_schema_sha256"],
-                        provider_turns_started=state["provider_turns_started"],
-                        provider_turns_completed=state["provider_turns_completed"],
-                        terminal_call_count=state["terminal_call_count"],
-                        fixture_read=state["fixture_read"],
                         source_verified=False,
                         sink_verified=False,
                         language_verified=False,
                         semantic_relation_verified=False,
-                        semantic_checks=state_semantic_checks,
-                        semantic_failure_reasons=state_semantic_failure_reasons,
                         worker_cleanup_verified=cleanup_verified,
                         failure_class=failure_class,
                         failure_stage=_failure_stage(
                             failure_class=failure_class,
-                            provider_turns_started=state["provider_turns_started"],
-                            provider_turns_completed=state["provider_turns_completed"],
-                            terminal_call_count=state["terminal_call_count"],
-                            fixture_read=state["fixture_read"],
+                            provider_turns_started=progress["provider_turns_started"],
+                            provider_turns_completed=progress["provider_turns_completed"],
+                            terminal_call_count=progress["terminal_call_count"],
+                            fixture_read=progress["fixture_read_verified"],
                         ),
                     )
                 else:
+                    inner_state = worker_attestation.get("inner_attestation_state")
+                    inner_progress = worker_attestation.get("progress")
+                    reconciled_progress, monotonic = (
+                        _reconcile_progress(progress, inner_progress)
+                        if isinstance(inner_progress, dict)
+                        else (None, False)
+                    )
                     system_instruction_sha256 = _bounded_sha256(
                         worker_attestation.get("system_instruction_sha256")
                     )
                     request_schema_sha256 = _bounded_sha256(
                         worker_attestation.get("request_schema_sha256")
                     )
-                    section_counts = _parse_section_counts(
-                        worker_attestation.get("section_counts")
-                    )
-                    semantic_checks = _parse_semantic_checks(
-                        state["semantic_checks"]
-                    )
+                    section_counts = _parse_section_counts(worker_attestation.get("section_counts"))
+                    semantic_checks = _parse_semantic_checks(state["semantic_checks"])
                     semantic_failure_reasons = _parse_semantic_failure_reasons(
                         state["semantic_failure_reasons"]
                     )
@@ -863,93 +1130,77 @@ def _run_semantic_canary_controller(
                         and semantic_failure_reasons is not None
                         and section_counts is not None
                     )
-                    safe_semantic_checks = _safe_semantic_checks(semantic_checks)
-                    safe_semantic_failure_reasons = (
-                        _safe_semantic_failure_reasons(semantic_failure_reasons)
-                    )
-                    safe_section_counts = _safe_section_counts(section_counts)
-                    provider_turns_started = _bounded_counter(
-                        worker_attestation.get("provider_turns_started")
-                    )
-                    provider_turns_completed = _bounded_counter(
-                        worker_attestation.get("provider_turns_completed")
-                    )
-                    terminal_call_count = _bounded_counter(
-                        worker_attestation.get("terminal_call_count")
-                    )
-                    fixture_read = worker_attestation.get("fixture_read") is True
-                    source_verified = worker_attestation.get("source_verified") is True
-                    sink_verified = worker_attestation.get("sink_verified") is True
-                    language_verified = worker_attestation.get("language_verified") is True
-                    semantic_relation_verified = (
-                        worker_attestation.get("semantic_relation_verified") is True
-                    )
-                    inner_schema_valid = (
-                        worker_attestation.get("inner_schema_version")
-                        == _INNER_ATTESTATION_SCHEMA_VERSION
-                    )
-                    event_result_consistent = (
-                        provider_turns_started == state["provider_turns_started"]
-                        and provider_turns_completed == state["provider_turns_completed"]
-                        and terminal_call_count == state["terminal_call_count"]
-                        and fixture_read == state["fixture_read"]
-                        and request_schema_sha256 == state["request_schema_sha256"]
+                    provider_failure = _parse_provider_failure(
+                        worker_attestation.get("provider_failure")
                     )
                     if not cleanup_verified:
                         failure_class = "worker_cleanup"
-                    elif not inner_schema_valid:
+                    elif inner_state != "validated" or not monotonic or reconciled_progress is None:
                         failure_class = "internal"
-                    elif worker_attestation.get("status") != "passed":
-                        failure_class = _bounded_failure_class(
-                            worker_attestation.get("failure_class")
-                        )
                     elif (
                         system_instruction_sha256 is None
                         or request_schema_sha256 is None
-                        or not event_result_consistent
+                        or request_schema_sha256 != state["request_schema_sha256"]
+                        or (
+                            provider_failure != state["provider_failure"]
+                            and not (
+                                state["provider_failure"] is None
+                                and provider_failure is not None
+                                and progress["provider_turns_started"] == 0
+                            )
+                        )
                     ):
+                        failure_class = "internal"
+                    elif worker_attestation.get("status") != "passed":
+                        failure_class = _bounded_failure_class(worker_attestation.get("failure_class"))
+                    elif provider_failure is not None:
                         failure_class = "internal"
                     else:
                         failure_class = _canonical_success_failure(
-                            provider_turns_started=provider_turns_started,
-                            provider_turns_completed=provider_turns_completed,
-                            terminal_call_count=terminal_call_count,
-                            fixture_read=fixture_read,
-                            source_verified=source_verified,
-                            sink_verified=sink_verified,
-                            language_verified=language_verified,
-                            semantic_relation_verified=semantic_relation_verified,
+                            provider_turns_started=reconciled_progress["provider_turns_started"],
+                            provider_turns_completed=reconciled_progress["provider_turns_completed"],
+                            terminal_call_count=reconciled_progress["terminal_call_count"],
+                            fixture_read=reconciled_progress["fixture_read_verified"],
+                            source_verified=worker_attestation.get("source_verified") is True,
+                            sink_verified=worker_attestation.get("sink_verified") is True,
+                            language_verified=worker_attestation.get("language_verified") is True,
+                            semantic_relation_verified=worker_attestation.get("semantic_relation_verified") is True,
                             diagnostics_valid=diagnostics_valid,
-                            semantic_checks=safe_semantic_checks,
-                            semantic_failure_reasons=safe_semantic_failure_reasons,
+                            semantic_checks=state_semantic_checks,
+                            semantic_failure_reasons=state_semantic_failure_reasons,
                         )
+                    output_progress = reconciled_progress or progress
+                    output_failure = (
+                        state["provider_failure"] or provider_failure
+                        if failure_class != "internal" else None
+                    )
                     attestation = _controller_attestation(
-                        model=canary_model,
+                        **(common | {
+                            "request_schema_sha256": request_schema_sha256,
+                            "provider_turns_started": output_progress["provider_turns_started"],
+                            "provider_turns_completed": output_progress["provider_turns_completed"],
+                            "terminal_call_count": output_progress["terminal_call_count"],
+                            "fixture_read": output_progress["fixture_read_verified"],
+                            "progress": output_progress,
+                            "provider_failure": output_failure,
+                        }),
                         status="passed" if failure_class is None else "failed",
                         system_instruction_sha256=system_instruction_sha256,
-                        request_schema_sha256=request_schema_sha256,
-                        provider_turns_started=provider_turns_started,
-                        provider_turns_completed=provider_turns_completed,
-                        terminal_call_count=terminal_call_count,
-                        fixture_read=fixture_read,
-                        source_verified=source_verified,
-                        sink_verified=sink_verified,
-                        language_verified=language_verified,
-                        semantic_relation_verified=semantic_relation_verified,
-                        semantic_checks=safe_semantic_checks,
-                        semantic_failure_reasons=safe_semantic_failure_reasons,
-                        section_counts=safe_section_counts,
+                        source_verified=worker_attestation.get("source_verified") is True,
+                        sink_verified=worker_attestation.get("sink_verified") is True,
+                        language_verified=worker_attestation.get("language_verified") is True,
+                        semantic_relation_verified=worker_attestation.get("semantic_relation_verified") is True,
+                        section_counts=section_counts,
                         worker_cleanup_verified=cleanup_verified,
+                        inner_attestation_state=inner_state,
                         failure_class=failure_class,
                         failure_stage=(
-                            None
-                            if failure_class is None
-                            else _failure_stage(
+                            None if failure_class is None else _failure_stage(
                                 failure_class=failure_class,
-                                provider_turns_started=provider_turns_started,
-                                provider_turns_completed=provider_turns_completed,
-                                terminal_call_count=terminal_call_count,
-                                fixture_read=fixture_read,
+                                provider_turns_started=output_progress["provider_turns_started"],
+                                provider_turns_completed=output_progress["provider_turns_completed"],
+                                terminal_call_count=output_progress["terminal_call_count"],
+                                fixture_read=output_progress["fixture_read_verified"],
                             )
                         ),
                     )
@@ -996,7 +1247,6 @@ def failed_semantic_canary_cli_result(model_name: str, failure_class: str):
             ),
         ),
     )
-
 
 def run_semantic_canary_controller(model: ModelConfig):
     """Run the canonical canary in a process that owns its hard deadline."""

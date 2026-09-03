@@ -180,7 +180,7 @@ def _passing_canary_attestation() -> dict:
     )
 
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "passed",
         "provider": "gemini",
         "model": "gemini-2.5-flash",
@@ -189,6 +189,12 @@ def _passing_canary_attestation() -> dict:
         "request_schema_sha256": "b" * 64,
         "provider_turns_started": 2,
         "provider_turns_completed": 2,
+        "provider_turns_failed": 0,
+        "tool_calls_dispatched": 2,
+        "tool_calls_completed": 2,
+        "fixture_read_calls_dispatched": 1,
+        "fixture_read_calls_completed": 1,
+        "fixture_read_verified": True,
         "terminal_call_count": 1,
         "fixture_read": True,
         "source_verified": True,
@@ -199,6 +205,9 @@ def _passing_canary_attestation() -> dict:
         "semantic_failure_reasons": [],
         "section_counts": {key: 0 for key in SECTION_COUNT_KEYS},
         "worker_cleanup_verified": True,
+        "provider_turn_count": 2,
+        "inner_attestation_state": "validated",
+        "provider_failure": None,
     }
 
 
@@ -213,11 +222,204 @@ def _isolated_environment(root: Path) -> dict[str, str]:
     }
 
 
+def _write_dispatcher_trace(environment: dict[str, str]) -> None:
+    trace_path = Path(environment["RAPTOR_QUALIFICATION_DISPATCHER_TRACE"])
+    records = [
+        {
+            "request_ordinal": ordinal,
+            "provider": "gemini",
+            "token_accepted": True,
+            "request_received": True,
+            "upstream_started": True,
+            "upstream_status_code": 200,
+            "response_headers_started": True,
+            "response_stream_completed": True,
+            "exception_type": None,
+        }
+        for ordinal in (1, 2)
+    ]
+    trace_path.write_text(
+        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    trace_path.chmod(0o600)
+
+
+
+
+def test_dispatcher_trace_is_hashed_bounded_and_deleted(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    trace_path = root / "dispatcher-trace.jsonl"
+    environment = {"RAPTOR_QUALIFICATION_DISPATCHER_TRACE": str(trace_path)}
+    _write_dispatcher_trace(environment)
+
+    from qualification.controller import _consume_dispatcher_trace
+
+    record = _consume_dispatcher_trace(trace_path)
+
+    assert record["dispatcher_trace_complete"] is True
+    assert record["dispatcher_request_count"] == 2
+    assert len(record["dispatcher_requests"]) == 2
+    assert record["dispatcher_trace_sha256"] is not None
+    assert not trace_path.exists()
+def test_empty_dispatcher_trace_is_complete_and_deleted(tmp_path: Path) -> None:
+    trace_path = tmp_path / "dispatcher-trace.jsonl"
+    trace_path.write_bytes(b"")
+    trace_path.chmod(0o600)
+
+    from qualification.controller import _consume_dispatcher_trace
+
+    record = _consume_dispatcher_trace(trace_path)
+
+    assert record["dispatcher_trace_complete"] is True
+    assert record["dispatcher_request_count"] == 0
+    assert record["dispatcher_requests"] == []
+    assert record["dispatcher_trace_sha256"] is not None
+    assert not trace_path.exists()
+
+
+@pytest.mark.parametrize("contents", (b"not-json\n", b"x" * 2_051))
+def test_dispatcher_trace_fails_closed_and_deletes_invalid_raw(
+    tmp_path: Path, contents: bytes,
+) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    trace_path = root / "dispatcher-trace.jsonl"
+    trace_path.write_bytes(contents)
+    trace_path.chmod(0o600)
+
+    from qualification.controller import _consume_dispatcher_trace
+
+    record = _consume_dispatcher_trace(trace_path)
+
+    assert record["dispatcher_trace_complete"] is False
+    assert record["dispatcher_request_count"] == 0
+    assert record["dispatcher_requests"] == []
+    assert not trace_path.exists()
+
+
+def test_dispatcher_trace_overflow_fails_closed_and_is_deleted(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    trace_path = root / "dispatcher-trace.jsonl"
+    _write_dispatcher_trace({"RAPTOR_QUALIFICATION_DISPATCHER_TRACE": str(trace_path)})
+    overflow_path = Path(f"{trace_path}.overflow")
+    overflow_path.write_text("overflow\n", encoding="ascii")
+    overflow_path.chmod(0o600)
+
+    from qualification.controller import _consume_dispatcher_trace
+
+    record = _consume_dispatcher_trace(trace_path)
+
+    assert record["dispatcher_trace_complete"] is False
+    assert not trace_path.exists()
+    assert not overflow_path.exists()
+
+def test_complete_upstream_error_trace_is_retained_and_refined(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    trace_path = root / "dispatcher-trace.jsonl"
+    record = {
+        "request_ordinal": 1,
+        "provider": "gemini",
+        "token_accepted": True,
+        "request_received": True,
+        "upstream_started": True,
+        "upstream_status_code": 429,
+        "response_headers_started": True,
+        "response_stream_completed": True,
+        "exception_type": None,
+    }
+    trace_path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+    trace_path.chmod(0o600)
+
+    from qualification.controller import _consume_dispatcher_trace, _reconcile_provider_failure
+
+    trace = _consume_dispatcher_trace(trace_path)
+    assert trace["dispatcher_trace_complete"] is True
+    assert trace["dispatcher_requests"] == [record]
+    failure = _reconcile_provider_failure(None, trace["dispatcher_requests"])
+    assert failure is not None
+    assert failure["origin"] == "upstream_http"
+    assert failure["category"] == "quota"
+    assert failure["http_status_code"] == 429
+
+
+def test_connection_reset_precedes_generic_connection_classification() -> None:
+    from qualification.controller import _exception_failure_category
+
+    assert _exception_failure_category("ConnectionResetError") == ("connection_reset", True)
+def test_structured_sdk_schema_refines_upstream_400_failure() -> None:
+    request = {
+        "request_ordinal": 1,
+        "provider": "gemini",
+        "token_accepted": True,
+        "request_received": True,
+        "upstream_started": True,
+        "upstream_status_code": 400,
+        "response_headers_started": True,
+        "response_stream_completed": True,
+        "exception_type": None,
+    }
+    from qualification.controller import (
+        _bounded_provider_failure,
+        _canonical_provider_failure,
+        _reconcile_provider_failure,
+    )
+
+    sdk_failure = _canonical_provider_failure(
+        origin="upstream_http",
+        category="schema",
+        turn_ordinal=1,
+        http_status_code=400,
+        exception_type="InvalidArgument",
+        retryable=False,
+    )
+    failure = _reconcile_provider_failure(sdk_failure, [request])
+    assert failure is not None
+    assert failure["origin"] == "upstream_http"
+    assert failure["category"] == "schema"
+    assert failure["http_status_code"] == 400
+    assert failure["exception_type"] == "InvalidArgument"
+    assert _bounded_provider_failure(failure) == failure
+def test_current_pass_requires_exact_trace_and_progress_agreement(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    trace_path = root / "dispatcher-trace.jsonl"
+    environment = {"RAPTOR_QUALIFICATION_DISPATCHER_TRACE": str(trace_path)}
+    _write_dispatcher_trace(environment)
+
+    from qualification.controller import _consume_dispatcher_trace, _dispatcher_trace_current_pass
+
+    trace = _consume_dispatcher_trace(trace_path)
+    attestation = _passing_canary_attestation()
+    assert _dispatcher_trace_current_pass(trace, attestation) is True
+    attestation["provider_turns_completed"] = 1
+    assert _dispatcher_trace_current_pass(trace, attestation) is False
+
+
+def test_historical_contract_versions_are_recognized_without_upgrade() -> None:
+    from qualification.controller import (
+        _is_historical_process_attestation,
+        _is_historical_qualification_record,
+    )
+
+    process_v3 = {"schema_version": 3, "legacy": "preserved"}
+    process_v4 = {"schema_version": 4, "legacy": "preserved"}
+    record_v1 = {"schema_version": 1, "legacy": "preserved"}
+    record_v2 = {"schema_version": 2, "legacy": "preserved"}
+    assert _is_historical_process_attestation(process_v3) is True
+    assert _is_historical_process_attestation(process_v4) is True
+    assert _is_historical_qualification_record(record_v1) is True
+    assert _is_historical_qualification_record(record_v2) is True
+    assert set(process_v3) == {"schema_version", "legacy"}
+    assert set(record_v1) == {"schema_version", "legacy"}
 def test_qualification_canary_contract_matches_inner_protocol() -> None:
     from packages.code_understanding import semantic_canary
     from qualification import controller as qualification_controller
 
-    assert qualification_controller._CANARY_OUTER_SCHEMA_VERSION == 4
+    assert qualification_controller._CANARY_OUTER_SCHEMA_VERSION == 5
     assert (
         qualification_controller._CANARY_SECTION_COUNT_KEYS
         == semantic_canary.SECTION_COUNT_KEYS
@@ -466,7 +668,8 @@ def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
     })
 
     def fake_run_json(argv, *, env, timeout):
-        del env, timeout
+        del timeout
+        _write_dispatcher_trace(env)
         calls.append(list(argv))
         return (
             ProcessCapture(
@@ -485,7 +688,7 @@ def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
     assert record["status"] == "passed"
     assert record["exactly_one_valid_submit_context_map"] is True
     assert set(record["attestation"]) == set(_passing_canary_attestation())
-    assert record["attestation"]["schema_version"] == 4
+    assert record["attestation"]["schema_version"] == 5
     assert all(record["attestation"]["semantic_checks"].values())
     assert record["attestation"]["semantic_failure_reasons"] == []
     assert "fixture_sha256" not in record["attestation"]
@@ -498,7 +701,40 @@ def test_canary_controller_retains_only_bounded_attestation_and_refuses_retry(
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("schema_version", (3, 5))
+def test_canary_launcher_receives_only_private_dispatcher_trace_path(
+    tmp_path, monkeypatch,
+):
+    repo = _clean_git_repo(tmp_path / "repo-trace-launch")
+    controller = QualificationController(
+        repo_root=repo,
+        candidate_python=Path(sys.executable),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_candidate_runtime_preflight",
+        lambda _environment: _passing_candidate_runtime(),
+    )
+    monkeypatch.setattr(controller, "_direct_qualification_gate", lambda _identity: True)
+    captured: dict[str, str] = {}
+
+    def fake_run_json(argv, *, env, timeout):
+        del argv, timeout
+        trace = env["RAPTOR_QUALIFICATION_DISPATCHER_TRACE"]
+        trace_path = Path(trace)
+        assert trace_path.parent.stat().st_mode & 0o777 == 0o700
+        assert trace_path.parent.stat().st_uid == os.getuid()
+        assert not trace_path.is_symlink()
+        captured["trace"] = trace
+        _write_dispatcher_trace(env)
+        return ProcessCapture(0, False, "a" * 64, "b" * 64), _passing_canary_attestation()
+
+    monkeypatch.setattr(controller, "_run_bounded_json", fake_run_json)
+
+    controller.run_canary()
+
+    assert captured
+@pytest.mark.parametrize("schema_version", (4, 6))
+
 def test_canary_controller_rejects_stale_or_future_outer_schema(
     tmp_path, monkeypatch, schema_version
 ):
@@ -513,14 +749,12 @@ def test_canary_controller_rejects_stale_or_future_outer_schema(
     attestation = _passing_canary_attestation()
     attestation["schema_version"] = schema_version
 
-    monkeypatch.setattr(
-        controller,
-        "_run_bounded_json",
-        lambda *args, **kwargs: (
-            ProcessCapture(0, False, "a" * 64, "b" * 64),
-            attestation,
-        ),
-    )
+    def fake_stale_run(*args, **kwargs):
+        del args
+        _write_dispatcher_trace(kwargs["env"])
+        return ProcessCapture(0, False, "a" * 64, "b" * 64), attestation
+
+    monkeypatch.setattr(controller, "_run_bounded_json", fake_stale_run)
 
     record = controller.run_canary()
 
@@ -551,14 +785,12 @@ def test_canary_controller_keeps_allowlisted_failed_diagnostics(tmp_path, monkey
         "untrusted_extra": "must-not-persist",
     })
 
-    monkeypatch.setattr(
-        controller,
-        "_run_bounded_json",
-        lambda *args, **kwargs: (
-            ProcessCapture(1, False, "a" * 64, "b" * 64),
-            attestation,
-        ),
-    )
+    def fake_failed_run(*args, **kwargs):
+        del args
+        _write_dispatcher_trace(kwargs["env"])
+        return ProcessCapture(1, False, "a" * 64, "b" * 64), attestation
+
+    monkeypatch.setattr(controller, "_run_bounded_json", fake_failed_run)
 
     record = controller.run_canary()
 

@@ -11,7 +11,9 @@ pytest.importorskip("google.genai")
 from google.genai import types
 
 from core.llm.config import ModelConfig
-from core.llm.providers import GeminiProvider, LLMResponse
+from core.llm.providers import GeminiProvider, LLMResponse, ProviderEmptyResponseError
+
+
 from core.llm.tool_use import (
     Message,
     StopReason,
@@ -84,6 +86,14 @@ def _wire_config(config: dict) -> dict:
         exclude_none=True,
     )
 
+
+def test_turn_empty_json_response_raises_stable_provider_error() -> None:
+    provider, _ = _provider_with_response("")
+
+    with pytest.raises(ProviderEmptyResponseError) as exc_info:
+        provider.turn(messages=[_user("hi")], tools=[_echo_tool()])
+
+    assert type(exc_info.value) is ProviderEmptyResponseError
 
 # ---------------------------------------------------------------------------
 # Capability flags
@@ -385,6 +395,7 @@ def test_direct_client_uses_model_timeout_in_milliseconds(monkeypatch, caplog) -
 
     assert captured["api_key"] == secret
     assert captured["http_options"].timeout == 1234
+    assert captured["http_options"].retry_options.attempts == 1
     assert secret not in caplog.text
 
 
@@ -426,6 +437,7 @@ def test_dispatcher_client_preserves_isolated_transport_and_timeout(monkeypatch)
     assert client_kwargs["http_options"].base_url == "http://_/gemini"
     assert client_kwargs["http_options"].httpx_client is custom_client
     assert client_kwargs["http_options"].timeout == 1234
+    assert client_kwargs["http_options"].retry_options.attempts == 1
 
 
 def test_dispatcher_factory_passes_timeout_to_custom_httpx_client(monkeypatch) -> None:

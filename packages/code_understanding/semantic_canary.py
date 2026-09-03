@@ -13,11 +13,14 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
+
 from core.llm.config import ModelConfig
 from core.llm.providers import (
     GeminiProvider,
     LocalToolSchemaDependencyMissing,
     LocalToolSchemaInvalid,
+    ProviderEmptyResponseError,
     create_provider,
 )
 from core.llm.tool_use import (
@@ -42,7 +45,9 @@ _MAX_COST_USD = 0.05
 _MAX_SECONDS = 30.0
 _TOOL_TIMEOUT_S = 5.0
 _ATTESTATION_ID_MAX_CHARS = 128
-_ATTESTATION_SCHEMA_VERSION = 3
+_ATTESTATION_SCHEMA_VERSION = 4
+_MAX_CANARY_TOOL_CALLS = 2
+_MAX_TERMINAL_CALLS = _MAX_CANARY_TOOL_CALLS
 _MAX_ATTESTATION_SECTION_COUNT = 1_024
 _MAX_SEMANTIC_FAILURE_REASONS = 16
 _QUALIFICATION_MODEL = "gemini-2.5-flash"
@@ -122,6 +127,84 @@ class SemanticCanaryResult:
     success: bool
     attestation: dict[str, Any]
 
+class _CanaryProgressViolation(RuntimeError):
+    """A lifecycle transition exceeded the bounded canary protocol."""
+
+
+@dataclass
+class _CanaryProgress:
+    provider_turns_started: int = 0
+    provider_turns_completed: int = 0
+    provider_turns_failed: int = 0
+    tool_calls_dispatched: int = 0
+    tool_calls_completed: int = 0
+    fixture_read_calls_dispatched: int = 0
+    fixture_read_calls_completed: int = 0
+    fixture_read_verified: bool = False
+    terminal_call_count: int = 0
+
+    def provider_started(self) -> None:
+        if self.provider_turns_started >= _MAX_ITERATIONS:
+            raise _CanaryProgressViolation(
+                "semantic canary progress exceeded provider-turn cap"
+            )
+        self.provider_turns_started += 1
+
+    def provider_completed(self) -> None:
+        if (
+            self.provider_turns_completed + self.provider_turns_failed
+            >= self.provider_turns_started
+        ):
+            raise _CanaryProgressViolation(
+                "semantic canary completed an unstarted provider turn"
+            )
+        self.provider_turns_completed += 1
+
+    def provider_failed(self) -> None:
+        if (
+            self.provider_turns_completed + self.provider_turns_failed
+            >= self.provider_turns_started
+        ):
+            raise _CanaryProgressViolation(
+                "semantic canary failed an unstarted provider turn"
+            )
+        self.provider_turns_failed += 1
+
+    def tool_dispatched(self) -> None:
+        if self.tool_calls_dispatched >= _MAX_CANARY_TOOL_CALLS:
+            raise _CanaryProgressViolation(
+                "semantic canary progress exceeded tool-call cap"
+            )
+        self.tool_calls_dispatched += 1
+
+    def tool_completed(self) -> None:
+        if self.tool_calls_completed >= self.tool_calls_dispatched:
+            raise _CanaryProgressViolation(
+                "semantic canary completed an undispatched tool call"
+            )
+        self.tool_calls_completed += 1
+
+    def fixture_read_dispatched(self) -> None:
+        if self.fixture_read_calls_dispatched >= 1:
+            raise _CanaryProgressViolation(
+                "semantic canary dispatched duplicate fixture read"
+            )
+        self.fixture_read_calls_dispatched += 1
+
+    def fixture_read_completed(self) -> None:
+        if self.fixture_read_calls_completed >= self.fixture_read_calls_dispatched:
+            raise _CanaryProgressViolation(
+                "semantic canary completed an undispatched fixture read"
+            )
+        self.fixture_read_calls_completed += 1
+
+    def terminal_dispatched(self) -> None:
+        if self.terminal_call_count >= 1:
+            raise _CanaryProgressViolation(
+                "semantic canary dispatched duplicate terminal call"
+            )
+        self.terminal_call_count += 1
+
 
 class _CountingCanaryProvider:
     """Count turns without replaying a transport request."""
@@ -132,11 +215,14 @@ class _CountingCanaryProvider:
         *,
         lifecycle_events: Callable[..., None] | None = None,
         request_schema_sha256: str = "",
+        progress: _CanaryProgress | None = None,
     ) -> None:
         self._provider = provider
         self.turn_count = 0
         self._lifecycle_events = lifecycle_events
         self._request_schema_sha256 = request_schema_sha256
+        self._progress = progress if progress is not None else _CanaryProgress()
+        self.provider_failure: dict[str, Any] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._provider, name)
@@ -161,6 +247,7 @@ class _CountingCanaryProvider:
         # GeminiProvider derives response_json_schema from these exact ToolDefs.
         self._validate_turn_contract(args, kwargs)
         self.turn_count += 1
+        self._progress.provider_started()
         if self._lifecycle_events is not None:
             metadata = (
                 {"request_schema_sha256": self._request_schema_sha256}
@@ -168,7 +255,19 @@ class _CountingCanaryProvider:
                 else {}
             )
             self._lifecycle_events("provider_turn_started", **metadata)
-        result = self._provider.turn(*args, **kwargs)
+        try:
+            result = self._provider.turn(*args, **kwargs)
+        except Exception as exc:
+            self._progress.provider_failed()
+            self.provider_failure = _classify_provider_failure(
+                exc, turn_ordinal=self.turn_count
+            )
+            if self._lifecycle_events is not None:
+                self._lifecycle_events(
+                    "provider_turn_failed", provider_failure=self.provider_failure
+                )
+            raise
+        self._progress.provider_completed()
         if self._lifecycle_events is not None:
             self._lifecycle_events("provider_turn_completed")
         return result
@@ -541,6 +640,117 @@ def _bounded_semantic_failure_reasons(value: Any) -> list[str]:
     )[:_MAX_SEMANTIC_FAILURE_REASONS]
 
 
+def _failure_fingerprint(fields: dict[str, Any]) -> str:
+    encoded = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _exception_attribute(exc: Exception, name: str) -> Any:
+    try:
+        return getattr(exc, name, None)
+    except Exception:
+        return None
+
+
+def _stable_http_status(exc: Exception) -> int | None:
+    """Read only documented status fields without traversing exception details."""
+    response = _exception_attribute(exc, "response")
+    for value in (
+        _exception_attribute(exc, "status_code"),
+        _exception_attribute(exc, "code"),
+        _exception_attribute(response, "status_code") if response is not None else None,
+    ):
+        if type(value) is int and 100 <= value <= 599:
+            return value
+    return None
+
+
+def _is_google_invalid_argument(exc: Exception) -> bool:
+    return any(
+        isinstance(value, str) and value == "INVALID_ARGUMENT"
+        for value in (
+            _exception_attribute(exc, "status"),
+            _exception_attribute(exc, "error_code"),
+        )
+    )
+
+
+def _exception_basename(exc: Exception) -> str:
+    name = type(exc).__name__.rsplit(".", 1)[-1]
+    return name[:_ATTESTATION_ID_MAX_CHARS] if name.isidentifier() else "Exception"
+
+
+def _classify_provider_failure(exc: Exception, *, turn_ordinal: int) -> dict[str, Any]:
+    """Classify provider failures without retaining exception message content."""
+    origin = "unknown"
+    category = "transport_unknown"
+    status: int | None = None
+    retryable = False
+
+    if isinstance(exc, LocalToolSchemaDependencyMissing):
+        origin, category = "local_request_build", "schema"
+    elif isinstance(exc, LocalToolSchemaInvalid):
+        origin, category = "local_request_build", "schema"
+    elif isinstance(exc, ConnectionRefusedError):
+        origin, category = "worker_uds_connect", "connection_refused"
+    elif isinstance(exc, ConnectionResetError):
+        origin, category = "worker_uds_connect", "connection_reset"
+    elif isinstance(exc, httpx.ConnectTimeout):
+        origin, category = "worker_uds_connect", "timeout"
+    elif isinstance(exc, httpx.ConnectError):
+        origin, category = "worker_uds_connect", "connection_refused"
+    elif isinstance(exc, httpx.ReadTimeout):
+        origin, category = "dispatcher_response_stream", "timeout"
+    elif isinstance(exc, (httpx.WriteTimeout, httpx.PoolTimeout)):
+        origin, category = "dispatcher_upstream_connect", "timeout"
+    elif isinstance(exc, (httpx.ReadError, httpx.WriteError)):
+        origin, category = "dispatcher_response_stream", "connection_reset"
+    elif isinstance(exc, (httpx.RemoteProtocolError, httpx.LocalProtocolError)):
+        origin, category = "dispatcher_response_stream", "protocol"
+    elif isinstance(exc, (httpx.DecodingError, json.JSONDecodeError)):
+        origin, category = "sdk_response_decode", "response_decode"
+    elif isinstance(exc, ProviderEmptyResponseError):
+        origin, category = "provider_empty_response", "empty_response"
+    else:
+        status = _stable_http_status(exc)
+        if status is not None or _is_google_invalid_argument(exc):
+            origin = "upstream_http"
+            if _is_google_invalid_argument(exc):
+                category = "schema"
+            elif status in (401, 403):
+                category = "auth"
+            elif status == 429:
+                category, retryable = "quota", True
+            elif status is not None and 500 <= status <= 599:
+                category, retryable = "upstream_5xx", True
+            elif status is not None:
+                category = "upstream_4xx"
+
+    fields = {
+        "origin": origin,
+        "category": category,
+        "turn_ordinal": turn_ordinal if type(turn_ordinal) is int and 1 <= turn_ordinal <= _MAX_ITERATIONS else 1,
+        "http_status_code": status,
+        "exception_type": _exception_basename(exc),
+        "retryable": retryable,
+    }
+    return {**fields, "failure_fingerprint_sha256": _failure_fingerprint(fields)}
+
+
+def _normalise_provider_failure(exc: Exception) -> str:
+    """Return the legacy failure class for existing callers."""
+    if isinstance(exc, _CanaryProgressViolation):
+        return "terminal_contract"
+    if isinstance(exc, LocalToolSchemaDependencyMissing):
+        return "local_dependency_missing"
+    if isinstance(exc, LocalToolSchemaInvalid):
+        return "local_schema_invalid"
+    category = _classify_provider_failure(exc, turn_ordinal=1)["category"]
+    return category if isinstance(category, str) and category in {"auth", "quota", "schema", "timeout"} else (
+        category if category.startswith("local_") else "transport"
+    )
+
+
 def _attestation(
     *,
     model: ModelConfig,
@@ -556,8 +766,16 @@ def _attestation(
     semantic_checks: dict[str, bool],
     semantic_failure_reasons: list[str],
     section_counts: dict[str, int],
+    progress: _CanaryProgress | None = None,
+    provider_failure: dict[str, Any] | None = None,
     failure_class: str | None = None,
 ) -> dict[str, Any]:
+    state = progress or _CanaryProgress(
+        provider_turns_started=min(_MAX_ITERATIONS, max(0, provider_turn_count)),
+        provider_turns_completed=min(_MAX_ITERATIONS, max(0, provider_turn_count)),
+        fixture_read_verified=fixture_read,
+        terminal_call_count=min(_MAX_TERMINAL_CALLS, max(0, terminal_call_count)),
+    )
     attestation: dict[str, Any] = {
         "schema_version": _ATTESTATION_SCHEMA_VERSION,
         "status": "failed" if failure_class else "passed",
@@ -567,18 +785,25 @@ def _attestation(
         "sdk_version": _bounded_attestation_identity(_google_genai_sdk_version()),
         "system_instruction_sha256": _system_instruction_sha256(),
         "request_schema_sha256": request_schema_sha256,
-        "terminal_call_count": terminal_call_count,
-        "provider_turn_count": provider_turn_count,
+        "provider_turns_started": state.provider_turns_started,
+        "provider_turns_completed": state.provider_turns_completed,
+        "provider_turns_failed": state.provider_turns_failed,
+        "tool_calls_dispatched": state.tool_calls_dispatched,
+        "tool_calls_completed": state.tool_calls_completed,
+        "fixture_read_calls_dispatched": state.fixture_read_calls_dispatched,
+        "fixture_read_calls_completed": state.fixture_read_calls_completed,
+        "fixture_read_verified": state.fixture_read_verified,
+        "terminal_call_count": state.terminal_call_count,
+        "provider_turn_count": state.provider_turns_started,
         "fixture_read": fixture_read,
         "language_verified": language_verified,
         "source_verified": source_verified,
         "sink_verified": sink_verified,
         "semantic_relation_verified": semantic_relation_verified,
         "semantic_checks": _bounded_semantic_checks(semantic_checks),
-        "semantic_failure_reasons": _bounded_semantic_failure_reasons(
-            semantic_failure_reasons
-        ),
+        "semantic_failure_reasons": _bounded_semantic_failure_reasons(semantic_failure_reasons),
         "section_counts": section_counts,
+        "provider_failure": provider_failure,
     }
     if failure_class:
         attestation["failure_class"] = failure_class
@@ -600,6 +825,8 @@ def _failed_result(
     semantic_checks: dict[str, bool] | None = None,
     semantic_failure_reasons: list[str] | None = None,
     section_counts: dict[str, int] | None = None,
+    progress: _CanaryProgress | None = None,
+    provider_failure: dict[str, Any] | None = None,
     failure_class: str,
 ) -> SemanticCanaryResult:
     return SemanticCanaryResult(
@@ -615,39 +842,14 @@ def _failed_result(
             source_verified=source_verified,
             sink_verified=sink_verified,
             semantic_relation_verified=semantic_relation_verified,
-            semantic_checks=(
-                _default_semantic_checks()
-                if semantic_checks is None
-                else semantic_checks
-            ),
-            semantic_failure_reasons=(
-                [] if semantic_failure_reasons is None else semantic_failure_reasons
-            ),
-            section_counts=(
-                _section_counts(None) if section_counts is None else section_counts
-            ),
+            semantic_checks=_default_semantic_checks() if semantic_checks is None else semantic_checks,
+            semantic_failure_reasons=[] if semantic_failure_reasons is None else semantic_failure_reasons,
+            section_counts=_section_counts(None) if section_counts is None else section_counts,
+            progress=progress,
+            provider_failure=provider_failure,
             failure_class=failure_class,
         ),
     )
-def _normalise_provider_failure(exc: Exception) -> str:
-    """Classify failures without retaining provider content or headers."""
-    if isinstance(exc, LocalToolSchemaDependencyMissing):
-        return "local_dependency_missing"
-    if isinstance(exc, LocalToolSchemaInvalid):
-        return "local_schema_invalid"
-    name = type(exc).__name__.casefold()
-    text = str(exc).casefold()[:512]
-    if "429" in text or "quota" in text or "rate limit" in text:
-        return "quota"
-    if "401" in text or "403" in text or "auth" in text or "permission" in text:
-        return "auth"
-    if "400" in text and ("schema" in text or "json" in text or "field" in text):
-        return "schema"
-    if "schema" in name or "schema" in text:
-        return "schema"
-    if "timeout" in name or "timeout" in text:
-        return "timeout"
-    return "transport"
 
 
 def resolve_semantic_canary_model(model_name: str) -> ModelConfig:
@@ -668,7 +870,7 @@ def resolve_semantic_canary_model(model_name: str) -> ModelConfig:
 def run_semantic_canary(
     model: ModelConfig,
     *,
-    provider_factory: Any = create_provider,
+    provider_factory: Any | None = None,
     fixture_root: Path | None = None,
     lifecycle_events: Callable[..., None] | None = None,
 ) -> SemanticCanaryResult:
@@ -682,6 +884,9 @@ def run_semantic_canary(
             failure_class="invalid_model",
         )
 
+    production_provider_factory = provider_factory is None
+    provider_factory = create_provider if provider_factory is None else provider_factory
+    progress = _CanaryProgress()
     directory_context = (
         tempfile.TemporaryDirectory(prefix="raptor-semantic-canary-")
         if fixture_root is None
@@ -699,58 +904,72 @@ def run_semantic_canary(
             context_map_schema=canary_schema,
         )
         request_schema_sha256 = _request_schema_sha256(tools)
-        terminal_calls = 0
         fixture_read_call_ids: list[str] = []
         successful_fixture_read_call_ids: set[str] = set()
         tool_handler_error = False
         invalid_fixture_read = False
 
         def events(event: Any) -> None:
-            nonlocal terminal_calls, tool_handler_error, invalid_fixture_read
+            nonlocal tool_handler_error, invalid_fixture_read
             if isinstance(event, ToolCallDispatched):
+                progress.tool_dispatched()
+                fixture_read_call = (
+                    event.call.name == "read_file"
+                    and event.call.input.get("path") == fixture_path
+                )
                 if lifecycle_events is not None:
-                    lifecycle_events("tool_call_dispatched")
+                    lifecycle_events("tool_call_dispatched", fixture_read_call=fixture_read_call)
                 if event.call.name == "submit_context_map":
-                    terminal_calls += 1
+                    progress.terminal_dispatched()
                     if lifecycle_events is not None:
                         lifecycle_events("terminal_call_dispatched")
                 elif event.call.name == "read_file":
                     if event.call.input.get("path") == fixture_path:
                         fixture_read_call_ids.append(event.call.id)
+                        progress.fixture_read_dispatched()
                     else:
                         invalid_fixture_read = True
             elif isinstance(event, ToolCallReturned):
-                fixture_read_completed = False
+                progress.tool_completed()
+                fixture_read_call = event.call_id in fixture_read_call_ids
+                fixture_read_verified = False
                 if event.result.is_error:
                     tool_handler_error = True
-                if (
-                    event.call_id in fixture_read_call_ids
-                    and _matches_fixture_read_result(
-                        event.result,
-                        fixture_path,
-                        fixture.content,
-                    )
-                ):
-                    successful_fixture_read_call_ids.add(event.call_id)
-                    fixture_read_completed = True
+                if fixture_read_call:
+                    progress.fixture_read_completed()
+                    if _matches_fixture_read_result(
+                        event.result, fixture_path, fixture.content
+                    ):
+                        successful_fixture_read_call_ids.add(event.call_id)
+                        progress.fixture_read_verified = True
+                        fixture_read_verified = True
                 if lifecycle_events is not None:
                     lifecycle_events(
                         "tool_call_completed",
-                        fixture_read=fixture_read_completed,
+                        fixture_read_call=fixture_read_call,
+                        fixture_read_verified=fixture_read_verified,
                     )
 
         try:
+            raw_provider = provider_factory(model)
+            if production_provider_factory and not isinstance(raw_provider, GeminiProvider):
+                raise TypeError("semantic canary provider factory did not produce GeminiProvider")
             provider = _CountingCanaryProvider(
-                provider_factory(model),
+                raw_provider,
                 lifecycle_events=lifecycle_events,
                 request_schema_sha256=request_schema_sha256,
+                progress=progress,
             )
         except Exception as exc:
+            provider_failure = _classify_provider_failure(exc, turn_ordinal=1)
+            failure_class = _normalise_provider_failure(exc)
             return _failed_result(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                failure_class="provider_init" if _normalise_provider_failure(exc) == "transport" else _normalise_provider_failure(exc),
+                progress=progress,
+                provider_failure=provider_failure,
+                failure_class=("provider_init" if failure_class == "transport" else failure_class),
             )
 
         try:
@@ -780,17 +999,21 @@ def run_semantic_canary(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                terminal_call_count=terminal_calls,
-                provider_turn_count=provider.turn_count,
+                progress=progress,
+                fixture_read=progress.fixture_read_verified,
                 failure_class="cost_limit",
             )
         except Exception as exc:
+            provider_failure = provider.provider_failure or _classify_provider_failure(
+                exc, turn_ordinal=provider.turn_count
+            )
             return _failed_result(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                terminal_call_count=terminal_calls,
-                provider_turn_count=provider.turn_count,
+                progress=progress,
+                fixture_read=progress.fixture_read_verified,
+                provider_failure=provider_failure,
                 failure_class=_normalise_provider_failure(exc),
             )
 
@@ -801,7 +1024,7 @@ def run_semantic_canary(
         )
         if (
             provider.turn_count != _MAX_ITERATIONS
-            or terminal_calls != 1
+            or progress.terminal_call_count != 1
             or result.terminated_by != "terminal_tool"
             or tool_handler_error
             or invalid_fixture_read
@@ -810,8 +1033,7 @@ def run_semantic_canary(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                terminal_call_count=terminal_calls,
-                provider_turn_count=provider.turn_count,
+                progress=progress,
                 fixture_read=fixture_read,
                 failure_class="terminal_contract",
             )
@@ -824,8 +1046,7 @@ def run_semantic_canary(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                terminal_call_count=terminal_calls,
-                provider_turn_count=provider.turn_count,
+                progress=progress,
                 fixture_read=fixture_read,
                 failure_class="map_validation",
             )
@@ -857,8 +1078,7 @@ def run_semantic_canary(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                terminal_call_count=terminal_calls,
-                provider_turn_count=provider.turn_count,
+                progress=progress,
                 fixture_read=fixture_read,
                 language_verified=language_verified,
                 source_verified=source_verified,
@@ -875,7 +1095,7 @@ def run_semantic_canary(
                 model=model,
                 fixture_sha256=fixture_sha256,
                 request_schema_sha256=request_schema_sha256,
-                terminal_call_count=terminal_calls,
+                terminal_call_count=progress.terminal_call_count,
                 provider_turn_count=provider.turn_count,
                 fixture_read=fixture_read,
                 language_verified=language_verified,
@@ -885,6 +1105,7 @@ def run_semantic_canary(
                 semantic_checks=evidence.checks,
                 semantic_failure_reasons=evidence.failure_reasons,
                 section_counts=section_counts,
+                progress=progress,
             ),
         )
 

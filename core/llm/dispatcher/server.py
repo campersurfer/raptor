@@ -92,7 +92,10 @@ def _scrub(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     return escape_nonprintable(value)
-
+def _safe_exception_basename(exc: BaseException) -> str:
+    """Return a bounded exception-class identifier without exception text."""
+    name = type(exc).__name__.rsplit(".", 1)[-1]
+    return name if name.isascii() and name.isidentifier() and len(name) <= 128 else "Exception"
 
 # ---------------------------------------------------------------------------
 # Token bookkeeping
@@ -107,7 +110,23 @@ _TOKEN_DEFAULT_BUDGET = 10_000       # requests per worker run — agentic
                                      # workflows over many findings can
                                      # easily clear 1k LLM calls.
 _TOKEN_HEADER = "X-Raptor-Token"
-
+# Qualification observes a deliberately separate, body-free request trace.
+# It is not an audit-log variant: its fixed schema and two-request cap make it
+# safe to hand to the qualification process without disclosing worker or
+# transport metadata.
+_QUALIFICATION_TRACE_MAX_RECORDS = 2
+_QUALIFICATION_TRACE_OVERFLOW_SUFFIX = ".overflow"
+_QUALIFICATION_TRACE_FIELDS = (
+    "request_ordinal",
+    "provider",
+    "token_accepted",
+    "request_received",
+    "upstream_started",
+    "upstream_status_code",
+    "response_headers_started",
+    "response_stream_completed",
+    "exception_type",
+)
 # Darwin's sockaddr_un reserves 104 bytes including the terminating NUL.
 # A 100-byte encoded-path ceiling is portable to Linux and leaves margin for
 # the terminator and platform bookkeeping.
@@ -315,6 +334,7 @@ class LLMDispatcher:
         run_id: str,
         *,
         audit_path: Optional[Path] = None,
+        qualification_trace_path: Optional[Path] = None,
         token_ttl_s: Optional[int] = None,
         token_budget: Optional[int] = None,
         creds: Optional[CredentialStore] = None,
@@ -343,6 +363,14 @@ class LLMDispatcher:
 
         self._audit_path = audit_path
         self._audit_lock = threading.Lock()
+        self._qualification_trace_path = qualification_trace_path
+        self._qualification_trace_lock = threading.Lock()
+        self._qualification_trace_request_count = 0
+        self._qualification_trace_next_write_ordinal = 1
+        self._qualification_trace_pending: dict[int, dict[str, object]] = {}
+        self._qualification_trace_overflowed = False
+        self._qualification_trace_invalid = False
+        self._prepare_qualification_trace()
         self._shutdown_lock = threading.Lock()
         self._shutdown_done = False
         self._sock_dir: Optional[Path] = None
@@ -662,7 +690,101 @@ class LLMDispatcher:
                         self._audit_path, e,
                     )
                     self._audit_warned = True
+    def _prepare_qualification_trace(self) -> None:
+        """Create the requested private trace as an empty owner-only file."""
+        if self._qualification_trace_path is None:
+            return
+        try:
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(self._qualification_trace_path, flags, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+        except OSError:
+            pass
 
+    def _start_qualification_trace(self) -> Optional[dict[str, object]]:
+        """Reserve one of the two private trace records for this request."""
+        if self._qualification_trace_path is None:
+            return None
+        with self._qualification_trace_lock:
+            self._qualification_trace_request_count += 1
+            ordinal = self._qualification_trace_request_count
+            if ordinal > _QUALIFICATION_TRACE_MAX_RECORDS:
+                if not self._qualification_trace_overflowed:
+                    self._qualification_trace_overflowed = True
+                    if not self._write_qualification_trace_overflow():
+                        self._invalidate_qualification_trace()
+                return None
+        return {
+            "request_ordinal": ordinal,
+            "provider": None,
+            "token_accepted": False,
+            "request_received": True,
+            "upstream_started": False,
+            "upstream_status_code": None,
+            "response_headers_started": False,
+            "response_stream_completed": False,
+            "exception_type": None,
+        }
+
+    def _write_qualification_trace_overflow(self) -> bool:
+        """Persist a constant sentinel without adding a third trace record."""
+        assert self._qualification_trace_path is not None
+        try:
+            path = Path(f"{self._qualification_trace_path}{_QUALIFICATION_TRACE_OVERFLOW_SUFFIX}")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(path, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+                fh.write("overflow\n")
+            return True
+        except OSError:
+            return False
+    def _invalidate_qualification_trace(self) -> None:
+        """Fail closed when an overflow cannot be made externally visible."""
+        self._qualification_trace_invalid = True
+        self._qualification_trace_pending.clear()
+        if self._qualification_trace_path is None:
+            return
+        try:
+            self._qualification_trace_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    def _finish_qualification_trace(self, trace: Optional[dict[str, object]]) -> None:
+        """Buffer completed records and append them in ordinal order."""
+        if trace is None or self._qualification_trace_path is None or self._qualification_trace_invalid:
+            return
+        record = {field: trace[field] for field in _QUALIFICATION_TRACE_FIELDS}
+        ordinal = record["request_ordinal"]
+        assert isinstance(ordinal, int)
+        with self._qualification_trace_lock:
+            self._qualification_trace_pending[ordinal] = record
+            while (ready := self._qualification_trace_pending.pop(
+                self._qualification_trace_next_write_ordinal, None
+            )) is not None:
+                try:
+                    self._append_qualification_trace_record(ready)
+                except OSError:
+                    pass
+                self._qualification_trace_next_write_ordinal += 1
+
+    def _append_qualification_trace_record(self, record: dict[str, object]) -> None:
+        """Append one already-ordered owner-only private trace record."""
+        assert self._qualification_trace_path is not None
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(self._qualification_trace_path, flags, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), 0o600)
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
     def _validate_token(self, raw: str | None) -> tuple[Optional[_TokenRecord], Optional[str]]:
         """L3 + L4 — return (record, None) on success, (None, reason)
         on rejection. Increments ``requests_made`` and revokes if
@@ -743,6 +865,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
             self.wfile.write(body)
 
         def _dispatch(self) -> None:
+            trace = dispatcher._start_qualification_trace()
             # ---- L3+L4 — token check ----
             token = self.headers.get(_TOKEN_HEADER)
             rec, reason = dispatcher._validate_token(token)
@@ -754,7 +877,13 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     worker_label=None, status="reject", reason=reason,
                 ))
                 self._send_simple(401, reason or "unauthorized")
+                if trace is not None:
+                    trace["response_headers_started"] = True
+                dispatcher._finish_qualification_trace(trace)
                 return
+
+            if trace is not None:
+                trace["token_accepted"] = True
 
             # ---- provider routing via path prefix ----
             provider_name: Optional[str] = None
@@ -764,6 +893,8 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     provider_name = name
                     upstream_path = self.path[len(prefix) - 1:]   # keep leading "/"
                     break
+            if trace is not None:
+                trace["provider"] = provider_name
             if provider_name is None:
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="provider.reject",
@@ -772,6 +903,9 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     status="reject", reason=f"unknown path: {self.path}",
                 ))
                 self._send_simple(404, "unknown provider path")
+                if trace is not None:
+                    trace["response_headers_started"] = True
+                dispatcher._finish_qualification_trace(trace)
                 return
             rule = dispatcher._provider(provider_name)
             # "Configured?" defaults to "has an injectable header", but a
@@ -792,6 +926,9 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     status="reject", reason=provider_name,
                 ))
                 self._send_simple(503, f"provider not configured: {provider_name}")
+                if trace is not None:
+                    trace["response_headers_started"] = True
+                dispatcher._finish_qualification_trace(trace)
                 return
 
             # ---- request body ----
@@ -816,6 +953,10 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                         status="reject", reason=f"{provider_name}: {exc.message}",
                     ))
                     self._send_simple(exc.status, exc.message)
+                    if trace is not None:
+                        trace["exception_type"] = _safe_exception_basename(exc)
+                        trace["response_headers_started"] = True
+                    dispatcher._finish_qualification_trace(trace)
                     return
                 except Exception as exc:  # noqa: BLE001
                     # Any OTHER exception from request preparation is an
@@ -836,6 +977,10 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                         status="error", reason=f"{provider_name}: {type(exc).__name__}",
                     ))
                     self._send_simple(502, f"request signing failed: {type(exc).__name__}")
+                    if trace is not None:
+                        trace["exception_type"] = _safe_exception_basename(exc)
+                        trace["response_headers_started"] = True
+                    dispatcher._finish_qualification_trace(trace)
                     return
                 method = prepared.method
                 url = prepared.url
@@ -854,9 +999,13 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 url = rule.upstream_base_url + upstream_path
 
             # ---- forward to upstream + stream response back ----
+            if trace is not None:
+                trace["upstream_started"] = True
             try:
                 with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
                     with client.stream(method, url, content=body, headers=forwarded) as up:
+                        if trace is not None:
+                            trace["upstream_status_code"] = up.status_code
                         self.send_response(up.status_code)
                         for k, v in up.headers.items():
                             # Strip hop-by-hop headers only. ``content-
@@ -875,9 +1024,13 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                                 continue
                             self.send_header(k, v)
                         self.end_headers()
+                        if trace is not None:
+                            trace["response_headers_started"] = True
                         for chunk in up.iter_raw():
                             self.wfile.write(chunk)
                         self.wfile.flush()
+                        if trace is not None:
+                            trace["response_stream_completed"] = True
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="request.dispatch",
                     peer_pid=None, peer_uid=None,
@@ -885,7 +1038,10 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     status="ok",
                     extra={"provider": provider_name, "method": method, "path": upstream_path},
                 ))
+                dispatcher._finish_qualification_trace(trace)
             except (httpx.HTTPError, OSError) as exc:
+                if trace is not None:
+                    trace["exception_type"] = _safe_exception_basename(exc)
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="request.error",
                     peer_pid=None, peer_uid=None,
@@ -898,6 +1054,21 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     self._send_simple(502, f"upstream error: {type(exc).__name__}")
                 except OSError:
                     pass
+                dispatcher._finish_qualification_trace(trace)
+            except Exception as exc:  # noqa: BLE001
+                if trace is not None:
+                    trace["exception_type"] = _safe_exception_basename(exc)
+                dispatcher._audit(AuditEvent(
+                    ts=time.time(), event="request.error",
+                    peer_pid=None, peer_uid=None,
+                    token_id=rec.audit_id, worker_label=rec.worker_label,
+                    status="error", reason=type(exc).__name__,
+                ))
+                try:
+                    self._send_simple(502, f"upstream error: {type(exc).__name__}")
+                except OSError:
+                    pass
+                dispatcher._finish_qualification_trace(trace)
 
         # Wire all common methods to the dispatch path. Anthropic /
         # OpenAI / Gemini all use POST + GET.
