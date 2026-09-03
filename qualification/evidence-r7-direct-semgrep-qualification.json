@@ -1,0 +1,119 @@
+{
+  "candidate_runtime": {
+    "candidate_python": {
+      "executable_basename": "python",
+      "implementation": "cpython",
+      "path_kind": "system",
+      "resolved_executable_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+      "version": {
+        "major": 3,
+        "minor": 13,
+        "patch": 15
+      }
+    },
+    "failure_class": "candidate_runtime_semgrep_version_probe_failed",
+    "jsonschema": {
+      "expected_version": "4.26.0",
+      "importable": true,
+      "version": "4.26.0",
+      "version_matches": true
+    },
+    "passed": false,
+    "probe_output_digests": {
+      "stderr_sha256": "904911b2ed7ec7fba947dd19dcfe3d7058de8b33c55418db226bb882d9dd9338",
+      "stdout_sha256": "3e37ac3c4fc4cf103e032aa1b2cd1af54006f53620e9df103161d497a360b7ad"
+    },
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "sarif_schema": {
+      "expected_sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a",
+      "hash_matches": true,
+      "present": true,
+      "relative_path": "engine/schemas/sarif-2.1.0.json",
+      "sha256": "7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a"
+    },
+    "semgrep": {
+      "dependency_closure_sha256": null,
+      "engine_smoke_raw_output_persisted": false,
+      "engine_smoke_return_code": null,
+      "engine_smoke_sarif_status": "not_run",
+      "engine_smoke_stderr_sha256": null,
+      "engine_smoke_stdout_sha256": null,
+      "engine_smoke_timed_out": false,
+      "failure_class": "semgrep_runtime_version_probe_failed",
+      "healthy": false,
+      "identity_schema_version": 1,
+      "launcher_basename": "semgrep",
+      "launcher_lstat_mode": "0700",
+      "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+      "launcher_symlink": false,
+      "linker_family": null,
+      "missing_library_basename": null,
+      "path_kind": "governed_private",
+      "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+      "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+      "version": null,
+      "version_parse_source": null,
+      "version_probe_return_code": 2,
+      "version_probe_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version_probe_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version_probe_timed_out": false
+    }
+  },
+  "child_started": false,
+  "command": {
+    "argv": [
+      "candidate-python",
+      "packages/static-analysis/scanner.py",
+      "--repo",
+      "<fresh_inert_cpp_git_fixture>",
+      "--out",
+      "<fresh_empty_output>",
+      "--sandbox",
+      "strict",
+      "--no-codeql",
+      "--policy-groups",
+      "all",
+      "--semgrep-bin",
+      "<verified-semgrep-bin>"
+    ],
+    "argv_sha256": "12eb70b77b3b51a9fe13115e08ca2899fd918d87448f8bfcb7548a87361858e8"
+  },
+  "credential_isolation_required": true,
+  "direct_fallback_occurred": false,
+  "dispatcher_started": false,
+  "execution": {
+    "commit": "4ff6e778914e1f8d0c88c4ee958a001e0cf9a6a5",
+    "tree": "4c33e5e20c7d41f3122e8663fbe4d6f93d82b119"
+  },
+  "failure_class": "candidate_runtime_semgrep_version_probe_failed",
+  "failure_stage": "candidate_runtime_preflight",
+  "fixture": {
+    "kind": "fresh_inert_cpp_git",
+    "source_tree_sha256": "bb9b64d2ffa4820531bfd4067f5ae077791bc52b"
+  },
+  "immutable": true,
+  "packs_dispatched": 0,
+  "private_temp_absolute": true,
+  "private_temp_canonical": true,
+  "private_temp_cleanup_complete": true,
+  "private_temp_current_user_owned": true,
+  "private_temp_mode": "0700",
+  "private_temp_non_symlink": true,
+  "private_temp_present": true,
+  "process_exit_code": 2,
+  "promotable": false,
+  "provider_turn_count": 0,
+  "record_kind": "minimal_cpp_direct_semgrep_qualification",
+  "retention": {
+    "fixture_and_raw_run_output": "ephemeral",
+    "raw_output_persisted": false
+  },
+  "scanner_exit_code": null,
+  "scanner_started": false,
+  "schema_version": 1,
+  "socket_path_bytes": null,
+  "status": "failed",
+  "tcp_fallback_occurred": false,
+  "temp_aliases_equal": true
+}
