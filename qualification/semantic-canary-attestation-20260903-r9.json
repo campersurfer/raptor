@@ -1,0 +1,73 @@
+{
+  "attestation": {},
+  "command": {
+    "argv": [
+      "candidate-python",
+      "raptor.py",
+      "semantic-canary",
+      "--model",
+      "gemini-2.5-flash",
+      "--format",
+      "json"
+    ],
+    "argv_sha256": "4226444b25b3fc928f85308924fe9b84a5d4f8c170ef57bc92a4d67ef86fce60"
+  },
+  "direct_qualification_attested": true,
+  "dispatcher_request_count": 0,
+  "dispatcher_requests": [],
+  "dispatcher_trace_complete": false,
+  "dispatcher_trace_sha256": null,
+  "exactly_one_valid_submit_context_map": false,
+  "execution": {
+    "commit": "15c35eb913a33f83874c1ce9de605b2f42136315",
+    "tree": "4dc4cb100322ae0eb60e51ec8e8d687934504b36"
+  },
+  "failure_class": "candidate_runtime_semgrep_version_probe_failed",
+  "failure_stage": "candidate_runtime_preflight",
+  "immutable": true,
+  "private_temp_cleanup_complete": true,
+  "promotable": false,
+  "provider_failure": null,
+  "provider_progress": {
+    "provider_turns_completed": 0,
+    "provider_turns_failed": 0,
+    "provider_turns_started": 0
+  },
+  "raw_output_persisted": false,
+  "record_kind": "semantic_canary_attestation",
+  "return_code": null,
+  "schema_version": 3,
+  "semgrep_runtime_identity_matches": false,
+  "semgrep_runtime_postflight": null,
+  "semgrep_runtime_preflight": {
+    "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+    "engine_smoke_raw_output_persisted": false,
+    "engine_smoke_return_code": null,
+    "engine_smoke_sarif_status": "not_run",
+    "engine_smoke_stderr_sha256": null,
+    "engine_smoke_stdout_sha256": null,
+    "engine_smoke_timed_out": false,
+    "failure_class": "semgrep_runtime_version_probe_failed",
+    "healthy": false,
+    "identity_schema_version": 1,
+    "launcher_basename": "semgrep",
+    "launcher_lstat_mode": "0700",
+    "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+    "launcher_symlink": false,
+    "linker_family": null,
+    "missing_library_basename": null,
+    "path_kind": "governed_private",
+    "resolved_executable_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+    "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1",
+    "version": null,
+    "version_parse_source": null,
+    "version_probe_return_code": 3,
+    "version_probe_stderr_sha256": "171272acc95515b6a5a941e76d79290d1b4502e9dd170f1adb799c80ac15947a",
+    "version_probe_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "version_probe_timed_out": false
+  },
+  "status": "failed",
+  "stderr_sha256": null,
+  "stdout_sha256": null,
+  "timed_out": false
+}
