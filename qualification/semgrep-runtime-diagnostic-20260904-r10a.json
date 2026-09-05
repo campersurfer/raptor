@@ -1,0 +1,168 @@
+{
+  "classification_basis": "both_controlled_profiles_pass_after_prior_recorded_failure",
+  "cleanup_complete": true,
+  "current_safe_environment": {
+    "cli_exit_label": null,
+    "failure_category": null,
+    "parsed_version_or_null": "1.174.0",
+    "redacted_stderr_tail": "[stderr omitted]",
+    "return_code": 0,
+    "root_cause_proven": false,
+    "stderr_sha256": "812cb7d00990313f4a75e2f0730a84b342b4511fda3355187521a51e903af56e",
+    "stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+    "timed_out": false
+  },
+  "diagnosis": "runtime_nondeterministic",
+  "diagnostic_environment_contract": {
+    "builder": "environment_for_launcher",
+    "bytecode_writes_disabled": true,
+    "historical_environment_exactly_reconstructed": false,
+    "input": "RaptorConfig.get_safe_env",
+    "network_denied_by_os_sandbox": true,
+    "private_home_tmp_xdg": true,
+    "python_no_user_site": true,
+    "writes_limited_to_private_diagnostic_root": true
+  },
+  "diagnostic_profiles_run": {
+    "current_safe_version": 1,
+    "harmless_engine_smoke": 1,
+    "interpreter": 1,
+    "launcher_metadata": 1,
+    "minimal_private_version": 1,
+    "native_core": 1,
+    "python_distribution": 1
+  },
+  "environment_fix_applied": false,
+  "exact_historical_root_cause": "unproven",
+  "harmless_engine_smoke": {
+    "fixture_kind": "inert_python_constant_assignment",
+    "local_fixture_only": true,
+    "rule_kind": "absent_harmless_expression",
+    "smoke_return_code": 0,
+    "smoke_sarif_status": "full_valid",
+    "smoke_sarif_valid": true,
+    "smoke_stderr_sha256": "413decffe53f5bc9a6aa7e5fab2c1f2b382e7aca5762af8bce7907bfba86d99a",
+    "smoke_stdout_sha256": "e826a4a82c7a7c72edbc6df41bc771b9d4c3dc86aa3ff2c6ed2ca16d54634f1f",
+    "smoke_timed_out": false
+  },
+  "historical_causal_attribution": "not_available_from_current_profiles",
+  "immutable": true,
+  "installation_or_rebuild_performed": false,
+  "interpreter": {
+    "exact_version": "3.13.15",
+    "implementation": "CPython",
+    "interpreter_current_user_or_root_owned": true,
+    "interpreter_executable": true,
+    "interpreter_not_group_or_world_writable": true,
+    "interpreter_present": true,
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "pyvenv_cfg_present": true,
+    "pyvenv_cfg_sha256": "a6f5760a8592c02baedd735605cced3de34feedb4c8538187901620b29c6ff3f",
+    "resolved_interpreter_sha256": "286217a82aa2686386aa0b3b056b95c32356a3fe9efdecfb86c8486215381ef2",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_sha256": "16e66cc2cfcc52ce426a4ac5755f627417a695731ea9e33a9c1a2617a71f1e73",
+    "sys_base_prefix_sha256": "6b0ded3121e2c9e4a228dfa1dd98d228a75f5a2a2ffcacdd447b5e8480658c8b",
+    "sys_executable_sha256": "46e4aa787c3f65301ae05b1e17fcc201e6ddcbb7d46d43abe6975cd172dc088d",
+    "sys_prefix_sha256": "df79fcabdbc1b399e4ba1b8bfe474aa83a6f74f934c1650eb823e0b2712c3cb7",
+    "virtual_environment_active": true
+  },
+  "launcher": {
+    "launcher_basename": "semgrep",
+    "launcher_current_user_owned": true,
+    "launcher_file_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+    "launcher_mode": "0700",
+    "launcher_string_sha256": "cb8cd5db0804d6b459b0d03bd30817ae09b2c2a3230f18bb3bc9c337b6a31375",
+    "launcher_symlink": false,
+    "resolved_launcher_file_sha256": "daad4b11f825262f1895fde084e666ec42b4b46bf23f772bc6aaa7a129b484ee",
+    "shebang_interpreter_basename": "python",
+    "shebang_kind": "absolute_interpreter",
+    "shebang_present": true,
+    "shebang_sha256": "18765687fc4c7cea884976d6b682923bd4341f2be18c465ac03fa774d5ab28dc"
+  },
+  "minimal_private_environment": {
+    "cli_exit_label": null,
+    "failure_category": null,
+    "parsed_version_or_null": "1.174.0",
+    "redacted_stderr_tail": "[stderr omitted]",
+    "return_code": 0,
+    "root_cause_proven": false,
+    "stderr_sha256": "5f2dd50c31a9e23ed90b339fb878b21dfa568f46c0f7625c8ab59d621cee8917",
+    "stdout_sha256": "7b8a5b361a7bb66633e3411b5da4c6219dba75b113b7a35d59040fa3f43d1d50",
+    "timed_out": false
+  },
+  "native_core": {
+    "core_probe_return_code": 0,
+    "core_probe_stderr_sha256": "df23d46f7eecd2c983b894cebdb8b9997578b3ef9e74320ddab27121fcb45d2d",
+    "core_probe_stdout_sha256": "38c4023084d2c30c66d47e22cea77163cf6e44387568ef91b6c7c33c9ead679f",
+    "core_probe_timed_out": false,
+    "parsed_core_version_or_null": null,
+    "process_failure_class_or_null": null,
+    "semgrep_core_present": true,
+    "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1"
+  },
+  "native_dependency_closure": {
+    "dependency_closure_sha256": "3ecf2ef379e3535e5125718ec79577a45edcd021335f5bb2d8cda0d7ef7503b6",
+    "dependency_manifest": [
+      {
+        "basename": "libdwarf.2.dylib",
+        "sha256": "08e87bcae57ea44f6cf82b7916a4ffd2e4b3b978fd106c63e9e14d331d82313b"
+      },
+      {
+        "basename": "libev.4.dylib",
+        "sha256": "2f009fe7b287c107c5d4fc317dfc12742d58c7539d9f72a23779c93e1011d04f"
+      },
+      {
+        "basename": "libgmp.10.dylib",
+        "sha256": "1a5f2497df68f162d9d9ab04bc31db1f24950cdc9f4c2063f827c4ed6f58248f"
+      },
+      {
+        "basename": "libpcre2-8.0.dylib",
+        "sha256": "4cec0f83d8e4b17c144a28b7843935dc15c814a03c651463e7a7ad4d80d8376e"
+      },
+      {
+        "basename": "libtree-sitter.dylib",
+        "sha256": "89663560f9239b195493c31ee94efc9a5968d295700d55e34d5b1700ba9cfead"
+      },
+      {
+        "basename": "libzstd.1.dylib",
+        "sha256": "23d002831cd68c1d30474087021bd938cfbb64701c2d8430351a1dacfa0a0596"
+      }
+    ],
+    "failure_class": null,
+    "semgrep_core_sha256": "9423b89f624880c3e9fcd112e6c1cb2d73b77680d5d8d83cdbcffb567bbb4cf1"
+  },
+  "prior_failure_source": "user_supplied_r9_observation",
+  "prior_stdout_empty": true,
+  "prior_version_return_code": 3,
+  "promotable": false,
+  "provider_contact": false,
+  "r9_exit_3_reproduced": false,
+  "raw_output_persisted": false,
+  "real_target_scanned": false,
+  "record_kind": "standalone_semgrep_runtime_diagnostic",
+  "runtime_mutated": false,
+  "semgrep_distribution": {
+    "METADATA_sha256": "cb3a642adda1b0ff6ee556f7a45d2afaf10a3237a3570571d1661d5bebfdfd36",
+    "RECORD_entry_count": 322,
+    "RECORD_hash_mismatch_count": 0,
+    "RECORD_hashed_entry_count": 171,
+    "RECORD_missing_entry_count": 0,
+    "RECORD_sha256": "396bf16a943dc110ad00409ccdeaf88dc1ace66d67d0a26cd2357f580336d45a",
+    "RECORD_verified_entry_count": 171,
+    "console_entrypoint_identifier": "semgrep.console_scripts.entrypoint:main",
+    "distribution_version": "1.174.0",
+    "entry_points_metadata_sha256": "73e1994d1d3cee94a0833584ed58e64e4aa84a84bc76ac823abbaabef5b70cea",
+    "entrypoint_module_importable": true,
+    "package_root_sha256": "efa259af95f8a30aeda9969f2a4417f984872088f686e80744f0fe5908fd3fec",
+    "package_tree_manifest_sha256": "36d2087657d7c4b061b101646d8136d82351959c4fc8d67bbd02366aa5b1566e",
+    "probe_return_code": 0,
+    "probe_timed_out": false,
+    "semgrep_bin_importable": true,
+    "semgrep_importable": true,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "starting_commit": "92c33828ed8ca83d5d343746e414ae3dd30d85f6",
+  "starting_tree": "1d0d6e7d840382b6205487fd1335c9e4d656949e",
+  "vulnerability_analysis_run": false
+}
